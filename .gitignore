@@ -1,0 +1,9 @@
+# Generated files and private gameplay memory
+ai_bridge/sessions/
+__pycache__/
+.pytest_cache/
+*.pyc
+godot/.godot/
+.godot/
+*.tmp
+.DS_Store
