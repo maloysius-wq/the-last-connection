@@ -13,7 +13,7 @@ First-person psychological horror surveillance game. Player guides Eli, a trappe
 - Basic Godot 4 surveillance view, room geometry, clickable terminal input, Eli placeholder, action tween, flashlight pickup, breaker interaction and persistent room state created.
 - Python unit and HTTP integration tests pass: 13/13 (2026-11-19).
 - **Not runtime-verified in Godot** because Godot executable is unavailable in this environment. Treat initial Godot import and interaction smoke test as the highest-priority blocker.
-- User created public GitHub repository `maloysius-wq/the-last-connection` on 2026-11-19. Code sync is underway; check the latest commit before editing.
+- User created public GitHub repository `maloysius-wq/the-last-connection` on 2026-11-19. Prototype 01 source was committed to `main` at `9f3c9bc214c51bfd31896f9a98404d6ef0a94c3a`; the GitHub repository is now the source of truth.
 - Fixed the initial Godot session ID formatting bug: integer Unix timestamp now conforms to the bridge session ID regex; legacy saved decimal timestamps are replaced on load.
 
 ## Immediate priority
@@ -39,4 +39,4 @@ First-person psychological horror surveillance game. Player guides Eli, a trappe
 
 ## Project ownership / repo plan
 
-Primary repo: `maloysius-wq/the-last-connection` (public; created by user). Use this repo as source of truth after initial source upload.
+Primary repo: `maloysius-wq/the-last-connection` (public; created by user). Use this repo as source of truth for all subsequent development.
