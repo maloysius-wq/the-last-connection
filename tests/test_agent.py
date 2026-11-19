@@ -63,6 +63,41 @@ class TestAgent(unittest.TestCase):
         forced = Agent._decision({"speech": "Hello", "action": "take", "target": "flashlight"}, WORLD, outcome=True)
         self.assertEqual(forced.action, "wait")
 
+
+    def test_keypad_requires_exactly_four_digits(self):
+        world = {**WORLD, "objects": {**WORLD["objects"],
+                    "keypad": {"visible": True, "description": "Four-digit keypad"}}}
+        invalid = Agent._decision({"speech": "I'll do it", "action": "enter_code",
+                                   "target": "keypad", "argument": "43171"}, world)
+        self.assertEqual(invalid.action, "wait")
+        valid = Agent._decision({"speech": "Trying it", "action": "enter_code",
+                                 "target": "keypad", "argument": "4317"}, world)
+        self.assertEqual(valid.action, "enter_code")
+        self.assertEqual(valid.argument, "4317")
+
+    def test_code_cannot_target_other_objects(self):
+        output = Agent._decision({"speech": "I'll open it", "action": "enter_code",
+                                  "target": "flashlight", "argument": "4317"}, WORLD)
+        self.assertEqual(output.action, "wait")
+
+    def test_non_code_actions_discard_arguments(self):
+        output = Agent._decision({"speech": "Checking", "action": "inspect",
+                                  "target": "flashlight", "argument": "4317"}, WORLD)
+        self.assertEqual(output.argument, "")
+
+    def test_outcome_never_requests_more_actions(self):
+        output = Agent._decision({"speech": "Done", "action": "enter_code",
+                                  "target": "keypad", "argument": "4317"}, WORLD, outcome=True)
+        self.assertEqual(output.action, "wait")
+        self.assertEqual(output.argument, "")
+
+    def test_mock_understands_keypad_entry(self):
+        world = {**WORLD, "objects": {**WORLD["objects"],
+                    "keypad": {"visible": True, "description": "Keypad"}}}
+        output = self.agent.decide("code", "Enter 4317 on the keypad", world)
+        self.assertEqual((output.action, output.target, output.argument),
+                         ("enter_code", "keypad", "4317"))
+
     def test_length_limits(self):
         with self.assertRaises(InvalidRequest):
             self.agent.decide("test", "x" * 601, WORLD)

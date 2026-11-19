@@ -145,11 +145,12 @@ func _on_http_completed(result: int, response_code: int, _headers: PackedStringA
     if request_stage == "decide":
         var action: String = str(response.get("action", "wait"))
         var target: String = str(response.get("target", ""))
+        var argument: String = str(response.get("argument", ""))
         if action != "wait":
             request_stage = "action"
             status.text = "Eli is moving..."
-            action_context = {"action": action, "target": target}
-            world.perform_action(action, target)
+            action_context = {"action": action, "target": target, "argument": argument}
+            world.perform_action(action, target, argument)
             return
     _idle()
 

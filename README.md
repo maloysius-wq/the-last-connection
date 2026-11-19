@@ -1,6 +1,6 @@
-# The Last Connection — Prototype 01
+# The Last Connection — Prototype 02
 
-An offline-first psychological horror experiment: you watch Eli in a locked maintenance room and guide them using natural language. **The LLM chooses speech and proposes actions; Godot executes and validates physical actions.** The initial playable slice supports typed instructions and the flashlight interaction. Voice is planned for Phase 3, not yet implemented.
+An offline-first psychological horror experiment: you watch Eli in a locked maintenance room and guide them using natural language. **The LLM chooses speech and proposes actions; Godot executes and validates physical actions.** The initial playable slice supports typed instructions and the complete first-room escape sequence. Voice is planned for Phase 3, not yet implemented.
 
 ## Requirements
 
@@ -40,7 +40,7 @@ If the bridge is unavailable or Ollama hasn't been started, Godot shows a bridge
 - AI requests are constrained to `wait`, `move_to`, `inspect`, `take`, and `use`.
 - Visible target whitelist, length guards and a second validation pass in Godot.
 - Physical walk-to-object movement and working flashlight inventory interaction.
-- The breaker switch and door are represented; they are not a completed escape-room puzzle yet.
+- The breaker powers the room, an inspectable note reveals a code, the keypad validates four digits, and the door opens after the correct entry.
 - Persistent session conversation on disk and saved in-game room state.
 - Explicit `--mock` mode for scene verification without a local model.
 - Python unit tests for validation, outcomes, and persistence.
@@ -49,6 +49,8 @@ If the bridge is unavailable or Ollama hasn't been started, Godot shows a bridge
 
 ```bash
 python -m unittest discover -s tests -v
+# Engine smoke: godot --headless --path godot --import --quit
+# Engine smoke: godot --headless --path godot --script res://tests/smoke_test.gd
 ```
 
 ## Run modes and privacy
@@ -66,7 +68,7 @@ The local bridge stores conversation history and outcome facts as JSON under `ai
 
 ## Known limitations
 
-- Voice input/output, lip sync, animated actions, atmosphere effects and a complete escape puzzle are later phases.
+- Voice input/output, lip sync, finished character animations, and advanced atmosphere effects remain later phases.
 - Eli uses placeholder geometry, not finished character artwork.
 - Local LLM latency depends on CPU/GPU and model selection. No latency benchmarks yet.
 - Code was unit-tested in Python, but Godot was not available in the development environment for an editor/runtime check. Import and test the project in Godot before assuming it runs flawlessly.
@@ -82,3 +84,7 @@ The local bridge stores conversation history and outcome facts as JSON under `ai
 5. Horror story reveals are authored, not left to accidental hallucinations.
 
 See `DEVELOPMENT_HANDOFF.md` for next tasks and acceptance criteria.
+
+## First complete escape path
+
+Tell Eli to take the flashlight, switch on the breaker, inspect the maintenance note, enter its four-digit sequence on the keypad, and open the exit door. Each physical change is checked by Godot; the mock backend deliberately uses simple matching and is not equivalent to real model behavior. CI now runs Python tests and a real headless Godot smoke test on pushes and pull requests.
