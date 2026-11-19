@@ -88,3 +88,9 @@ See `DEVELOPMENT_HANDOFF.md` for next tasks and acceptance criteria.
 ## First complete escape path
 
 Tell Eli to take the flashlight, switch on the breaker, inspect the maintenance note, enter its four-digit sequence on the keypad, and open the exit door. Each physical change is checked by Godot; the mock backend deliberately uses simple matching and is not equivalent to real model behavior. CI now runs Python tests and a real headless Godot smoke test on pushes and pull requests.
+
+## Portable Windows build (D: drive, no Ollama)
+
+A dedicated GitHub Actions workflow packages an autonomous Windows build. Download its artifact, extract everything to a writable location on D:, and run `TheLastConnection.exe`. The package will include Godot, a bundled AI bridge, and a local llama.cpp CPU server. It deliberately **does not ship model weights**; select your existing GGUF once from `D:\\LocalForge` or `D:\\Games\\TheLastConnection\\models`. The model stays where it is, without copying onto C:. Portable save files and logs live beside the executable on D:.
+
+Portable instructions: [portable/README.md](portable/README.md). The existing developer scripts using Ollama remain available and unchanged. This portable configuration is new and must be validated by the Windows CI build and a real-model playtest; do not assume it has passed until those checks finish.
