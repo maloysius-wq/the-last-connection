@@ -47,3 +47,12 @@ Primary repo: `maloysius-wq/the-last-connection` (public; created by user). Use 
 - LLM JSON contract now includes optional semantic `argument` (four digits only for keypad), never free-form direct Godot commands.
 - Mock mode supports deterministic first-room walkthrough.
 - PR #1 merged into `main` as `c7509caf4be4cbe4d131d8f784045ca865aa7311`. GitHub Actions PR run `44617750509` was green in **both** jobs: 18 Python tests and the full headless Godot escape smoke test. Next: actual local Ollama evaluation, push-to-talk transcription, TTS, and visual validation.
+
+## 2026-11-19 portable Windows work
+
+- User requires a completely autonomous game executable on D: without reliance on LocalForge or Ollama, and with no duplicate AI-model download on C:.
+- Added a packaged Windows launcher using a bundled CPU-only llama.cpp server. It loads an existing user-selected GGUF file by absolute path, displays startup progress, starts an embedded local Python AI bridge, launches the exported Godot game, and cleans up the server on exit.
+- Portable save location is beside the exported game, plus AI memory and logs under the game folder on D:; avoid claiming that Windows never uses C: for incidental caches.
+- Added portable Windows GitHub Actions packaging workflow; it distributes the llama.cpp CPU runtime but no model weights, adds upstream MIT license notices, and uploads a downloadable artifact.
+- Python unit tests expanded to 25 (including model selection and llama.cpp JSON transport); local test suite passes. **Windows packaging and model runtime compatibility must be validated by GitHub Actions and a real user GGUF playtest before claiming either as verified.**
+- Next: inspect portable workflow, address any packaging errors, and obtain working Windows artifact. Continue voice phase only after user confirms the executable and model work.

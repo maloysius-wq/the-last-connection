@@ -3,6 +3,16 @@ extends Control
 
 const BRIDGE_URL := "http://127.0.0.1:8765"
 const SAVE_PATH := "user://tlc_save.cfg"
+
+func _save_path() -> String:
+    # Exported portable builds keep progress next to the game on D: rather than AppData on C:.
+    if OS.has_feature("standalone"):
+        var folder := OS.get_executable_path().get_base_dir().path_join("user_data")
+        var error := DirAccess.make_dir_recursive_absolute(folder)
+        if error == OK:
+            return folder.path_join("tlc_save.cfg")
+        push_warning("Cannot create portable save directory; using standard user storage")
+    return SAVE_PATH
 const WorldScript = preload("res://scripts/world.gd")
 
 var world # Concrete world.gd instance; dynamic type allows its custom signals and methods.
@@ -19,7 +29,7 @@ func _ready() -> void:
     _build_ui()
     _load_save()
     http = HTTPRequest.new()
-    http.timeout = 95.0
+    http.timeout = 310.0
     add_child(http)
     http.request_completed.connect(_on_http_completed)
     world.action_finished.connect(_on_world_action_finished)
@@ -180,7 +190,7 @@ func _new_game() -> void:
 
 func _load_save() -> void:
     var cfg := ConfigFile.new()
-    if cfg.load(SAVE_PATH) == OK:
+    if cfg.load(_save_path()) == OK:
         session_id = str(cfg.get_value("session", "id", ""))
         var saved_world: Dictionary = cfg.get_value("world", "state", {})
         world.restore_state(saved_world)
@@ -192,6 +202,6 @@ func _save() -> void:
     var cfg := ConfigFile.new()
     cfg.set_value("session", "id", session_id)
     cfg.set_value("world", "state", world.export_state())
-    var error := cfg.save(SAVE_PATH)
+    var error := cfg.save(_save_path())
     if error != OK:
         push_warning("Couldn't write save game: " + str(error))

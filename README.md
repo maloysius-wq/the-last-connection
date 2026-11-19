@@ -88,3 +88,14 @@ See `DEVELOPMENT_HANDOFF.md` for next tasks and acceptance criteria.
 ## First complete escape path
 
 Tell Eli to take the flashlight, switch on the breaker, inspect the maintenance note, enter its four-digit sequence on the keypad, and open the exit door. Each physical change is checked by Godot; the mock backend deliberately uses simple matching and is not equivalent to real model behavior. CI now runs Python tests and a real headless Godot smoke test on pushes and pull requests.
+
+## Portable Windows edition (D: drive; no Ollama required)
+
+This is a **separate, self-launching Windows ZIP artifact**, not the source ZIP. It includes the exported Godot game, a packaged Python local AI bridge, and a CPU-only llama.cpp server. It intentionally does **not** include GGUF model weights.
+
+1. From GitHub Actions, download a successful **Portable Windows build (no model bundled)** run's artifact **TheLastConnection-Windows-Portable-NoModel**.
+2. Extract the **entire** artifact to a writable folder on D:, e.g. `D:\\Games\\TheLastConnection\\`.
+3. Double-click `TheLastConnection.exe`. On first run, select your existing **.gguf** model file, which may remain under `D:\\LocalForge\\` (or any location on D:). The launcher saves this path as `config.json`; it does not move or re-download your model.
+4. The launcher starts local inference and the game automatically, then stops its model server when the game exits. Saves and AI memories live inside the portable game folder.
+
+See [portable/README.md](portable/README.md). The portable build is CPU-only in this first version, and may be slow on weaker PCs. The AI model must already be a compatible GGUF file. **It is not necessary to run LocalForge, Ollama, or a system Python installation.** Voice remains future work. GitHub Actions packaging cannot validate the private model stored on your PC.
