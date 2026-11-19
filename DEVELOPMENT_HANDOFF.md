@@ -11,24 +11,23 @@ First-person psychological horror surveillance game. Player guides Eli, a trappe
 - Prototype Python bridge, local session memory and strict structured-action contract implemented.
 - Explicit Ollama model `qwen3:4b-instruct` and explicit `--mock` mode.
 - Basic Godot 4 surveillance view, room geometry, clickable terminal input, Eli placeholder, action tween, flashlight pickup, breaker interaction and persistent room state created.
-- Python unit and HTTP integration tests pass: 13/13 (2026-11-19).
-- **Not runtime-verified in Godot** because Godot executable is unavailable in this environment. Treat initial Godot import and interaction smoke test as the highest-priority blocker.
+- Python unit and HTTP integration tests pass: 18/18 (2026-11-19).
+- **Godot runtime smoke-tested by GitHub Actions using Godot 4.5.2:** full first-room escape, wrong/correct keypad inputs, reset, and restore all passed. Headless checks do not validate on-screen visual quality or real microphone/voice hardware.
 - User created public GitHub repository `maloysius-wq/the-last-connection` on 2026-11-19. Prototype 01 source was committed to `main` at `9f3c9bc214c51bfd31896f9a98404d6ef0a94c3a`; the GitHub repository is now the source of truth.
 - Fixed the initial Godot session ID formatting bug: integer Unix timestamp now conforms to the bridge session ID regex; legacy saved decimal timestamps are replaced on load.
 
 ## Immediate priority
 
-1. Import `godot/project.godot` into Godot 4.3+ and fix any GDScript/scene errors.
-2. Start bridge with `python -m ai_bridge.server --mock`, press F5, send 'Pick up the flashlight'. Verify Eli actually moves, the flashlight disappears, inventory changes and an action outcome returns.
-3. Run same interaction with Ollama `qwen3:4b-instruct`, including follow-up 'What are you holding?'. Record response time and any output errors.
-4. Verify the HTTP integration suite against actual running bridge requests; scripted test coverage currently passes.
-5. Begin Phase 2 puzzle interactions, including breaker, keypad, clues and locked exit door.
-6. Phase 3: typed + push-to-talk voice via local speech recognition, text-to-speech, subtitles and accessibility fallback.
+1. **Next feature: Phase 3 voice communications.** Build opt-in push-to-talk input and a local speech-to-text adapter (whisper.cpp), then route transcripts to the same `/api/decide` handler as typing. Keep a keyboard-only fallback.
+2. Add local TTS playback for Eli with subtitles and a mute/skip setting; inspect redistributable model and voice licensing before bundling binaries.
+3. Evaluate actual `qwen3:4b-instruct` with Ollama for first-room puzzle completion, vague instructions, and response latency; CI currently uses deterministic mock mode, not a real LLM.
+4. Improve 3D art, atmosphere, character animations, and visual QA on a desktop machine. Headless CI cannot establish visual fidelity.
+5. Add tests for the voice adapter and failure states; keep GitHub Actions Python+Godot checks green.
 
 ## Safeguards
 
 - Game engine owns world and can reject every AI-suggested action.
-- Action schema: `speech`, `action`, `target`, `emotion`.
+- Action schema: `speech`, `action`, `target`, `emotion`, `argument` (strict four-digit input only for `enter_code`).
 - No cloud inference fallback. Mock backend must be labeled as scripted.
 - No automatic periodic tasks or scheduled verification. Development proceeds only in direct requests.
 - No background completion promises.
@@ -47,4 +46,4 @@ Primary repo: `maloysius-wq/the-last-connection` (public; created by user). Use 
 - Phase 2 first-room escape implemented: breaker reveals clue, inspect note reveals keypad digits, validated `enter_code` action, exit unlock/escape, save/reset.
 - LLM JSON contract now includes optional semantic `argument` (four digits only for keypad), never free-form direct Godot commands.
 - Mock mode supports deterministic first-room walkthrough.
-- Next: inspect GitHub Actions results and fix Godot parsing/runtime issues; perform actual local Ollama behavior tests, then begin voice capture/transcription.
+- PR #1 merged into `main` as `c7509caf4be4cbe4d131d8f784045ca865aa7311`. GitHub Actions PR run `44617750509` was green in **both** jobs: 18 Python tests and the full headless Godot escape smoke test. Next: actual local Ollama evaluation, push-to-talk transcription, TTS, and visual validation.
