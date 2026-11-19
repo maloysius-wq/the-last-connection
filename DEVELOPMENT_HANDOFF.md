@@ -56,3 +56,12 @@ Primary repo: `maloysius-wq/the-last-connection` (public; created by user). Use 
 - Added portable Windows GitHub Actions packaging workflow; it distributes the llama.cpp CPU runtime but no model weights, adds upstream MIT license notices, and uploads a downloadable artifact.
 - Python unit tests expanded to 25 (including model selection and llama.cpp JSON transport); local test suite passes. **Windows packaging and model runtime compatibility must be validated by GitHub Actions and a real user GGUF playtest before claiming either as verified.**
 - Next: inspect portable workflow, address any packaging errors, and obtain working Windows artifact. Continue voice phase only after user confirms the executable and model work.
+
+## Portable Windows verification (GitHub Actions)
+
+- PR #3 merged on 2026-11-19 as `bb0e55ea5b568bcc8cf10a43d2cad3c6477c9470`.
+- Windows Actions run `44623335908` **passed** all packaging checks, including 25 Python tests, PyInstaller launcher build, Godot import and Windows export, verified llama.cpp CPU binaries, and artifact upload. Artifact: `TheLastConnection-Windows-Portable-NoModel` (~38 MB compressed) from that run.
+- Linux-based Prototype validation CI also passed on the portable branch.
+- GitHub Actions is configured to produce a new portable build when relevant source changes are pushed to `main` (plus manual `workflow_dispatch`).
+- The actual user-owned `D:\\LocalForge\\...gguf` model was **not available on GitHub runners** and must still be tested on Windows. CI does not establish natural-language model behavior, model compatibility, or UI/audio fidelity.
+- **Next priority**: user tests standalone Windows download on D:, selects existing GGUF, and verifies Eli responds; fix any discovered runtime compatibility issues. Voice remains the next major feature after this validation.
