@@ -1,5 +1,7 @@
 # The Last Connection — Prototype 02
 
+> **Windows players:** You do not need Ollama, system Python, Godot, or LocalForge to run the **portable Windows ZIP**. Download the `TheLastConnection-Windows-Portable-NoModel` artifact from [GitHub Actions](https://github.com/maloysius-wq/the-last-connection/actions/workflows/portable_windows.yml), extract the entire folder on D:, and double-click `TheLastConnection.exe`. On first launch, choose the existing GGUF model on D:. **Do not download the Source code ZIP for this installation route.** The AI model itself is not bundled.
+
 An offline-first psychological horror experiment: you watch Eli in a locked maintenance room and guide them using natural language. **The LLM chooses speech and proposes actions; Godot executes and validates physical actions.** The initial playable slice supports typed instructions and the complete first-room escape sequence. Voice is planned for Phase 3, not yet implemented.
 
 ## Requirements
