@@ -1,0 +1,80 @@
+name: Portable Windows build (no model bundled)
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/portable_windows.yml'
+      - 'portable/**'
+      - 'ai_bridge/**'
+      - 'godot/**'
+      - 'data/**'
+  push:
+    tags: ['portable-v*']
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Run Python tests
+        run: python -m unittest discover -s tests -v
+      - name: Install Python packager
+        run: python -m pip install pyinstaller==6.16.0
+      - name: Package autonomous launcher and AI bridge on D-friendly local paths
+        shell: pwsh
+        run: |
+          pyinstaller --noconfirm --clean --onedir --windowed --name TheLastConnection --paths . --add-data "data/characters/eli.json;data/characters" portable/launcher.py
+      - uses: chickensoft-games/setup-godot@v2
+        with:
+          version: 4.5.2
+          use-dotnet: false
+          include-templates: true
+      - name: Godot editor import
+        run: godot --headless --path godot --import --quit
+      - name: Export self-contained Windows game
+        shell: pwsh
+        run: |
+          godot --headless --path godot --export-release "Windows Desktop" "$((Get-Location).Path)\dist\TheLastConnection\TheLastConnectionGame.exe"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (!(Test-Path 'dist/TheLastConnection/TheLastConnectionGame.exe')) { throw 'Missing game executable' }
+      - name: Download upstream CPU-only llama.cpp server
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $headers = @{ 'User-Agent' = 'TLC-portable'; Authorization = "Bearer $env:GH_TOKEN" }
+          $release = Invoke-RestMethod -Uri 'https://api.github.com/repos/ggml-org/llama.cpp/releases/latest' -Headers $headers
+          $asset = $release.assets | Where-Object { $_.name -match 'bin-win-cpu-x64\.zip$' } | Select-Object -First 1
+          if (!$asset) { throw 'No upstream Windows x64 CPU llama.cpp release ZIP found' }
+          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile "$env:RUNNER_TEMP\llama-cpu.zip"
+          New-Item -ItemType Directory -Force -Path 'dist/TheLastConnection/runtime/llama' | Out-Null
+          Expand-Archive "$env:RUNNER_TEMP\llama-cpu.zip" -DestinationPath 'dist/TheLastConnection/runtime/llama' -Force
+          $bin = Get-ChildItem 'dist/TheLastConnection/runtime/llama' -Recurse -Filter 'llama-server.exe' | Select-Object -First 1
+          if (!$bin) { throw 'llama-server.exe missing from upstream release' }
+          if ($bin.Directory.FullName -ne (Resolve-Path 'dist/TheLastConnection/runtime/llama').Path) {
+            Copy-Item "$($bin.Directory.FullName)\*" 'dist/TheLastConnection/runtime/llama' -Recurse -Force
+          }
+      - name: Include portable build guide
+        shell: pwsh
+        run: |
+          Copy-Item 'portable/README.md' 'dist/TheLastConnection/READ_ME_FIRST.md'
+          Set-Content -Encoding ascii -Path 'dist/TheLastConnection/portable-build.txt' -Value "No AI model bundled; select existing .gguf from D: on first launch. All game, runtime, logs, and saves live beside this file."
+          New-Item -ItemType Directory -Force -Path 'dist/TheLastConnection/LICENSES' | Out-Null
+          Invoke-WebRequest 'https://raw.githubusercontent.com/ggml-org/llama.cpp/master/LICENSE' -OutFile 'dist/TheLastConnection/LICENSES/llama.cpp-MIT.txt'
+          Invoke-WebRequest 'https://raw.githubusercontent.com/godotengine/godot/master/LICENSE.txt' -OutFile 'dist/TheLastConnection/LICENSES/Godot-MIT.txt'
+          if (!(Test-Path 'dist/TheLastConnection/TheLastConnection.exe')) { throw 'Missing launcher' }
+          if (!(Test-Path 'dist/TheLastConnection/runtime/llama/llama-server.exe')) { throw 'Missing model runtime' }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TheLastConnection-Windows-Portable-NoModel
+          path: dist/TheLastConnection
+          retention-days: 14
+          if-no-files-found: error

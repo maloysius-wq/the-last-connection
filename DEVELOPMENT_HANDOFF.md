@@ -47,3 +47,15 @@ Primary repo: `maloysius-wq/the-last-connection` (public; created by user). Use 
 - LLM JSON contract now includes optional semantic `argument` (four digits only for keypad), never free-form direct Godot commands.
 - Mock mode supports deterministic first-room walkthrough.
 - PR #1 merged into `main` as `c7509caf4be4cbe4d131d8f784045ca865aa7311`. GitHub Actions PR run `44617750509` was green in **both** jobs: 18 Python tests and the full headless Godot escape smoke test. Next: actual local Ollama evaluation, push-to-talk transcription, TTS, and visual validation.
+
+## Portable D: drive distribution (2026-11-19)
+
+User clarified that their existing AI model is on D:\\LocalForge, C: is almost full, and they want the game completely standalone with no dependency on LocalForge or Ollama. Implemented a separate portable Windows build track:
+
+- `portable/launcher.py`: packaged single-click startup, auto-detection or one-time chooser for an existing GGUF file, startup/shutdown of its own llama.cpp server and Python bridge, dedicated D:-resident sessions/logs/temp.
+- `ai_bridge/agent.py`: local llama.cpp OpenAI-compatible JSON-schema backend, still validated by game authority.
+- `godot/scripts/main.gd`: exported build writes save files beside the game rather than `%APPDATA%` on C:.
+- `godot/export_presets.cfg`, `.github/workflows/portable_windows.yml`: Windows Godot export + PyInstaller onedir + upstream CPU llama server + downloadable GitHub Actions artifact, no model bundled.
+- `tests/test_portable.py`: in-place model selection and llama.cpp schema regression tests. Local suite 25/25 passing.
+
+Next: verify Windows GitHub Actions packaging actually succeeds, inspect the artifact layout, then test with a real existing Qwen3 GGUF on Windows. If original model isn't GGUF, it cannot be reused directly by this particular runner; do not silently download weights or fill C:. Voice remains a separate upcoming feature. Never claim runtime verification with the user's private model based on CI only.
