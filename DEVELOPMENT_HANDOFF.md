@@ -65,3 +65,12 @@ Primary repo: `maloysius-wq/the-last-connection` (public; created by user). Use 
 - GitHub Actions is configured to produce a new portable build when relevant source changes are pushed to `main` (plus manual `workflow_dispatch`).
 - The actual user-owned `D:\\LocalForge\\...gguf` model was **not available on GitHub runners** and must still be tested on Windows. CI does not establish natural-language model behavior, model compatibility, or UI/audio fidelity.
 - **Next priority**: user tests standalone Windows download on D:, selects existing GGUF, and verifies Eli responds; fix any discovered runtime compatibility issues. Voice remains the next major feature after this validation.
+
+## FINAL portable ZIP integrity check (2026-11-19)
+
+- Corrected the Windows CI export: Godot is a GUI-subsystem executable on Windows, so invoke via `Start-Process -Wait -PassThru` and check nonzero exit codes; calling `godot ...` directly returned before the game export finished. The earlier PR #3 archive was missing `TheLastConnectionGame.exe` and must not be used.
+- Current passing GitHub Actions run: https://github.com/maloysius-wq/the-last-connection/actions/runs/44624634567 (main branch). Artifact ID `14578706692`, `TheLastConnection-Windows-Portable-NoModel`, ZIP size `72,843,783` bytes.
+- Downloaded artifact and inspected ZIP independently: no corrupt entries; `TheLastConnection.exe` (2,128,824 bytes), `TheLastConnectionGame.exe` (96,364,280 bytes), `runtime/llama/llama-server.exe`, necessary model-runner DLLs, `_internal/data/characters/eli.json`, and README are all present. All three executables have valid `MZ` headers. No `.gguf` weights are bundled.
+- Python test suite: 25 passing on Windows. Godot Linux headless gameplay smoke tests still passing.
+- User must test with actual GGUF file from D:; model compatibility and real-world latency not verified by hosted workflow.
+- Prioritize user playtest feedback / portable startup issues. Do not claim voice is done.
