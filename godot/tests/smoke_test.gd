@@ -37,8 +37,28 @@ func _run() -> void:
     world.perform_action("use", "exit_door")
     result = await world.action_finished
     _expect(result[2] == false, "Exit remains locked before solving puzzle")
+    _expect(world.snapshot()["heard_knocks"] == true, "Authored knocks fire after power")
+    _expect(world.snapshot()["objects"].has("maintenance_note"), "Clue appears after lights")
+    world.perform_action("inspect", "maintenance_note")
+    result = await world.action_finished
+    _expect(result[2] == true and "4317" in str(result[3]), "Inspect reveals code")
+    world.perform_action("enter_code", "keypad", "0000")
+    result = await world.action_finished
+    _expect(result[2] == false, "Incorrect code rejected")
+    world.perform_action("enter_code", "keypad", "4317")
+    result = await world.action_finished
+    _expect(result[2] == true, "Correct code accepted")
+    _expect(world.snapshot()["door_unlocked"] == true, "Door unlocks")
+    world.perform_action("use", "exit_door")
+    result = await world.action_finished
+    _expect(result[2] == true and world.snapshot()["escaped"] == true, "Eli escapes")
+    var saved: Dictionary = world.export_state()
+    world.reset_state()
+    _expect(world.snapshot()["escaped"] == false, "Room reset works")
+    world.restore_state(saved)
+    _expect(world.snapshot()["escaped"] == true, "Escape save restores correctly")
     if failures.is_empty():
-        print("GODOT SMOKE PASS: scene, flashlight, breaker and locked exit")
+        print("GODOT SMOKE PASS: scene, flashlight, breaker, code puzzle, escape and persistence")
         quit(0)
     else:
         printerr("GODOT SMOKE FAILED: ", failures)

@@ -40,3 +40,11 @@ First-person psychological horror surveillance game. Player guides Eli, a trappe
 ## Project ownership / repo plan
 
 Primary repo: `maloysius-wq/the-last-connection` (public; created by user). Use this repo as source of truth for all subsequent development.
+
+## 2026-11-19 continuation
+
+- GitHub Actions workflow added to main (`.github/workflows/ci.yml`): Python unit/HTTP and Godot 4.5.2 headless import/runtime smoke checks.
+- Phase 2 first-room escape implemented: breaker reveals clue, inspect note reveals keypad digits, validated `enter_code` action, exit unlock/escape, save/reset.
+- LLM JSON contract now includes optional semantic `argument` (four digits only for keypad), never free-form direct Godot commands.
+- Mock mode supports deterministic first-room walkthrough.
+- Next: inspect GitHub Actions results and fix Godot parsing/runtime issues; perform actual local Ollama behavior tests, then begin voice capture/transcription.
