@@ -25,7 +25,7 @@ def create_handler(agent: Agent, mode: str):
 
         def do_GET(self):
             if self.path == "/api/health":
-                return self._send(200, {"ok": True, "backend": mode, "model": MODEL if mode == "ollama" else "mock", "voice_ready": False})
+                return self._send(200, {"ok": True, "backend": mode, "model": MODEL if mode == "ollama" else ("tlc-eli" if mode == "llama.cpp" else "mock"), "voice_ready": False})
             return self._send(404, {"error": "Not found"})
 
         def do_POST(self):
