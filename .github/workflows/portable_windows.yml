@@ -51,8 +51,34 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $headers = @{ 'User-Agent' = 'TLC-portable'; Authorization = "Bearer $env:GH_TOKEN" }
-          $release = Invoke-RestMethod -Uri 'https://api.github.com/repos/ggml-org/llama.cpp/releases/latest' -Headers $headers
-          $asset = $release.assets | Where-Object { $_.name -match 'bin-win-cpu-x64\.zip$' } | Select-Object -First 1
+          $releases = Invoke-RestMethod -Uri 'https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=10' -Headers $headers
+          $asset = $releases | ForEach-Object { $_.assets } | Where-Object { $_.name -match 'bin-win-cpu-x64\.zip
+          if (!$asset) { throw 'No upstream Windows x64 CPU llama.cpp release ZIP found' }
+          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile "$env:RUNNER_TEMP\llama-cpu.zip"
+          New-Item -ItemType Directory -Force -Path 'dist/TheLastConnection/runtime/llama' | Out-Null
+          Expand-Archive "$env:RUNNER_TEMP\llama-cpu.zip" -DestinationPath 'dist/TheLastConnection/runtime/llama' -Force
+          $bin = Get-ChildItem 'dist/TheLastConnection/runtime/llama' -Recurse -Filter 'llama-server.exe' | Select-Object -First 1
+          if (!$bin) { throw 'llama-server.exe missing from upstream release' }
+          if ($bin.Directory.FullName -ne (Resolve-Path 'dist/TheLastConnection/runtime/llama').Path) {
+            Copy-Item "$($bin.Directory.FullName)\*" 'dist/TheLastConnection/runtime/llama' -Recurse -Force
+          }
+      - name: Include portable build guide
+        shell: pwsh
+        run: |
+          Copy-Item 'portable/README.md' 'dist/TheLastConnection/READ_ME_FIRST.md'
+          Set-Content -Encoding ascii -Path 'dist/TheLastConnection/portable-build.txt' -Value "No AI model bundled; select existing .gguf from D: on first launch. All game, runtime, logs, and saves live beside this file."
+          New-Item -ItemType Directory -Force -Path 'dist/TheLastConnection/LICENSES' | Out-Null
+          Invoke-WebRequest 'https://raw.githubusercontent.com/ggml-org/llama.cpp/master/LICENSE' -OutFile 'dist/TheLastConnection/LICENSES/llama.cpp-MIT.txt'
+          Invoke-WebRequest 'https://raw.githubusercontent.com/godotengine/godot/master/LICENSE.txt' -OutFile 'dist/TheLastConnection/LICENSES/Godot-MIT.txt'
+          if (!(Test-Path 'dist/TheLastConnection/TheLastConnection.exe')) { throw 'Missing launcher' }
+          if (!(Test-Path 'dist/TheLastConnection/runtime/llama/llama-server.exe')) { throw 'Missing model runtime' }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TheLastConnection-Windows-Portable-NoModel
+          path: dist/TheLastConnection
+          retention-days: 14
+          if-no-files-found: error
+ } | Select-Object -First 1
           if (!$asset) { throw 'No upstream Windows x64 CPU llama.cpp release ZIP found' }
           Invoke-WebRequest -Uri $asset.browser_download_url -OutFile "$env:RUNNER_TEMP\llama-cpu.zip"
           New-Item -ItemType Directory -Force -Path 'dist/TheLastConnection/runtime/llama' | Out-Null
