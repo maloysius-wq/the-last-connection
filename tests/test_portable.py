@@ -44,7 +44,7 @@ class TestPortable(unittest.TestCase):
     def test_configured_model_path_preferred(self):
         other = self.root / "other.gguf"
         other.write_bytes(b"GGUF2")
-        self.assertEqual(select_model(self.root, {"model_path": str(other)}), other)
+        self.assertEqual(select_model(self.root, {"model_path": str(other)}), other.resolve())
 
     def test_missing_configured_model_fails_explicitly(self):
         with self.assertRaises(PortableSetupError):
