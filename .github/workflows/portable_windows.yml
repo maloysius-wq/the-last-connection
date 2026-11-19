@@ -44,14 +44,34 @@ jobs:
           version: 4.5.2
           use-dotnet: false
           include-templates: true
-      - name: Godot editor import
-        run: godot --headless --path godot --import --quit
-      - name: Export self-contained Windows game
+      - name: Godot editor import (wait for Windows GUI process)
         shell: pwsh
         run: |
-          godot --headless --path godot --export-release "Windows Desktop" "$((Get-Location).Path)\dist\TheLastConnection\TheLastConnectionGame.exe"
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          if (!(Test-Path 'dist/TheLastConnection/TheLastConnectionGame.exe')) { throw 'Missing game executable' }
+          $godotExe = Get-ChildItem "$env:USERPROFILE\godot" -File -Filter 'Godot*_win64.exe' | Select-Object -First 1
+          if (!$godotExe) { throw "Godot Windows executable not found" }
+          $stdout = Join-Path $env:RUNNER_TEMP 'godot-import.out'
+          $stderr = Join-Path $env:RUNNER_TEMP 'godot-import.err'
+          $process = Start-Process -FilePath $godotExe.FullName -ArgumentList @('--headless', '--path', 'godot', '--import', '--quit') -PassThru -Wait -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+          if (Test-Path $stdout) { Get-Content $stdout }
+          if (Test-Path $stderr) { Get-Content $stderr }
+          if ($process.ExitCode -ne 0) { throw "Godot import exited $($process.ExitCode)" }
+      - name: Export self-contained Windows game (wait and verify)
+        shell: pwsh
+        run: |
+          $godotExe = Get-ChildItem "$env:USERPROFILE\godot" -File -Filter 'Godot*_win64.exe' | Select-Object -First 1
+          if (!$godotExe) { throw "Godot Windows executable not found" }
+          $target = Join-Path (Get-Location).Path 'dist\TheLastConnection\TheLastConnectionGame.exe'
+          New-Item -ItemType Directory -Path (Split-Path $target) -Force | Out-Null
+          $stdout = Join-Path $env:RUNNER_TEMP 'godot-export.out'
+          $stderr = Join-Path $env:RUNNER_TEMP 'godot-export.err'
+          $arguments = @('--headless', '--path', 'godot', '--export-release', '"Windows Desktop"', ('"' + $target + '"'))
+          $process = Start-Process -FilePath $godotExe.FullName -ArgumentList $arguments -PassThru -Wait -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+          if (Test-Path $stdout) { Get-Content $stdout }
+          if (Test-Path $stderr) { Get-Content $stderr }
+          if ($process.ExitCode -ne 0) { throw "Godot export exited $($process.ExitCode)" }
+          $game = Get-Item -LiteralPath $target -ErrorAction Stop
+          if ($game.PSIsContainer -or $game.Length -lt 1000000) { throw "Missing/invalid Godot exe: $($game.Length) bytes" }
+          Write-Host "Godot Windows executable exported: $($game.Length) bytes"
       - name: Download upstream CPU-only llama.cpp server
         shell: pwsh
         env:
