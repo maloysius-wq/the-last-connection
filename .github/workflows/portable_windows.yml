@@ -10,7 +10,14 @@ on:
       - 'godot/**'
       - 'data/**'
   push:
+    branches: [main]
     tags: ['portable-v*']
+    paths:
+      - '.github/workflows/portable_windows.yml'
+      - 'portable/**'
+      - 'ai_bridge/**'
+      - 'godot/**'
+      - 'data/**'
 
 permissions:
   contents: read
@@ -78,5 +85,5 @@ jobs:
         with:
           name: TheLastConnection-Windows-Portable-NoModel
           path: dist/TheLastConnection
-          retention-days: 14
+          retention-days: 90
           if-no-files-found: error
