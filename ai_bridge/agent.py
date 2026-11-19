@@ -79,6 +79,34 @@ class OllamaBackend:
             raise BackendUnavailable("Ollama returned an invalid structured response") from exc
 
 
+class LlamaCppBackend:
+    """Call a local llama.cpp server with a GGUF loaded from an arbitrary drive.
+
+    The launcher starts the server; this class never downloads or copies weights.
+    """
+    def __init__(self, endpoint: str = "http://127.0.0.1:8877/v1/chat/completions", model: str = "tlc-eli") -> None:
+        self.endpoint, self.model = endpoint, model
+
+    def respond(self, messages: list[dict[str, str]]) -> dict[str, Any]:
+        payload = {
+            "model": self.model, "messages": messages, "stream": False,
+            "temperature": 0.3, "max_tokens": 400,
+            "response_format": {"type": "json_schema", "schema": RESPONSE_SCHEMA},
+        }
+        req = request.Request(self.endpoint, json.dumps(payload).encode("utf-8"),
+                              {"Content-Type": "application/json"}, method="POST")
+        try:
+            with request.urlopen(req, timeout=300) as res:
+                reply = json.loads(res.read(1_000_000))
+            content = reply["choices"][0]["message"]["content"]
+            parsed = json.loads(content)
+            if not isinstance(parsed, dict):
+                raise ValueError("Response must be an object")
+            return parsed
+        except (OSError, error.URLError, ValueError, KeyError, TypeError, IndexError) as exc:
+            raise BackendUnavailable("Local llama.cpp server is unavailable or returned invalid JSON") from exc
+
+
 class MockBackend:
     """Explicit no-model demo mode; never presented as actual AI."""
     def respond(self, messages: list[dict[str, str]]) -> dict[str, Any]:
