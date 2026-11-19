@@ -81,9 +81,17 @@ jobs:
           Invoke-WebRequest 'https://raw.githubusercontent.com/godotengine/godot/master/LICENSE.txt' -OutFile 'dist/TheLastConnection/LICENSES/Godot-MIT.txt'
           if (!(Test-Path 'dist/TheLastConnection/TheLastConnection.exe')) { throw 'Missing launcher' }
           if (!(Test-Path 'dist/TheLastConnection/runtime/llama/llama-server.exe')) { throw 'Missing model runtime' }
+          $game = Get-Item -LiteralPath 'dist/TheLastConnection/TheLastConnectionGame.exe' -Force -ErrorAction Stop
+          if ($game.PSIsContainer -or $game.Length -lt 1000000) { throw "Exported game exe is missing or invalid: $($game.Length) bytes" }
+          # Windows export template can retain the Hidden file attribute; ensure
+          # artifact upload includes the executable rather than silently skipping it.
+          Write-Host "Exported game: $($game.FullName) ($($game.Length) bytes), attributes $($game.Attributes)"
+          $game.Attributes = $game.Attributes -band (-bnot [System.IO.FileAttributes]::Hidden)
+          if (!(Test-Path -PathType Leaf 'dist/TheLastConnection/TheLastConnectionGame.exe')) { throw 'Game exe disappeared before upload' }
       - uses: actions/upload-artifact@v4
         with:
           name: TheLastConnection-Windows-Portable-NoModel
           path: dist/TheLastConnection
           retention-days: 90
           if-no-files-found: error
+          include-hidden-files: true
