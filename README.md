@@ -71,7 +71,7 @@ The local bridge stores conversation history and outcome facts as JSON under `ai
 - Voice input/output, lip sync, finished character animations, and advanced atmosphere effects remain later phases.
 - Eli uses placeholder geometry, not finished character artwork.
 - Local LLM latency depends on CPU/GPU and model selection. No latency benchmarks yet.
-- Code was unit-tested in Python, but Godot was not available in the development environment for an editor/runtime check. Import and test the project in Godot before assuming it runs flawlessly.
+- The Python test suite (18 tests) and a real headless Godot 4.5.2 smoke test passed in GitHub Actions on PR #1. The CI test validates gameplay logic but not visual quality, microphone hardware, or actual Ollama model behavior.
 - Single active request per terminal; there is no interruption or multistep planner yet.
 - Model output validation is deliberately strict; invalid or undiscovered targets are blocked.
 
