@@ -1,0 +1,36 @@
+name: Prototype validation
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Unit and bridge HTTP tests
+        run: python -m unittest discover -s tests -v
+
+  godot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Godot
+        uses: chickensoft-games/setup-godot@v2
+        with:
+          version: 4.5.2
+          use-dotnet: false
+          include-templates: false
+      - name: Import game assets and scripts
+        run: godot --headless --path godot --import --quit
+      - name: Run real engine smoke tests
+        run: godot --headless --path godot --script res://tests/smoke_test.gd
