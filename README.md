@@ -113,3 +113,18 @@ Recent dialogue and authoritative observations are compacted before sending them
 The `TheLastConnection-Windows-GPU-Portable` artifact bundles **Vulkan and CPU llama.cpp builds**. It tries full Vulkan GPU offload, partial offload, then CPU automatically. The selected backend is written to `logs/runtime-status.json`. Vulkan acceleration is supported on many NVIDIA, AMD and Intel GPU drivers; actual improvement depends on hardware and VRAM. On a computer without a compatible GPU it still runs on CPU.
 
 For another computer, extract the complete portable ZIP to a writable folder. Existing GGUF files can be selected without copying to the system drive. When no model exists, the first-run launcher offers a **user-approved one-time** Qwen3-4B-Instruct-2507 Q4_K_M download (~2.5 GB) into the game's `models/` directory. Local inference stays offline afterward. The game itself needs no installed Ollama, LocalForge, Python or Godot. See `portable/README.md` for migration instructions.
+
+
+## Update from inside the Windows game
+
+Once you install the updater-enabled portable build, click **CHECK FOR UPDATES**
+in the surveillance terminal. The game checks the newest public GitHub
+Release on demand, shows the update and download size, and asks you to
+confirm **Install Update**. The game closes, an independent updater downloads
+the official release ZIP, checks its SHA-256 checksum, preserves saves/models/
+settings and restarts the updated game.
+
+The first updater-enabled build must be downloaded and extracted manually
+once. After that, GitHub Releases are permanent, publicly accessible update
+sources. The game does not silently download updates or move GGUF models.
+More detail: [portable/README.md](portable/README.md).

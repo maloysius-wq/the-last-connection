@@ -112,3 +112,26 @@ Primary repo: `maloysius-wq/the-last-connection` (public; created by user). Use 
 - Installer/runner first launch supports existing GGUF path or explicit single-file download (~2.5GB) into game/models. The user's existing D-drive model remains untouched. When transferring to a new PC, copy ZIP and optionally bring your .gguf into models for fully offline setup.
 - Launcher records selected backend in logs/runtime-status.json. Note: backend selection is not proof of actual GPU-layer offload; inspect logs/llama-server.log for layer offload count during local playtests.
 - Future priority: user checks initial response time, mode, Vulkan GPU logs, compatibility and memory footprint, then continue voice input/output. Test on real hardware is required before promises about speed.
+
+
+## In-game GitHub release updater (2026-11-19)
+
+- User requested a Check for Updates button within the portable Windows game.
+- Added explicit opt-in check via the localhost bridge and Godot confirmation
+  UI. No periodic checks, background polling or silent installations.
+- Added GitHub Release publishing in Windows CI on main-branch pushes:
+  a permanently downloadable ZIP, SHA256SUMS.txt, and exact build-info.json
+  version tag tied to the full source commit SHA. PR builds remain artifacts.
+- Godot confirms an install request, saves progress and exits. The launcher
+  stops its AI/bridge subprocesses and starts a self-contained updater from
+  a sibling location. Updater waits for the parent process to exit, retrieves
+  official release assets, validates checksum and ZIP file names/binaries,
+  swaps the install directory and restores user_data/models/config/logs.
+- Old install is restored on failure during file swap; no GGUF copy to C:.
+  The updater restarts the portable launcher after install.
+- First updater-enabled build requires one manual download. Future builds
+  use the in-game update channel; no GitHub login required for public releases.
+- Add regression tests for release metadata, checksum mismatch, traversal,
+  state preservation, no silent installs, HTTP confirmation.
+- Validate actual Windows packaging, Godot UI smoke, and published release
+  asset before calling it ready. Normal gameplay remains offline.

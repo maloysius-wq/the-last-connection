@@ -21,6 +21,11 @@ var log_view: RichTextLabel
 var status: Label
 var send_button: Button
 var http: HTTPRequest
+var update_http: HTTPRequest
+var update_button: Button
+var update_dialog: ConfirmationDialog
+var update_stage := ""
+var available_update_tag := ""
 var session_id: String
 var request_stage := "idle"
 var action_context := {"action": "", "target": ""}
@@ -32,6 +37,14 @@ func _ready() -> void:
     http.timeout = 310.0
     add_child(http)
     http.request_completed.connect(_on_http_completed)
+    update_http = HTTPRequest.new()
+    update_http.timeout = 30.0
+    add_child(update_http)
+    update_http.request_completed.connect(_on_update_response)
+    update_dialog = ConfirmationDialog.new()
+    update_dialog.title = "Update The Last Connection?"
+    update_dialog.confirmed.connect(_install_update)
+    add_child(update_dialog)
     world.action_finished.connect(_on_world_action_finished)
     _message("SYSTEM", "Connected to CAM 01. Type an instruction to talk to Eli.")
     _message("SYSTEM", "Run the Python bridge on localhost:8765 first. Voice is scheduled for Phase 3.")
@@ -105,6 +118,10 @@ func _build_ui() -> void:
     send_button.text = "TRANSMIT"
     send_button.pressed.connect(_send_pressed)
     right.add_child(send_button)
+    update_button = Button.new()
+    update_button.text = "CHECK FOR UPDATES"
+    update_button.pressed.connect(_check_for_updates)
+    right.add_child(update_button)
     var new_game := Button.new()
     new_game.text = "NEW SESSION / RESET ROOM"
     new_game.pressed.connect(_new_game)
@@ -178,6 +195,75 @@ func _idle() -> void:
     send_button.disabled = false
     input.editable = true
     input.grab_focus()
+
+func _check_for_updates() -> void:
+    if not update_stage.is_empty():
+        return
+    update_button.disabled = true
+    update_button.text = "CHECKING GITHUB..."
+    update_stage = "check"
+    var result := update_http.request(BRIDGE_URL + "/api/update/check")
+    if result != OK:
+        _message("SYSTEM", "Couldn't start update check (error " + str(result) + ").")
+        _update_idle()
+
+
+func _install_update() -> void:
+    if available_update_tag.is_empty() or request_stage != "idle" or world.busy:
+        _message("SYSTEM", "Finish Eli's current action before installing an update.")
+        return
+    update_stage = "install"
+    update_button.disabled = true
+    update_button.text = "PREPARING UPDATE..."
+    var payload := JSON.stringify({"tag": available_update_tag, "confirm": true})
+    var headers := PackedStringArray(["Content-Type: application/json", "X-TLC-Update: 1"])
+    var result := update_http.request(BRIDGE_URL + "/api/update/request", headers,
+        HTTPClient.METHOD_POST, payload)
+    if result != OK:
+        _message("SYSTEM", "Couldn't request the update (error " + str(result) + ").")
+        _update_idle()
+
+
+func _on_update_response(result: int, response_code: int, _headers: PackedStringArray,
+        body: PackedByteArray) -> void:
+    var reply = JSON.parse_string(body.get_string_from_utf8())
+    if result != HTTPRequest.RESULT_SUCCESS or response_code != 200 or typeof(reply) != TYPE_DICTIONARY:
+        var detail := str(reply.get("error", "") if typeof(reply) == TYPE_DICTIONARY else "")
+        if detail.is_empty():
+            detail = "Couldn't contact the local updater. Check your internet connection."
+        _message("SYSTEM", "Update: " + detail.left(250))
+        _update_idle()
+        return
+    if update_stage == "check":
+        if not bool(reply.get("available", false)):
+            _message("SYSTEM", "You're on the newest published game version.")
+            _update_idle()
+            return
+        available_update_tag = str(reply.get("latest", ""))
+        var megabytes := int(float(reply.get("size", 0)) / 1000000.0)
+        update_dialog.dialog_text = (
+            "A new version is available: " + str(reply.get("title", available_update_tag)) +
+            "\n\nDownload size: approximately " + str(megabytes) + " MB." +
+            "\n\nInstalling will close the game, download and verify the update, preserve saves and model files, then restart." +
+            "\n\nInstall this update now?"
+        )
+        _update_idle()
+        update_dialog.popup_centered()
+    elif update_stage == "install":
+        if bool(reply.get("ok", false)):
+            _message("SYSTEM", "Closing the game to install the verified update...")
+            _save()
+            get_tree().quit()
+        else:
+            _message("SYSTEM", "The update wasn't accepted. Please try checking again.")
+            _update_idle()
+
+
+func _update_idle() -> void:
+    update_stage = ""
+    update_button.disabled = false
+    update_button.text = "CHECK FOR UPDATES"
+
 
 func _new_game() -> void:
     if request_stage != "idle" or world.busy:

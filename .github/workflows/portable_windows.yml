@@ -20,7 +20,7 @@ on:
       - 'data/**'
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build-windows:
@@ -39,6 +39,15 @@ jobs:
         shell: pwsh
         run: |
           pyinstaller --noconfirm --clean --onedir --windowed --name TheLastConnection --paths . --add-data "data/characters/eli.json;data/characters" portable/launcher.py
+      - name: Package independent Windows updater helper
+        shell: pwsh
+        run: |
+          pyinstaller --noconfirm --clean --onefile --windowed --name TheLastConnectionUpdater --paths . portable/updater.py
+          Copy-Item 'dist/TheLastConnectionUpdater.exe' 'dist/TheLastConnection/TheLastConnectionUpdater.exe' -Force
+          if (!(Test-Path 'dist/TheLastConnection/TheLastConnectionUpdater.exe')) { throw 'Missing updater helper' }
+          $updater = Join-Path (Get-Location).Path 'dist/TheLastConnection/TheLastConnectionUpdater.exe'
+          $proc = Start-Process -FilePath $updater -ArgumentList @('--help') -PassThru -Wait
+          if ($proc.ExitCode -ne 0) { throw "Packaged updater did not launch successfully: $($proc.ExitCode)" }
       - uses: chickensoft-games/setup-godot@v2
         with:
           version: 4.5.2
@@ -102,15 +111,18 @@ jobs:
             }
             Write-Host "$backend llama.cpp server packaged ($((Get-Item $server).Length) bytes)"
           }
-      - name: Include portable build guide
+      - name: Include portable guide and exact version metadata
         shell: pwsh
         run: |
+          @{"tag" = "portable-$env:GITHUB_SHA"; "commit" = "$env:GITHUB_SHA"; "channel" = "$env:GITHUB_REF_NAME"} | ConvertTo-Json -Compress | Set-Content -Encoding utf8 'dist/TheLastConnection/build-info.json'
           Copy-Item 'portable/README.md' 'dist/TheLastConnection/READ_ME_FIRST.md'
           Set-Content -Encoding ascii -Path 'dist/TheLastConnection/portable-build.txt' -Value "No AI model bundled. First launch selects an existing GGUF or downloads Qwen3 Q4_K_M (~2.5GB) into models/ with approval. GPU Vulkan is tried first, CPU fallback included."
           New-Item -ItemType Directory -Force -Path 'dist/TheLastConnection/LICENSES' | Out-Null
           Invoke-WebRequest 'https://raw.githubusercontent.com/ggml-org/llama.cpp/master/LICENSE' -OutFile 'dist/TheLastConnection/LICENSES/llama.cpp-MIT.txt'
           Invoke-WebRequest 'https://raw.githubusercontent.com/godotengine/godot/master/LICENSE.txt' -OutFile 'dist/TheLastConnection/LICENSES/Godot-MIT.txt'
           if (!(Test-Path 'dist/TheLastConnection/TheLastConnection.exe')) { throw 'Missing launcher' }
+          if (!(Test-Path 'dist/TheLastConnection/TheLastConnectionUpdater.exe')) { throw 'Missing updater' }
+          if (!(Test-Path 'dist/TheLastConnection/build-info.json')) { throw 'Missing version metadata' }
           foreach ($backend in @('cpu','vulkan')) {
             if (!(Test-Path "dist/TheLastConnection/runtime/llama/$backend/llama-server.exe")) { throw "Missing $backend model runtime" }
           }
@@ -128,3 +140,22 @@ jobs:
           retention-days: 90
           if-no-files-found: error
           include-hidden-files: true
+      - name: Publish permanent versioned GitHub Release for in-game updates
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $archive = Join-Path (Get-Location).Path 'TheLastConnection-Windows-Portable.zip'
+          if (Test-Path $archive) { Remove-Item $archive -Force }
+          [System.IO.Compression.ZipFile]::CreateFromDirectory(
+            (Resolve-Path 'dist/TheLastConnection').Path, $archive,
+            [System.IO.Compression.CompressionLevel]::Optimal, $false)
+          $hash = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  TheLastConnection-Windows-Portable.zip" | Set-Content -Encoding utf8 'SHA256SUMS.txt'
+          $tag = "portable-$env:GITHUB_SHA"
+          gh release create $tag $archive 'SHA256SUMS.txt' --target $env:GITHUB_SHA --latest `
+            --title "The Last Connection | $($env:GITHUB_SHA.Substring(0, 8))" `
+            --notes "Windows portable build with in-game updater, Vulkan GPU support, CPU fallback, and local model setup. No GGUF weights bundled."
+          if ($LASTEXITCODE -ne 0) { throw "Failed to publish permanent GitHub release assets" }

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -18,6 +19,7 @@ from ai_bridge.agent import Agent, LlamaCppBackend, SessionStore
 from ai_bridge.server import create_handler
 from portable.runtime import (RuntimeSetupError, download_default_model, runtime_candidates,
                               start_model_server, MODEL_FILENAME)
+from portable.update_service import UpdateService, TAG_RE
 from http.server import ThreadingHTTPServer
 
 
@@ -191,6 +193,31 @@ def choose_or_install_model(base: Path, config: dict,
     raise PortableSetupError("Model setup cancelled. Nothing was downloaded.")
 
 
+def start_update_helper(base: Path, tag: str) -> None:
+    """Run independent updater outside the install folder before launcher exits."""
+    if not TAG_RE.fullmatch(tag):
+        raise PortableSetupError("Invalid update identifier. Check for updates again.")
+    updater = base / "TheLastConnectionUpdater.exe"
+    if not updater.is_file():
+        raise PortableSetupError("Updater executable is missing. Re-extract the complete portable ZIP.")
+    helper_dir = base.parent / ".TheLastConnection-updater"
+    helper_dir.mkdir(parents=True, exist_ok=True)
+    helper = helper_dir / "TheLastConnectionUpdater.exe"
+    shutil.copy2(updater, helper)
+    # PyInstaller onefile must unpack outside the folder we're about to swap.
+    temp = base.parent / ".TheLastConnection-update-temp"
+    temp.mkdir(parents=True, exist_ok=True)
+    helper_env = os.environ.copy()
+    helper_env["TEMP"] = str(temp)
+    helper_env["TMP"] = str(temp)
+    subprocess.Popen([
+        str(helper), "--base", str(base), "--tag", tag,
+        "--parent-pid", str(os.getpid()),
+    ], cwd=str(base.parent), env=helper_env,
+       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+
+
+
 def main() -> int:
     base = app_directory()
     saves = base / "user_data"
@@ -225,6 +252,11 @@ def main() -> int:
     bridge = None
     bridge_thread = None
     splash = None
+    game_exit_code = 0
+    pending_update = base / "updates" / "request.json"
+    # Do not act on stale requests from a prior interrupted session.
+    if pending_update.exists():
+        pending_update.unlink()
     try:
         splash = make_loading_window()
         def loading_notice(message: str) -> None:
@@ -246,13 +278,14 @@ def main() -> int:
             splash = None
         agent = Agent(LlamaCppBackend(), SessionStore(saves / "sessions"),
                       resource_directory() / "data" / "characters" / "eli.json")
-        bridge = ThreadingHTTPServer(("127.0.0.1", 8765), create_handler(agent, "llama.cpp"))
+        bridge = ThreadingHTTPServer(("127.0.0.1", 8765),
+                                     create_handler(agent, "llama.cpp", updater=UpdateService(base)))
         bridge_thread = threading.Thread(target=bridge.serve_forever, daemon=True)
         bridge_thread.start()
         with (logs / "game.log").open("a", encoding="utf-8") as game_log:
             child = subprocess.Popen([str(game)], cwd=str(base), env=env, stdout=game_log,
                                      stderr=subprocess.STDOUT)
-            return child.wait()
+            game_exit_code = child.wait()
     finally:
         if splash:
             splash.destroy()
@@ -268,6 +301,20 @@ def main() -> int:
             except subprocess.TimeoutExpired:
                 server_proc.kill()
         model_log.close()
+
+    # All game/AI processes and their file handles are now stopped. The separate
+    # helper can replace Windows binaries only after this launcher fully exits.
+    if pending_update.is_file():
+        try:
+            data = json.loads(pending_update.read_text(encoding="utf-8"))
+            start_update_helper(base, data.get("tag", ""))
+            pending_update.unlink()
+            return 0
+        except (ValueError, OSError, PortableSetupError) as exc:
+            notify("Couldn't start the updater; your game is unchanged:\n\n" + str(exc),
+                   error=True)
+            return 1
+    return game_exit_code
 
 
 if __name__ == "__main__":
