@@ -299,3 +299,11 @@ Primary repo: `maloysius-wq/the-last-connection` (public; created by user). Use 
 - `Agent._acknowledge(survey)` now gives Eli's brief first-person room description from the post-survey **verified Godot snapshot**. No second LLM call, hidden note code, invented observations, or false success.
 - Added strict opt-in parser result for malformed compound instructions. When the parser recognizes but cannot fully understand a sequence, `Agent.decide` asks for the steps again and **does not** fall back to a one-action model/legacy guess. Standalone conversation and earlier single-action compatibility remain.
 - Exact screenshot regression plus paraphrases, complete survey acknowledgement, guard against partial actions and unsupported dialogue requests, and prior engine queue/updater/focus checks require green Python + Godot + Windows CI. Real local Windows playtest is still required. Preserve D-drive model/saves and in-app updater behavior.
+
+## 2026-11-20 verified screenshot queue fix / portable release
+
+- PR #18 merged to main as `a71f1aeb8014bcad2a82b3ecf5bdcf69bf5ed724`. Python + Godot headless PR checks both passed; Windows GPU/CPU portable PR packaging passed.
+- Main validation run `44815922062` and Windows packaging/release run `44815921904` both succeeded.
+- Permanent release `portable-a71f1aeb8014bcad2a82b3ecf5bdcf69bf5ed724` published at `https://github.com/maloysius-wq/the-last-connection/releases/latest`, including `TheLastConnection-Windows-Portable.zip` and `SHA256SUMS.txt`. No change to installed GGUF requirements or the in-game update mechanism.
+- Exact real screenshot command now produces take flashlight -> use flashlight ON -> survey room, followed by Eli's verified first-person room report with zero additional model inference. Incompletely understood *compound* commands halt and request clarification; incomplete single commands still preserve prior conversational/clarification behavior.
+- User still needs to verify on their real Windows local GGUF that the in-game Check for Updates works, Eli visibly surveys, and the final spoken report accurately matches the displayed scene. CI validates headless Godot and packaging, not interactive Windows visual quality or model performance.
