@@ -770,6 +770,15 @@ class Agent:
         described = mentioned_targets(speech)
         if described and (described - {target}):
             return ""
+        # Even on the same prop or in the room, Eli must never promise a
+        # SECOND physical action that the one-step plan does not contain.
+        if re.search(
+                r"\b(?:and\s+(?:then\s+)?|then\s+|after\s+that\s+)"
+                r"(?:i['’]ll\s+|i\s+will\s+)?"
+                r"(?:grab|pick|take|turn|switch|flip|open|unlock|"
+                r"look\s+around|inspect|walk|go|move|read|scan|use)\b",
+                speech, re.I):
+            return ""
         # The line must describe the action that will actually be attempted,
         # not simply promise an unrelated operation or say "Okay, what next".
         cues = {
