@@ -28,6 +28,10 @@ NEGATION = re.compile(r"\b(?:do\s+not|don't|dont|never|not\s+to|"
                       r"shouldn't|should\s+not|stop\s+(?:touching|using|"
                       r"opening|pressing|turning|picking|grabbing|trying))\b", re.I)
 PRONOUN = re.compile(r"\b(?:it|that|this|one|there|them)\b", re.I)
+# Colloquial suggestions can be real directives; these are exceptions to the
+# generic question/negation safeguard, not a command-phrase dictionary.
+SUGGESTION_REQUEST = re.compile(
+    r"^\s*(?:why\s+don't\s+you|how\s+about(?!\s+if\b))\b", re.I)
 
 # Limit output structure, not Eli's in-character phrasing.
 SCHEMA: dict[str, Any] = {
@@ -102,12 +106,17 @@ def _non_command_context(message: str, start: int, evidence: str) -> bool:
     # turn or an unrelated earlier instruction.
     boundary = max(message.rfind(x, 0, start) for x in ".!?;\n")
     preceding = message[boundary + 1:start]
-    if HYPOTHETICAL.search(preceding + evidence):
+    context = preceding + evidence
+    suggested_directive = bool(SUGGESTION_REQUEST.search(context))
+    if HYPOTHETICAL.search(context) and not suggested_directive:
         return True
     # A negated imperative cannot be converted into a positive engine action.
     # Stop at a comma: "don't touch the door, grab the light" has a separate
     # positive command; neither one authorizes acting on the *door*.
     local = preceding.rsplit(",", 1)[-1] + evidence
+    if suggested_directive:
+        # "Why don't you try..." is a positive request, not a prohibition.
+        local = SUGGESTION_REQUEST.sub("", local, count=1)
     return bool(NEGATION.search(local))
 
 
