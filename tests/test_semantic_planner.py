@@ -174,6 +174,22 @@ class SemanticPlannerTests(unittest.TestCase):
             "action", [step("move_to", "keypad", "Stop by the keypad")]))
         self.assertEqual(result.target, "keypad")
 
+    def test_indirect_suggestion_is_a_request_not_a_hypothetical(self):
+        result = self.decide("Why don't you go over to the electrical panel?", proposed(
+            "action", [step("move_to", "breaker_box",
+                            "Why don't you go over to the electrical panel")]))
+        self.assertEqual(result.target, "breaker_box")
+
+    def test_how_about_looking_around_is_accepted(self):
+        result = self.decide("How about looking around for clues?", proposed(
+            "action", [step("survey", "room", "How about looking around for clues")]))
+        self.assertEqual(result.action, "survey")
+
+    def test_how_about_if_remains_hypothetical(self):
+        result = self.decide("How about if you opened the door?", proposed(
+            "action", [step("use", "exit_door", "opened the door")]))
+        self.assertEqual(result.action, "wait")
+
     def test_ambiguous_light_is_not_assumed_to_be_flashlight(self):
         result = self.decide("Turn on the light.", proposed(
             "action", [step("use", "flashlight", "Turn on the light", "on")]))
