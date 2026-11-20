@@ -83,6 +83,41 @@ class TestFlashlightReferences(unittest.TestCase):
         self.assertEqual(backend.conversations + backend.decisions, 2,
                          "No second model inference during Godot outcome")
 
+    def test_upgrading_existing_session_resolves_last_saved_eli_reply(self):
+        # Older versions only persisted history/focus and could leave the
+        # focus on the breaker even after Eli described the flashlight.
+        self.store.save("upgraded", {
+            "focus": "breaker_box",
+            "history": [
+                {"role": "user", "content": "Can you see a light?"},
+                {"role": "assistant", "content":
+                    '{"speech":"There is a flashlight on the desk. Do you see it?",'
+                    '"action":"wait","target":""}'},
+            ],
+            "facts": [],
+        })
+        backend = NarrativeBackend([])
+        result = self.agent(backend).decide(
+            "upgraded", "I can see it. Please pick that up and turn it on.", room())
+        self.assertEqual((result.action, result.target, result.argument),
+                         ("use", "flashlight", "on"))
+        self.assertEqual(self.store.load("upgraded")["referent"], "flashlight")
+
+    def test_upgrading_ambiguous_history_does_not_use_stale_focus(self):
+        self.store.save("old_ambiguous", {
+            "focus": "breaker_box",
+            "history": [
+                {"role": "assistant", "content":
+                    '{"speech":"I can see the flashlight and keypad.","action":"wait"}'}
+            ],
+            "facts": [],
+        })
+        backend = NarrativeBackend(["I'm not sure which object you mean."])
+        result = self.agent(backend).decide(
+            "old_ambiguous", "Please pick that up and turn it on.", room())
+        self.assertEqual(result.action, "wait")
+        self.assertEqual(self.store.load("old_ambiguous")["referent"], "")
+
     def test_multiple_elis_objects_do_not_guess_which_that(self):
         backend = NarrativeBackend([
             "There is a flashlight near the desk and the keypad by the door.",
