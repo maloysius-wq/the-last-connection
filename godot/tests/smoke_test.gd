@@ -214,6 +214,98 @@ func _run() -> void:
         "Eli physically reaches desk after routed command")
     _expect("picked up" in str(routed_outcome[3]),
         "Routed action emits an authoritative pickup observation")
+    # Full queued player order: take flashlight, switch it on, survey room.
+    # Inject only one /api/decide response. Simulate the tiny /api/outcome
+    # acknowledgments to avoid a real localhost bridge in headless CI.
+    world.reset_state()
+    app.set("request_stage", "decide")
+    var three_steps := [
+        {"action": "take", "target": "flashlight", "argument": ""},
+        {"action": "use", "target": "flashlight", "argument": "on"},
+        {"action": "survey", "target": "room", "argument": ""},
+    ]
+    var queue_response := {
+        "speech": "I'll pick it up, switch it on, then look around.",
+        "action": "take", "target": "flashlight",
+        "argument": "", "actions": three_steps,
+    }
+    app.call("_on_http_completed", HTTPRequest.RESULT_SUCCESS, 200,
+        PackedStringArray(), JSON.stringify(queue_response).to_utf8_buffer())
+    _expect(str(app.get("request_stage")) == "action",
+        "Queued response dispatches first step, not a conversational wait")
+    _expect(app.get("queued_actions").size() == 3,
+        "All three requested actions are queued")
+    _expect("1/3" in str(app.get("status").text), "Queue shows progress 1 of 3")
+    var queue_result: Array = await world.action_finished
+    _expect(queue_result[0] == "take" and queue_result[2] == true,
+        "First queued step physically picks up flashlight")
+    _expect(world.snapshot()["inventory"].has("flashlight"),
+        "Flashlight is genuinely in inventory before step two")
+    _expect(world.snapshot()["flashlight_on"] == false,
+        "Pickup alone does not claim flashlight was switched on")
+    app.set("request_stage", "outcome")
+    app.set("last_step_succeeded", queue_result[2])
+    app.call("_on_http_completed", HTTPRequest.RESULT_SUCCESS, 200,
+        PackedStringArray(), JSON.stringify({"speech": "Got it."}).to_utf8_buffer())
+    _expect("2/3" in str(app.get("status").text),
+        "Only after a confirmed successful pickup does step two begin")
+    queue_result = await world.action_finished
+    _expect(queue_result[0] == "use" and queue_result[2] == true,
+        "Second queued step switches on the flashlight")
+    _expect(world.snapshot()["flashlight_on"] == true,
+        "Flashlight is physically on before survey starts")
+    app.set("request_stage", "outcome")
+    app.set("last_step_succeeded", queue_result[2])
+    app.call("_on_http_completed", HTTPRequest.RESULT_SUCCESS, 200,
+        PackedStringArray(), JSON.stringify({"speech": "It's on."}).to_utf8_buffer())
+    _expect("3/3" in str(app.get("status").text),
+        "Final survey runs only after light was confirmed on")
+    queue_result = await world.action_finished
+    _expect(queue_result[0] == "survey" and queue_result[2] == true,
+        "Room survey is a real in-engine action")
+    _expect("looks around" in str(queue_result[3]) and
+        "flashlight is on" in str(queue_result[3]).to_lower(),
+        "Room survey describes verified, illuminated room")
+    _expect(not str(queue_result[3]).contains("4317"),
+        "Survey never reveals hidden note code without inspecting it")
+    app.set("request_stage", "outcome")
+    app.set("last_step_succeeded", queue_result[2])
+    app.call("_on_http_completed", HTTPRequest.RESULT_SUCCESS, 200,
+        PackedStringArray(), JSON.stringify({"speech": "That's what I can see."}).to_utf8_buffer())
+    _expect(str(app.get("request_stage")) == "idle" and
+        app.get("queued_actions").is_empty(),
+        "Completed sequence clears queue and returns terminal to Ready")
+    _expect("Sequence complete: 3 of 3" in str(app.get("log_view").get_parsed_text()),
+        "Terminal confirms exactly three completed steps")
+
+    # When a real Godot action fails, later queued actions must NEVER run.
+    world.reset_state()
+    app.set("request_stage", "decide")
+    var stop_steps := [
+        {"action": "use", "target": "exit_door", "argument": ""},
+        {"action": "use", "target": "breaker_box", "argument": ""}
+    ]
+    app.call("_on_http_completed", HTTPRequest.RESULT_SUCCESS, 200,
+        PackedStringArray(), JSON.stringify({
+            "speech": "I'll try the door, then the breaker.",
+            "action": "use", "target": "exit_door",
+            "argument": "", "actions": stop_steps
+        }).to_utf8_buffer())
+    var stop_result: Array = await world.action_finished
+    _expect(stop_result[0] == "use" and stop_result[1] == "exit_door"
+        and stop_result[2] == false, "Locked door fails first queued action")
+    app.set("request_stage", "outcome")
+    app.set("last_step_succeeded", stop_result[2])
+    app.call("_on_http_completed", HTTPRequest.RESULT_SUCCESS, 200,
+        PackedStringArray(), JSON.stringify({"speech": "The door is locked."}).to_utf8_buffer())
+    _expect(str(app.get("request_stage")) == "idle" and
+        app.get("queued_actions").is_empty(),
+        "Failed step cancels the remaining queue")
+    _expect(world.snapshot()["lights_on"] == false,
+        "Breaker is not touched after the locked door failure")
+    _expect("Sequence stopped at step 1 of 2" in
+        str(app.get("log_view").get_parsed_text()),
+        "Terminal visibly reports cancelled later steps")
     if failures.is_empty():
         print("GODOT SMOKE PASS: scene, flashlight, breaker, code puzzle, escape and persistence")
         quit(0)
