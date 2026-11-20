@@ -20,7 +20,7 @@ TARGETS = (
 )
 # Longer, multiword phrases first so "pick up" is correctly recognized.
 VERBS = (
-    ("enter_code", r"\b(?:enter|type|punch in|key in|input|submit)\b.{0,35}\b(?:code|digits?|numbers?|keypad)\b|\b(?:code|digits?)\b.{0,20}\b(?:enter|type|try)\b"),
+    ("enter_code", r"\b(?:enter|type|punch in|key in|input|submit)\b.{0,45}\b(?:code|digits?|numbers?|key\s*pad|pin\s*pad)\b|\b(?:code|digits?)\b.{0,20}\b(?:enter|type|try)\b"),
     ("take", r"\b(?:pick up|pickup|grab|take(?!\s+(?:a\s+)?(?:closer\s+)?look)|collect|retrieve|pick|fetch)\b"),
     ("use", r"\b(?:turn|switch|flip|toggle|activate|use|open|unlock|power up|switch on|switch off)\b"),
     ("inspect", r"\b(?:take\s+(?:a\s+)?(?:closer\s+)?look(?:\s+at)?|"
