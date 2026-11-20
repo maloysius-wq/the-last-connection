@@ -96,6 +96,21 @@ class TestGroundedConversation(unittest.TestCase):
         self.assertIn("lever is down", result.speech.lower())
         self.assertNotIn("keypad", result.speech.lower())
 
+    def test_what_do_you_see_uses_confirmed_nearby_location(self):
+        backend = SplitBackend(dialogue="The keypad is glowing.")
+        reply = self.agent(backend).decide(
+            "look", "What do you see?", world(at="breaker_box"))
+        self.assertIn("breaker box", reply.speech.lower())
+        self.assertNotIn("keypad", reply.speech.lower())
+        self.assertEqual(len(backend.calls), 0)
+
+    def test_autobiographical_memory_is_not_suppressed(self):
+        backend = SplitBackend(dialogue="I went to school nearby. I don't know how I got here.")
+        result = self.agent(backend).decide(
+            "past", "What do you remember about your childhood?", world(at="breaker_box"))
+        self.assertIn("went to school", result.speech)
+        self.assertIn("how I got here", result.speech)
+
     def test_conversation_is_free_prose_not_forced_json(self):
         backend = SplitBackend(dialogue="I'm scared, but I'm trying to keep my head.")
         result = self.agent(backend).decide("chat", "Are you scared?", world(at="breaker_box"))
