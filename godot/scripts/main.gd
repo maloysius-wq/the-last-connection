@@ -53,6 +53,7 @@ func _ready() -> void:
     _message("SYSTEM", "Connected to CAM 01. Type an instruction to talk to Eli.")
     _message("SYSTEM", "Run the Python bridge on localhost:8765 first. Voice is scheduled for Phase 3.")
     call_deferred("_restore_input_focus")
+    call_deferred("_refocus_on_next_frame")
 
 func _build_ui() -> void:
     var background := ColorRect.new()
@@ -302,7 +303,10 @@ func _idle() -> void:
     request_stage = "idle"
     status.text = "Ready"
     send_button.disabled = false
-    call_deferred("_restore_input_focus")
+    # Returning to READY must make the editor usable immediately, while an
+    # extra frame helps if a UI-layout transition replaces the focus owner.
+    _restore_input_focus()
+    call_deferred("_refocus_on_next_frame")
 
 
 func _notification(what: int) -> void:
@@ -313,11 +317,38 @@ func _notification(what: int) -> void:
 func _restore_input_focus() -> void:
     if not is_instance_valid(input) or not input.is_inside_tree():
         return
-    # Update confirmations intentionally own focus while they're open.
+    # Never steal focus from a modal. In particular, don't bring back the
+    # focus_exited callback that interrupted CHECK FOR UPDATES mouse clicks.
     if is_instance_valid(update_dialog) and update_dialog.visible:
         return
     input.grab_focus()
     input.caret_column = input.text.length()
+
+
+func _refocus_on_next_frame() -> void:
+    await get_tree().process_frame
+    if request_stage == "idle" and update_stage.is_empty():
+        _restore_input_focus()
+
+
+func _unhandled_key_input(event: InputEvent) -> void:
+    # Fallback when OS/window focus transitions leave the input looking ready
+    # but without a keyboard owner. Preserve the *first* typed character.
+    # This is keyboard-only: mouse clicks and update confirmation are untouched.
+    if request_stage != "idle" or not update_stage.is_empty():
+        return
+    if not is_instance_valid(input) or not input.is_inside_tree() or input.has_focus():
+        return
+    if is_instance_valid(update_dialog) and update_dialog.visible:
+        return
+    if event is InputEventKey:
+        var key: InputEventKey = event
+        if not key.pressed or key.echo or key.ctrl_pressed or key.alt_pressed or key.meta_pressed:
+            return
+        if key.unicode >= 32 and key.unicode != 127:
+            input.grab_focus()
+            input.insert_text_at_caret(char(key.unicode))
+            get_viewport().set_input_as_handled()
 
 
 func _check_for_updates() -> void:
