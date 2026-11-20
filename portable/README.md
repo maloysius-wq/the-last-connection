@@ -3,13 +3,12 @@
 **This is the game build intended for D: (not the GitHub source ZIP).**
 
 The package includes the Godot game executable, a packaged local Python AI bridge,
-and a CPU-only llama.cpp server. It **does not bundle an AI model**, avoiding any
-second 2.5+ GB download or copy. There is no Ollama, LocalForge or system-wide
+and both Vulkan GPU-accelerated and CPU-fallback llama.cpp servers. It **does not bundle an AI model**. On first launch you can reuse an existing GGUF,\nor explicitly download Qwen3 4B Q4_K_M (~2.5 GB) into the game's own models folder.\nNothing is downloaded without your approval. There is no Ollama, LocalForge or system-wide
 Python/Godot installation required to play this Windows build.
 
 ## Install / play
 
-1. Download the **TheLastConnection-Windows-Portable-NoModel** artifact from a successful
+1. Download the **TheLastConnection-Windows-GPU-Portable** artifact from a successful
    GitHub Actions portable Windows workflow, then extract the **whole folder** somewhere
    writable on D:, e.g. `D:\Games\TheLastConnection\`.
 2. Double-click `TheLastConnection.exe`.
@@ -43,9 +42,18 @@ copied, deleted or moved automatically.
 - Portable temp directory: `temp/`.
 - The operating system and drivers can still create some small temporary/cache files
   in user profile folders on C:. We avoid **large AI model duplication** on C:.
-- This initial portable runner uses **CPU inference** and may be slow on older machines.
+- This build attempts **Vulkan GPU inference** first (NVIDIA/AMD/Intel with working Vulkan drivers), then partial GPU offload, and falls back to CPU automatically. Set `\"acceleration\": \"cpu\"` in `config.json` to force CPU mode.\n- After launching, inspect `logs/runtime-status.json` for `gpu_active` and `acceleration`. GPU support and performance depend on driver, VRAM, and model.
 - The current game uses **typed** dialogue. Voice will be added later.
 
 **Note:** GitHub Actions validates packaging and the mock gameplay path, but cannot
 run your specific private model file. Real-model latency/compatibility needs a local
 playtest after download.
+
+
+## Installing on a different Windows PC
+
+Download the GitHub Actions ZIP, unpack it to a writable folder on that PC (for example, `D:\Games\TheLastConnection` or `C:\Games\TheLastConnection`), and double-click `TheLastConnection.exe`. The game includes the engine, local bridge, and CPU/Vulkan runners, so **you do not need Python, Godot, LocalForge, Ollama, or a Vulkan SDK**. A compatible graphics driver is needed for Vulkan GPU acceleration.
+
+If that computer has no GGUF model, the game explicitly asks whether it should download a reviewed Qwen3 4B Q4_K_M model to the game's `models/` directory. It remains offline after setup. The file comes from the independent quantization repository `bartowski/Qwen_Qwen3-4B-Instruct-2507-GGUF` on Hugging Face; original Qwen weights are Apache-2.0 licensed. If you prefer not to download, transfer your existing `.gguf` file onto that PC and select it instead.
+
+For migrating existing progress, copy `user_data/`. The `config.json` file may reference a model path that does not exist on the new machine; the launcher now lets you select/download a replacement. Never copy one computer's `config.json` blindly without checking the model path.

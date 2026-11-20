@@ -16,6 +16,8 @@ from urllib import request, error
 
 from ai_bridge.agent import Agent, LlamaCppBackend, SessionStore
 from ai_bridge.server import create_handler
+from portable.runtime import (RuntimeSetupError, download_default_model, runtime_candidates,
+                              start_model_server, MODEL_FILENAME)
 from http.server import ThreadingHTTPServer
 
 
@@ -122,10 +124,71 @@ def make_loading_window():
     window.geometry("420x135")
     window.resizable(False, False)
     tkinter.Label(window, text="Establishing connection with Eli...", font=("Segoe UI", 12, "bold")).pack(pady=(20, 5))
-    tkinter.Label(window, text="Loading your local model from D:. No download required.",
+    tkinter.Label(window, text="Loading your model locally. No cloud inference.",
                   font=("Segoe UI", 9)).pack(pady=(0, 12))
     window.update()
     return window
+
+
+def download_with_progress(base: Path) -> Path:
+    """One-time download after the player explicitly approves the ~2.5GB file."""
+    import tkinter
+    root = tkinter.Tk()
+    root.title("Installing Eli's AI model")
+    root.geometry("460x140")
+    root.resizable(False, False)
+    label = tkinter.Label(root, text="Downloading Qwen3 4B Q4_K_M into this game folder...", wraplength=440)
+    label.pack(pady=(24, 12))
+    detail = tkinter.Label(root, text="Stored under models/ beside the game, not in C: AppData.")
+    detail.pack()
+    last_update = [0.0]
+
+    def show_progress(done: int, expected: int | None) -> None:
+        now = time.monotonic()
+        if now - last_update[0] < 0.15 and (not expected or done < expected):
+            return
+        last_update[0] = now
+        mb = done / 1_000_000
+        label.config(text=(f"Downloading Eli's model: {mb:.0f} MB"
+                           + (f" / {expected / 1_000_000:.0f} MB" if expected else "")))
+        root.update()
+    try:
+        root.update()
+        return download_default_model(base, progress=show_progress)
+    finally:
+        root.destroy()
+
+
+def choose_or_install_model(base: Path, config: dict,
+                            chooser=choose_model_dialog,
+                            downloader=download_with_progress,
+                            ask=None) -> Path:
+    """Existing model or explicit user-approved model download, no LocalForge dependency."""
+    saved = config.get("model_path", "")
+    if saved:
+        try:
+            return select_model(base, config)
+        except PortableSetupError:
+            # A copied game may have an old drive letter/model path.
+            config.pop("model_path", None)
+    candidates = find_gguf_candidates(base, (Path("D:/LocalForge"),))
+    if len(candidates) == 1:
+        return candidates[0]
+    if len(candidates) > 1:
+        return select_model(base, {}, candidates=candidates, chooser=chooser)
+    if ask is None:
+        if sys.platform != "win32":
+            raise PortableSetupError("Choose a local GGUF model to start.")
+        import ctypes
+        ask = lambda: ctypes.windll.user32.MessageBoxW(
+            None, "No GGUF model was found.\n\nYES: Download the default Qwen3 4B (~2.5 GB) into the game's models folder. Internet is needed ONCE.\n\nNO: Choose an existing GGUF file on this computer.\n\nCANCEL: Exit without downloading.",
+            "The Last Connection | First-time model setup", 0x23)
+    selection = ask()
+    if selection == 6:
+        return downloader(base)
+    if selection == 7:
+        return select_model(base, {}, candidates=[], chooser=chooser)
+    raise PortableSetupError("Model setup cancelled. Nothing was downloaded.")
 
 
 def main() -> int:
@@ -139,11 +202,11 @@ def main() -> int:
     if not isinstance(config, dict):
         raise PortableSetupError("config.json must contain a JSON object")
     game = base / "TheLastConnectionGame.exe"
-    llama = base / "runtime" / "llama" / "llama-server.exe"
-    for path in (game, llama):
-        if not path.is_file():
-            raise PortableSetupError(f"Portable runtime is incomplete: missing {path.name}. Download the complete Windows ZIP.")
-    model = select_model(base, config, chooser=choose_model_dialog)
+    if not game.is_file():
+        raise PortableSetupError("TheLastConnectionGame.exe is missing. Re-extract the complete portable ZIP.")
+    # Resolve available GPU and CPU runtime binaries before loading a model.
+    runtime_candidates(base, config.get("acceleration", "auto"))
+    model = choose_or_install_model(base, config)
     if config.get("model_path") != str(model):
         config["model_path"] = str(model)
         config_path.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -164,23 +227,19 @@ def main() -> int:
     splash = None
     try:
         splash = make_loading_window()
-        server_proc = subprocess.Popen([
-            str(llama), "--model", str(model), "--host", "127.0.0.1",
-            "--port", "8877", "--alias", "tlc-eli", "--ctx-size", "4096", "--jinja",
-            "--n-gpu-layers", "0",
-        ], cwd=str(llama.parent), stdout=model_log, stderr=subprocess.STDOUT,
-           env=env, creationflags=windows_flags)
-        # Model initialization can take time on slow, CPU-only PCs.
-        for _ in range(600):
-            if server_proc.poll() is not None:
-                raise PortableSetupError("Local model server stopped unexpectedly. See logs/llama-server.log on D:.")
-            if _ready("http://127.0.0.1:8877/health"):
-                break
+        def loading_notice(message: str) -> None:
             if splash:
+                splash.title("The Last Connection | " + message)
                 splash.update()
-            time.sleep(1)
-        else:
-            raise PortableSetupError("Local AI model did not finish loading. See logs/llama-server.log.")
+
+        server_proc, acceleration, failed_attempts = start_model_server(
+            base, model, config, model_log, _ready, progress=loading_notice, env=env,
+        )
+        (logs / "runtime-status.json").write_text(json.dumps({
+            "acceleration": acceleration,
+            "gpu_active": acceleration.startswith("vulkan"),
+            "failed_attempts": failed_attempts,
+        }, indent=2), encoding="utf-8")
 
         if splash:
             splash.destroy()
@@ -214,6 +273,6 @@ def main() -> int:
 if __name__ == "__main__":
     try:
         sys.exit(main())
-    except (OSError, ValueError, PortableSetupError) as exc:
+    except (OSError, ValueError, PortableSetupError, RuntimeSetupError) as exc:
         notify(f"Unable to start the portable game:\n\n{exc}", error=True)
         sys.exit(1)

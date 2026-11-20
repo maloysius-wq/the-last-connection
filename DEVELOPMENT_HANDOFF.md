@@ -94,3 +94,11 @@ Primary repo: `maloysius-wq/the-last-connection` (public; created by user). Use 
 - Shortened model output cap to 192 and bounded prompt history; old histories compact on next turn. CI has 30 Python tests (25 previously + five new latency regression tests).
 - Next step: user tests D-drive portable game, observes initial thinking latency versus the now-fast post-action acknowledgment; do not promise instant first response on CPU. Potential subsequent optimization: optional GPU backend, runtime response timing instrumentation, model/quantization benchmarking.
 - Preserve `config.json`, `user_data/`, and user's external D-drive GGUF file on upgrades. Never duplicate model weights to C:.
+
+## GPU acceleration and transfer to another Windows PC (2026-11-19)
+
+- User playtested updated portable build: second model stall removed; initial CPU model response still too slow. Requested GPU acceleration and a distributable package for other PCs.
+- Added pinned Vulkan llama.cpp Windows runtime alongside CPU runtime. Launcher auto tries full GPU offload (99 layers), partial (16), then CPU fallback. User may force CPU via `config.json`. Backend status is written under `logs/runtime-status.json`.
+- Added first-run GGUF setup: use existing model when available, recover stale configured model path after transferring folder, or obtain explicit consent to download Qwen3-4B-Instruct-2507 Q4_K_M (~2.5GB) into `models/` beside game. Downloads use resumable `.part` and never write GGUF weights to C: unless that is the user's selected game drive.
+- Cross-platform unit tests cover GPU fallback and model setup. GitHub Actions builds both CPU and Vulkan runtimes. Keep model self-contained/local-only after optional one-time download; no cloud inference.
+- Next validation: check successful GitHub Windows artifact, inspect file tree, verify real model speed and active Vulkan offload using the user's computer. GitHub hosted runners do not test real GPU inference.
