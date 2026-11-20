@@ -121,7 +121,9 @@ class TestGroundedConversation(unittest.TestCase):
         self.assertIn("Do not output JSON", sys)
         self.assertNotIn("Return one valid JSON", sys)
         prompt = backend.calls[0][1][-1]["content"]
-        self.assertIn('"actor_at":"breaker_box"', prompt)
+        self.assertEqual("Are you scared?", prompt)
+        self.assertIn('"actor_at":"breaker_box"', sys)
+        self.assertIn('"speaker_can_reach_your_room":false', sys)
 
     def test_no_second_inference_after_physical_action(self):
         backend = SplitBackend()
