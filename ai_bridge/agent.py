@@ -523,8 +523,11 @@ class Agent:
             fragment = speech[claim.start():claim.end() + 85]
             room_reference = re.search(
                 r"\b(?:breaker|keypad|panel|desk|flashlight|torch|switch|"
-                r"exit|door|note|paper|wall|here|there)\b", fragment, re.I)
-            if room_reference:
+                r"exit|door|note|paper|wall)\b", fragment, re.I)
+            place_reference = re.match(
+                r"\s+(?:(?:over|across|back|up)\s+)?(?:(?:to|toward|near|by)\s+)?"
+                r"(?:here|there)\b", speech[claim.end():], flags=re.I)
+            if room_reference or place_reference:
                 last = str(world.get("last_observation", ""))
                 if not last:
                     return Agent._describe_location(world) + " I haven't done anything new yet."
