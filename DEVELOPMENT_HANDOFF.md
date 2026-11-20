@@ -135,3 +135,13 @@ Primary repo: `maloysius-wq/the-last-connection` (public; created by user). Use 
   state preservation, no silent installs, HTTP confirmation.
 - Validate actual Windows packaging, Godot UI smoke, and published release
   asset before calling it ready. Normal gameplay remains offline.
+
+## In-game updater: merged, CI passed and public release published (2026-11-19)
+
+- PR #6 merged into main at `85e59c4e3478a74b5f4a04d6a26e257467af301e`.
+- GitHub Actions main release run `44668071377` completed successfully, including the separate updater executable launch smoke test, Godot Windows export, model-runner binaries, artifact upload and `gh release create`.
+- Public GitHub Release tag `portable-85e59c4e3478a74b5f4a04d6a26e257467af301e` is latest, with permanent assets `TheLastConnection-Windows-Portable.zip` (~125 MB) and `SHA256SUMS.txt`.
+- Independently downloaded main-run Actions artifact `14598152992`, verified ZIP CRC (none corrupt), inspected 1,097 entries: `TheLastConnection.exe`, `TheLastConnectionGame.exe`, `TheLastConnectionUpdater.exe`, build-info.json with exact release tag, both CPU/Vulkan llama-server binaries. No GGUF weights bundled. Note: this verifies the same build's Actions artifact, not the separately generated Release ZIP bytes.
+- Python tests and headless Godot smoke passed on PR and main. Actual interactive Windows in-place self-update (network download, Windows file replacement and restart) still needs end-user playtest.
+- For user: One manual download/extraction from GitHub Releases is necessary to get the updater-enabled build. Thereafter click CHECK FOR UPDATES inside game. Preserve config.json, user_data/, models/, logs/ on first manual upgrade; code handles later updates.
+- In-game update checks/installations require Internet *only when user clicks*; gameplay and LLM remain local. No schedule/background checks.
