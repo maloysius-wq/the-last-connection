@@ -48,7 +48,7 @@ func _ready() -> void:
     world.action_finished.connect(_on_world_action_finished)
     _message("SYSTEM", "Connected to CAM 01. Type an instruction to talk to Eli.")
     _message("SYSTEM", "Run the Python bridge on localhost:8765 first. Voice is scheduled for Phase 3.")
-    input.grab_focus()
+    call_deferred("_restore_input_focus")
 
 func _build_ui() -> void:
     var background := ColorRect.new()
@@ -132,6 +132,9 @@ func _message(speaker: String, text: String) -> void:
 
 func _send_pressed() -> void:
     _submit(input.text)
+    # Buttons take keyboard focus on a mouse click. Return it after the click
+    # completes, not synchronously while the mouse is still held down.
+    call_deferred("_restore_input_focus")
 
 func _submit(message: String) -> void:
     var trimmed := message.strip_edges()
@@ -144,12 +147,14 @@ func _submit(message: String) -> void:
     _message("YOU", trimmed)
     var body := {"session_id": session_id, "player_text": trimmed, "world": world.snapshot()}
     _request("/api/decide", body, "decide")
+    call_deferred("_restore_input_focus")
 
 func _request(path: String, body: Dictionary, stage: String) -> void:
     request_stage = stage
     status.text = "Eli is thinking..." if stage == "decide" else "Saving the observation..."
     send_button.disabled = true
-    input.editable = false
+    # Keep the editor usable while the AI responds. The player can compose
+    # the next message, but _submit refuses to transmit until Eli is ready.
     var code := http.request(BRIDGE_URL + path,
         PackedStringArray(["Content-Type: application/json"]),
         HTTPClient.METHOD_POST, JSON.stringify(body))
@@ -193,8 +198,18 @@ func _idle() -> void:
     request_stage = "idle"
     status.text = "Ready"
     send_button.disabled = false
-    input.editable = true
+    call_deferred("_restore_input_focus")
+
+
+func _restore_input_focus() -> void:
+    if not is_instance_valid(input) or not input.is_inside_tree():
+        return
+    # Update confirmations intentionally own focus while they're open.
+    if is_instance_valid(update_dialog) and update_dialog.visible:
+        return
     input.grab_focus()
+    input.caret_column = input.text.length()
+
 
 func _check_for_updates() -> void:
     if not update_stage.is_empty():
@@ -263,6 +278,7 @@ func _update_idle() -> void:
     update_stage = ""
     update_button.disabled = false
     update_button.text = "CHECK FOR UPDATES"
+    call_deferred("_restore_input_focus")
 
 
 func _new_game() -> void:
@@ -273,6 +289,7 @@ func _new_game() -> void:
     log_view.clear()
     _save()
     _message("SYSTEM", "New session. Eli's room and conversation have been reset.")
+    call_deferred("_restore_input_focus")
 
 func _load_save() -> void:
     var cfg := ConfigFile.new()
