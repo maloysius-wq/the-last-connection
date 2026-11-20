@@ -79,7 +79,7 @@ class TestFlashlightReferences(unittest.TestCase):
         actual["last_observation"] = "Eli picked up the flashlight from the desk and switched it on."
         acknowledgment = agent.outcome(
             "screenshot", "use", "flashlight", True, actual["last_observation"], actual)
-        self.assertIn("picked it up", acknowledgment.speech)
+        self.assertIn("see a little better", acknowledgment.speech)
         self.assertEqual(backend.conversations + backend.decisions, 2,
                          "No second model inference during Godot outcome")
 

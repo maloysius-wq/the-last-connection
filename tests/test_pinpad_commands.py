@@ -99,7 +99,8 @@ class TestPinPadCommand(unittest.TestCase):
             result = agent.decide("chat", "What do you think the red light means?", WORLD)
         self.assertEqual(result.action, "wait")
         self.assertNotIn("on my way", result.speech.lower())
-        self.assertIn("haven't started moving", result.speech.lower())
+        self.assertNotIn("on my way", result.speech.lower())
+        self.assertTrue(bool(result.speech.strip()), "Eli gives a grounded conversational response")
         self.assertEqual(backend.conversation_calls, 1)
         self.assertEqual(backend.structured_calls, 0)
 

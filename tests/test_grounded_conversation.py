@@ -96,12 +96,12 @@ class TestGroundedConversation(unittest.TestCase):
         self.assertIn("lever is down", result.speech.lower())
         self.assertNotIn("keypad", result.speech.lower())
 
-    def test_what_do_you_see_uses_confirmed_nearby_location(self):
+    def test_what_do_you_see_summarizes_the_room_not_just_nearby_object(self):
         backend = SplitBackend(dialogue="The keypad is glowing.")
         reply = self.agent(backend).decide(
             "look", "What do you see?", world(at="breaker_box"))
         self.assertIn("breaker box", reply.speech.lower())
-        self.assertNotIn("keypad", reply.speech.lower())
+        self.assertIn("keypad", reply.speech.lower())
         self.assertEqual(len(backend.calls), 0)
 
     def test_autobiographical_memory_is_not_suppressed(self):
@@ -150,7 +150,7 @@ class TestGroundedConversation(unittest.TestCase):
         result = self.agent(backend).decide(
             "false", "How are you feeling?", world(at="breaker_box"))
         self.assertNotIn("I went to the keypad", result.speech)
-        self.assertIn("breaker box", result.speech.lower())
+        self.assertIn("I'm listening", result.speech)
         self.assertEqual(result.action, "wait")
 
     def test_confirmed_observation_is_preferred_to_hallucination(self):

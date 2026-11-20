@@ -205,3 +205,23 @@ introduced. Updating remains explicitly initiated by the player.
 ## Physical actions grounded in the full player message
 
 The game distinguishes descriptions of the room from an explicit instruction. For instance, 'I see a flashlight, keypad, door and breaker. Go ahead and pick up that flashlight and turn it on' authorizes only a flashlight pickup-and-switch-on. Eli must physically reach the desk and collect the object before the game confirms success. Free conversation is checked for invented pickups, switch presses, and claims that a light has turned on, including contractions and progressive-stage narration.
+
+
+## Natural conversations and camera-room descriptions
+
+A regular introduction such as "Hi Eli, I'm Max. I'm here to help you escape"
+should receive a natural first-contact reply, not a warning about unperformed
+actions. Free-chat safety checks now remove only unsupported *sentences* about
+physical interactions, preserving the remaining conversation. If every
+sentence is unusable, Eli uses a short context-appropriate response.
+
+"What do you see in the room?" now gives a grounded overview of the desk,
+breaker, keypad, exit and any visible clues. "Where are you?" describes Eli's
+actual standing position; he says "I'm beside the desk," not "I'm standing by
+the flashlight in Eli's inventory." The engine's OBSERVATION remains an
+explicit record of action success, while Eli's following response reacts
+naturally rather than repeating the log.
+
+Eli's desk interaction point has moved to an accessible location *in front*
+of the table, with a short aisle detour when approaching from wall fixtures.
+Old saves leaving Eli intersecting the tabletop are adjusted when loaded.

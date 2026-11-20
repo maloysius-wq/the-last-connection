@@ -134,6 +134,10 @@ func _run() -> void:
         "Eli's confirmed location changes from breaker to flashlight desk")
     _expect(world.actor.position.distance_to(world.object_positions["flashlight"]) < 0.12,
         "Eli visibly travels to flashlight before claiming pickup")
+    _expect(world.actor.position.z > -0.70,
+        "Eli stands in front of the desk instead of intersecting its tabletop")
+    _expect(world.object_positions["maintenance_note"].z > -0.70,
+        "The maintenance note is also accessible without standing inside the table")
     world.perform_action("use", "flashlight", "on")
     flashlight_action = await world.action_finished
     _expect(flashlight_action[2] == true and world.snapshot()["flashlight_on"] == true,
@@ -142,6 +146,12 @@ func _run() -> void:
     flashlight_action = await world.action_finished
     _expect(flashlight_action[2] == true and world.snapshot()["flashlight_on"] == false,
         "Explicit OFF state is respected")
+    var legacy_desk: Dictionary = world.export_state()
+    legacy_desk["actor_z"] = -1.40
+    legacy_desk["actor_at"] = "flashlight"
+    world.restore_state(legacy_desk)
+    _expect(world.actor.position.z > -0.70,
+        "Older save positions embedded in the desk are moved to its accessible front")
     world.reset_state()
     _expect(not world.snapshot()["inventory"].has("flashlight"), "Reset returns flashlight to the desk")
     world.perform_action("use", "flashlight", "off")

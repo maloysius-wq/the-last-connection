@@ -89,7 +89,7 @@ class TestCommandTruth(unittest.TestCase):
         confirmed = agent.outcome(
             "execute", "use", "flashlight", True,
             "Eli picked up the flashlight from the desk and switched it on.", after)
-        self.assertIn("picked it up", confirmed.speech)
+        self.assertIn("see a little better", confirmed.speech)
         self.assertEqual(backend.dialogue_calls, 0)
         self.assertEqual(backend.action_calls, 1)
 
@@ -99,8 +99,9 @@ class TestCommandTruth(unittest.TestCase):
             "when I press the button. I've got it in my hand now, though.")
         result = self.agent(backend).decide("intro", SCREENSHOT_INTRO, room())
         self.assertEqual(result.action, "wait")
-        self.assertIn("still on the desk", result.speech)
+        self.assertIn("strange place", result.speech)
         self.assertNotIn("I've got it in my hand", result.speech)
+        self.assertNotIn("haven't touched anything new", result.speech)
         self.assertEqual(backend.action_calls, 0)
 
     def test_second_screenshot_curly_apostrophes_and_action_playacting_blocked(self):
@@ -109,7 +110,7 @@ class TestCommandTruth(unittest.TestCase):
         self.assertEqual(result.action, "wait")
         self.assertNotIn("I’ve got it now", result.speech)
         self.assertNotIn("light’s on now", result.speech)
-        self.assertIn("haven't picked it up", result.speech)
+        self.assertIn("I'm Eli", result.speech)
 
     def test_flashlight_is_on_claim_cannot_override_engine_state(self):
         for phrase in ("Okay, light's on now.", "The flashlight is working now.",
