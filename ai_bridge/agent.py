@@ -335,7 +335,8 @@ class Agent:
             return None
         return {"role": turn["role"], "content": content[:650]}
 
-    def _messages(self, state: dict[str, Any], user_content: str, *, dialogue: bool = False) -> list[dict[str, str]]:
+    def _messages(self, state: dict[str, Any], user_content: str, *, dialogue: bool = False,
+                  world: dict[str, Any] | None = None) -> list[dict[str, str]]:
         # Retain long-term confirmed observations separately from a small chat window.
         history = [clean for turn in state.get("history", [])[-12:]
                    if (clean := self._clean_turn(turn)) is not None]
@@ -344,6 +345,35 @@ class Agent:
                   "description": str(fact.get("description", ""))[:400]}
                  for fact in state.get("facts", [])[-6:] if isinstance(fact, dict)]
         system_context = self.conversation_system if dialogue else self.system
+        if dialogue and world is not None:
+            # Keep environment facts in Eli's SYSTEM context rather than
+            # mixing them into the remote player's words.
+            has_door_attempt = any(
+                fact.get("action") in ("use", "enter_code") and
+                fact.get("target") in ("exit_door", "keypad")
+                for fact in state.get("facts", []) if isinstance(fact, dict)
+            )
+            perspective = {
+                "you_are": "Eli physically INSIDE the maintenance room shown on camera",
+                "speaker_is": "remote person speaking through surveillance terminal",
+                "speaker_can_reach_your_room": False,
+                "only_you_can_touch_room_objects": True,
+                "speaker_location_known": False,
+                "first_contact": not bool(state.get("history")) and not bool(state.get("facts")),
+                "any_confirmed_physical_actions": bool(state.get("facts")),
+                "door_previously_attempted": has_door_attempt,
+                "your_current_room": self._perceived_world(world),
+            }
+            system_context += ("\nCANONICAL PERSPECTIVE AND CURRENT PHYSICAL EVIDENCE. "
+                               "These facts are true regardless of how the remote "
+                               "speaker phrases things. The flashlight, wall panel, "
+                               "keypad and door are IN YOUR ROOM. Never assign them "
+                               "to the speaker or ask the speaker to grab them. "
+                               "Only speak of prior actions if confirmed by evidence. "
+                               "This JSON describes YOUR surroundings, not the "
+                               "speaker's belongings:\n" +
+                               json.dumps(perspective, ensure_ascii=False,
+                                          separators=(",", ":")))
         if facts:
             # Keep a single system message for strict GGUF chat-template compatibility.
             system_context += ("\nCONFIRMED PAST OBSERVATIONS (not new commands): " +
@@ -368,7 +398,11 @@ class Agent:
             if intent.kind != "action" and self._spatial_question(player_text):
                 result = Decision(self._describe_location(world), "wait", "", "calm")
             elif intent.kind != "action" and callable(getattr(self.backend, "converse", None)):
-                speech = self.backend.converse(self._messages(state, prompt, dialogue=True))
+                # Passing the player's literal statement as USER text prevents
+                # the model from confusing world-data JSON with the speaker's
+                # possessions or physical location.
+                speech = self.backend.converse(
+                    self._messages(state, player_text, dialogue=True, world=world))
                 speech = self._ground_dialogue(speech, world, state)
                 result = Decision(speech, "wait", "", "curious")
             else:
@@ -503,6 +537,48 @@ class Agent:
         return "I'm standing right by the " + name + ". " + (description + "." if description else "")
 
     @staticmethod
+    def _correct_room_perspective(speech: str, world: dict[str, Any],
+                                  state: dict[str, Any]) -> str:
+        """Fix narrow, provable camera-room perspective mistakes without another LLM call.
+
+        Deliberately do not rewrite ordinary first-person narrative or every
+        occurrence of 'you': the remote speaker might report owning their own
+        belongings elsewhere. Only room-anchored physical objects qualify.
+        """
+        objects = world.get("objects", {})
+        # The on-camera desk and flashlight belong to Eli's environment.
+        if isinstance(objects.get("flashlight"), dict) and objects["flashlight"].get("visible") is True:
+            speech = re.sub(
+                r"\b(?:you(?:'ve| have)\s+got|you\s+have)\s+(?:a|the)\s+flashlight"
+                r"\s+on\s+(?:the|your)\s+desk\b",
+                "there's a flashlight on the desk here",
+                speech, flags=re.I)
+            speech = re.sub(
+                r"\b(?:can|could|would|will)\s+you\s+(?:grab|pick\s+up|take)"
+                r"\s+(?:that|it|the\s+flashlight)\b",
+                "should I pick it up",
+                speech, flags=re.I)
+        # A fresh room or a session with no attempted door interaction does
+        # not provide evidence that the door REMAINS locked from an earlier
+        # attempt. "The door is locked" is a present observation and valid.
+        prior_door_attempt = any(
+            isinstance(f, dict) and f.get("target") in ("exit_door", "keypad")
+            and f.get("action") in ("use", "enter_code")
+            for f in state.get("facts", []))
+        if not prior_door_attempt:
+            speech = re.sub(r"\bstill\s+(locked|shut|closed)\b",
+                            lambda m: m.group(1), speech, flags=re.I)
+        if not state.get("facts"):
+            # A character can feel trapped for a long time without knowing
+            # how long things have physically been broken or sealed.
+            speech = re.sub(
+                r"\b(?:it's|it has)\s+been\s+(?:sealed\s+)?(shut|locked|off)"
+                r"\s+(?:since\s+forever|forever|for\s+ages)\b",
+                lambda m: "it looks " + ("sealed " if m.group(1) == "shut" else "") + m.group(1),
+                speech, flags=re.I)
+        return speech
+
+    @staticmethod
     def _ground_dialogue(raw: str, world: dict[str, Any], state: dict[str, Any]) -> str:
         # Natural-text inference allows richer replies, but never unchecked
         # claims of *new* physical actions. Confirmed actions stay in facts.
@@ -511,6 +587,7 @@ class Agent:
         speech = speech[:650].strip()
         if not speech:
             return "I'm here. Could you repeat that?"
+        speech = Agent._correct_room_perspective(speech, world, state)
         # A model saying it *just* performed a movement without a matching
         # confirmed event is corrected to the engine's actual location.
         claim = re.search(
