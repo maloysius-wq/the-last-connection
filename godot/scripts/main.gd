@@ -113,6 +113,7 @@ func _build_ui() -> void:
     input = LineEdit.new()
     input.placeholder_text = "Talk to Eli..."
     input.text_submitted.connect(_submit)
+    input.focus_exited.connect(_on_input_focus_exited)
     right.add_child(input)
     send_button = Button.new()
     send_button.text = "TRANSMIT"
@@ -199,6 +200,18 @@ func _idle() -> void:
     status.text = "Ready"
     send_button.disabled = false
     call_deferred("_restore_input_focus")
+
+
+func _on_input_focus_exited() -> void:
+    # The chat is the only primary text editor in this terminal. A click on
+    # TRANSMIT, the camera feed or empty interface must not strand typing focus.
+    # Defer until the mouse event completes, leaving modal dialogs alone.
+    call_deferred("_restore_input_focus")
+
+
+func _notification(what: int) -> void:
+    if what == NOTIFICATION_WM_WINDOW_FOCUS_IN:
+        call_deferred("_restore_input_focus")
 
 
 func _restore_input_focus() -> void:
