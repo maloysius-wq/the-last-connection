@@ -13,15 +13,19 @@ TARGETS = (
     ("flashlight", r"\b(?:flashlight|flash light|torch|handheld light)\b"),
     ("breaker_box", r"\b(?:breaker(?: box)?|fuse box|electrical panel|power panel|power switch|main power|room lights?|ceiling lights?|overhead lights?)\b"),
     ("maintenance_note", r"\b(?:maintenance note|note|paper|memo|letter|written clue)\b"),
-    ("keypad", r"\b(?:keypad|key pad|number pad|code panel|combination lock)\b"),
+    ("keypad", r"\b(?:key\s*pad|pin\s*pad|pin[- ]?code\s*pad|number\s*pad|code\s*panel|"
+               r"combination\s*lock|red\s+(?:(?:glowing|lit)\s+)?(?:screen|indicator|light)|"
+               r"glowing\s+red\s+(?:screen|indicator|light))\b"),
     ("exit_door", r"\b(?:exit door|door|exit|doorway)\b"),
 )
 # Longer, multiword phrases first so "pick up" is correctly recognized.
 VERBS = (
     ("enter_code", r"\b(?:enter|type|punch in|key in|input|submit)\b.{0,35}\b(?:code|digits?|numbers?|keypad)\b|\b(?:code|digits?)\b.{0,20}\b(?:enter|type|try)\b"),
-    ("take", r"\b(?:pick up|pickup|grab|take|collect|retrieve|pick|fetch)\b"),
+    ("take", r"\b(?:pick up|pickup|grab|take(?!\s+(?:a\s+)?(?:closer\s+)?look)|collect|retrieve|pick|fetch)\b"),
     ("use", r"\b(?:turn|switch|flip|toggle|activate|use|open|unlock|power up|switch on|switch off)\b"),
-    ("inspect", r"\b(?:look at|examine|inspect|read|check(?: out)?|study|search|investigate)\b"),
+    ("inspect", r"\b(?:take\s+(?:a\s+)?(?:closer\s+)?look(?:\s+at)?|"
+               r"have\s+a\s+look(?:\s+at)?|look\s+at|examine|inspect|read|"
+               r"check(?:\s+out)?|study|search|investigate)\b"),
     ("move_to", r"\b(?:go(?:\s+over)?\s+to|walk(?:\s+over)?\s+to|head(?:\s+over)?\s+to|move(?:\s+over)?\s+to|move\s+toward(?:s)?|walk\s+toward(?:s)?|approach|step\s+over\s+to|stand\s+(?:by|near|in front of|beside|at)|come\s+(?:over\s+)?to)\b"),
 )
 QUESTION_PREFIX = re.compile(
