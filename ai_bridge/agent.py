@@ -736,66 +736,93 @@ class Agent:
         return ""
 
     @staticmethod
-    def _ground_dialogue(raw: str, world: dict[str, Any], state: dict[str, Any]) -> str:
-        # Natural-text inference allows richer replies, but never unchecked
-        # claims of *new* physical actions. Confirmed actions stay in facts.
+    def _conversational_fallback(player_text: str, world: dict[str, Any]) -> str:
+        """A safe human response when every proposed sentence was ungrounded."""
+        if re.search(r"\b(?:hi|hello|hey)\s*,?\s*eli\b|"
+                     r"\b(?:here to help|help you escape)\b", player_text, re.I):
+            name = re.search(r"\b(?:i['’]m|i am|my name is)\s+([A-Z][a-z]{1,22})\b",
+                             player_text)
+            greeting = "I hear you" + (", " + name.group(1) if name else "") + "."
+            return (greeting + " I'm Eli. I don't know how I ended up here either. "
+                    "Can you see the room from your side?")
+        if re.search(r"\b(?:flashlight|torch)\b", player_text, re.I):
+            if "flashlight" in world.get("inventory", []):
+                return ("I've got the flashlight. It's " +
+                        ("on." if world.get("flashlight_on") else "off."))
+            return "The flashlight's on the desk. I haven't picked it up."
+        return ("I'm listening. I'm not sure what to make of this place yet, "
+                "but I'm glad we can talk.")
+
+    @staticmethod
+    def _ground_dialogue(raw: str, world: dict[str, Any], state: dict[str, Any],
+                         player_text: str = "") -> str:
+        """Preserve Eli's real conversation; remove only unsupported room-action claims.
+
+        Older versions discarded the ENTIRE answer as soon as one sentence
+        mentioned a suspect prop, replacing an introduction with 'I haven't
+        touched anything new'. Keep safe portions instead. No second inference.
+        """
         speech = re.sub(r"(?is)<think>.*?</think>", "", raw).strip()
         speech = re.sub(r"^(?:Eli|Assistant)\s*:\s*", "", speech, flags=re.I)
-        speech = speech[:650].strip()
+        speech = Agent._correct_room_perspective(speech[:1100].strip(), world, state)
         if not speech:
-            return "I'm here. Could you repeat that?"
-        speech = Agent._correct_room_perspective(speech, world, state)
-        # Conversational replies have NO matching Godot action. A 4B model
-        # may narrate '(Pause) ... I pressed it' despite never touching it.
-        claimed_target = Agent._unverified_prop_action(speech, world, state)
-        if claimed_target:
-            if claimed_target == "flashlight":
-                if "flashlight" in world.get("inventory", []):
-                    on = bool(world.get("flashlight_on", False))
-                    return ("I'm holding the flashlight, and it's " +
-                            ("on." if on else "off.") +
-                            " I haven't changed it just now.")
-                return ("The flashlight is still on the desk. I haven't picked it up "
-                        "or switched it on. Tell me if you want me to do that.")
-            if claimed_target != "ambiguous":
-                return ("I can see the " + claimed_target.replace("_", " ") +
-                        ", but I haven't done anything new with it.")
-            return "I haven't touched anything new. What would you like me to do?"
-        # Conversational replies cannot initiate movement. If the model
-        # describes walking as already underway while no action was issued,
-        # replace that unverifiable progress claim with the true position.
-        # Explicit movement instructions take the structured action path.
-        motion_claim = re.search(
-            r"\bI(?:'|’)?m\s+(?:already\s+)?(?:on\s+my\s+way|walking|heading|moving|going)"
-            r"\b[^.!?]{0,80}\b(?:keypad|pin\s*pad|breaker|door|desk|flashlight)\b",
-            speech, re.I)
-        if motion_claim:
-            return (Agent._describe_location(world) +
-                    " I haven't started moving anywhere new. Tell me where you'd like me to go.")
-        # A model saying it *just* performed a movement without a matching
-        # confirmed event is corrected to the engine's actual location.
-        claim = re.search(
-            r"\bI\s+(?:(?:just|already)\s+|(?:have\s+|['’]ve\s+)(?:just\s+)?)?"
-            r"(?:moved|walked|went|headed|checked|inspected|picked up|"
-            r"switched|opened|entered|reached)\b", speech, flags=re.I)
-        if claim:
-            # "I went to school as a kid" is legitimate autobiographical talk.
-            # Restrict this safeguard to physical *room* objects/directions.
-            fragment = speech[claim.start():claim.end() + 85]
-            room_reference = re.search(
-                r"\b(?:breaker|keypad|panel|desk|flashlight|torch|switch|"
-                r"exit|door|note|paper|wall)\b", fragment, re.I)
-            place_reference = re.match(
-                r"\s+(?:(?:over|across|back|up)\s+)?(?:(?:to|toward|near|by)\s+)?"
-                r"(?:here|there)\b", speech[claim.end():], flags=re.I)
-            if room_reference or place_reference:
-                last = str(world.get("last_observation", ""))
-                if not last:
-                    return Agent._describe_location(world) + " I haven't done anything new yet."
-                # Even with a recent event, never bind a model's unsupported
-                # claim to an unrelated physical action.
-                return "The last thing I actually did was: " + last[:300]
-        return speech
+            return Agent._conversational_fallback(player_text, world)
+        # Scene and inventory claims belong to Godot. Resolve pronouns against
+        # the unique prop named in the same answer, if any.
+        visible_mentions = {item for item in mentioned_targets(speech)
+                            if item in world.get("objects", {})
+                            and world["objects"][item].get("visible") is True}
+        local_state = dict(state)
+        if len(visible_mentions) == 1:
+            local_state["referent"] = next(iter(visible_mentions))
+        safe: list[str] = []
+        removed = False
+        for sentence in re.split(r"(?<=[.!?])\s+", speech):
+            clause = sentence.strip()
+            if not clause:
+                continue
+            # An autobiographical 'I used to...' isn't an action in this room.
+            memory = bool(re.search(
+                r"\bi used to\b|\b(?:as a kid|when i was younger|before i came here)\b",
+                clause, re.I))
+            # 'I've got a question about the flashlight' also isn't a pickup.
+            question = bool(re.search(
+                r"\bi['’]ve got (?:a|one|some)\s+(?:question|thought|idea)\b",
+                clause, re.I))
+            unsupported = (Agent._unverified_prop_action(clause, world, local_state)
+                           if not memory and not question else "")
+            motion = re.search(
+                r"\bi(?:['’]m|\s+am)\s+(?:already\s+)?"
+                r"(?:on\s+my\s+way|walking|heading|moving|going)\b"
+                r"[^.!?]{0,75}\b(?:keypad|pin\s*pad|breaker|door|desk|flashlight)\b",
+                clause, re.I)
+            pickup = re.search(
+                r"\bi(?:['’]ve|\s+have)\s+got\s+(?:it|the\s+flashlight)\b|"
+                r"\bi(?:['’]m|\s+am)\s+holding\s+(?:it|the\s+flashlight)\b|"
+                r"\bflashlight(?:['’]s|\s+is)\s+in\s+my\s+hand\b",
+                clause, re.I)
+            false_pickup = bool(pickup and "flashlight" not in world.get("inventory", []))
+            light_assertion = re.search(
+                r"\b(?:the\s+)?(?:flashlight|light)\s*(?:['’]s|\s+is)\s+"
+                r"(?:on|working|switched\s+on)\b", clause, re.I)
+            false_light = bool(light_assertion and not world.get("flashlight_on", False))
+            # Keep true confirmed states in ordinary conversation; never allow
+            # unsupported 'I just did it' narration to replace engine actions.
+            static_truth = bool(light_assertion and world.get("flashlight_on", False)
+                                and not re.search(r"\bi\s+(?:just|already)\b", clause, re.I))
+            if (unsupported and not static_truth) or motion or false_pickup or false_light:
+                removed = True
+                continue
+            safe.append(clause)
+        reply = " ".join(safe).strip()
+        if (not reply or re.fullmatch(
+                r"(?:i\s+(?:haven't|have not)\s+(?:touched|done)\s+anything\s+new[.!]?\s*)?"
+                r"(?:what\s+(?:would you like|should i)\s+(?:me\s+)?(?:to\s+)?do(?:\s+next)?\??)?",
+                reply, re.I)):
+            return Agent._conversational_fallback(player_text, world)
+        # If we filtered a hallucination, keep the safe meaningful content,
+        # not a robotic disclaimer. The result is still just Eli's speech.
+        return reply[:650]
 
     @staticmethod
     def _acknowledge(action: str, target: str, success: bool, world: dict[str, Any],
@@ -826,7 +853,8 @@ class Agent:
             return "I'm through the door. I think I'm out."
         if action == "use" and target == "flashlight":
             if "picked up" in description.lower() and bool(world.get("flashlight_on", False)):
-                return "I picked it up and switched it on. That's better."
+                # OBSERVATION already reports the pickup; Eli reacts naturally.
+                return "There we go. I can actually see a little better now."
             if "flashlight" not in world.get("inventory", []):
                 return "It's still on the desk. I haven't picked it up."
             obj = world.get("objects", {}).get("flashlight", {})
