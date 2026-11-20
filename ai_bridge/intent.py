@@ -54,6 +54,11 @@ def classify(text: str, focus: str = "") -> PlayerIntent:
     lower = text.strip().lower()
     if not lower or NEGATED.search(lower):
         return PlayerIntent()
+    # Describing an idea or past event is not a command to physically act.
+    if re.match(r"^(?:i (?:think|thought|wonder|was|remember|saw)|maybe|perhaps|imagine|"
+                r"suppose|if\b|you (?:said|were|already)|it (?:looks|seems)|"
+                r"would it|should we)\b", lower):
+        return PlayerIntent()
 
     # Questions about what/why/how and requests for verbal explanations never
     # authorize motion just because they mention an object or a verb.
