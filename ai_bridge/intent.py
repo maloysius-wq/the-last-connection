@@ -175,20 +175,33 @@ _PLAN_VERB = (
 )
 # Only joiners introducing a SECOND imperative delimit steps; e.g.
 # "a keypad and a breaker" is never split.
+# Verbal reporting is allowed only as the CONCLUSION of a requested survey,
+# not as a new world-changing action. Delimit it without treating a standalone
+# "tell me about..." question as a physical command.
+_PLAN_REPORT_START = r"(?:tell\s+me|let\s+me\s+know|report\s+back|describe)"
+_PLAN_JOINABLE = r"(?:" + _PLAN_VERB + r"\b|" + _PLAN_REPORT_START + r"\b)"
 _PLAN_JOIN = re.compile(
     # Always expose comma-separated parts so an unknown requested step
     # ("dance a jig") invalidates the WHOLE plan rather than being skipped.
     r",\s*(?:and\s+)?|"
     r"\s+(?:(?:and\s+)?then|after\s+that|next|finally)\s+(?=" +
-    _PLAN_VERB + r"\b)|"
-    r"\s+and\s+(?=" + _PLAN_VERB + r"\b)", re.I)
+    _PLAN_JOINABLE + r")|"
+    r"\s+and\s+(?=" + _PLAN_JOINABLE + r")", re.I)
 _PLAN_IMPERATIVE = re.compile(
     r"^(?:" + _PLAN_VERB + r")\b", re.I)
 _PLAN_SURVEY = re.compile(
-    r"^(?:look\s+around|look\s+over\s+the\s+room|"
+    r"^(?:take\s+(?:a\s+)?(?:closer\s+)?look\s+around|"
+    r"have\s+a\s+look\s+around|look\s+around|"
+    r"look\s+over\s+the\s+room|"
     r"scan\s+(?:the\s+)?room|survey\s+(?:the\s+)?room|"
     r"inspect\s+(?:the\s+)?room|check\s+(?:out\s+)?"
     r"(?:the\s+)?(?:whole\s+)?room)\b", re.I)
+_PLAN_REPORT = re.compile(
+    r"^(?:tell\s+me\s+(?:what\s+you\s+(?:can\s+)?(?:see|notice|noticed|found)|"
+    r"if\s+you\s+(?:see|notice|noticed)\s+anything(?:\s+new)?)|"
+    r"(?:let\s+me\s+know|report\s+back|describe)\s+"
+    r"(?:what\s+you\s+(?:can\s+)?(?:see|notice|noticed|found)|"
+    r"if\s+you\s+(?:see|notice|noticed)\s+anything(?:\s+new)?))\b", re.I)
 _PLAN_FLASHLIGHT_LIGHT = re.compile(
     r"^(?:turn|switch)\s+(on|off)\s+(?:(?:the|that|this|your)\s+)?"
     r"(?:light|flashlight|torch|it)\b|"
@@ -229,13 +242,17 @@ def _plan_step(text: str, focus: str) -> PlayerIntent:
     return PlayerIntent()
 
 
-def plan_actions(text: str, focus: str = "") -> tuple[PlayerIntent, ...]:
+def plan_actions(text: str, focus: str = "", *, strict: bool = False) -> tuple[PlayerIntent, ...] | None:
     """Recognize a short ordered sequence of independently authorized acts.
 
     Pure conversation produces (). No LLM-generated action is accepted.
     A multi-target sentence with no imperative stays conversational; a real
     set of explicit instructions executes in spoken order. Do not silently
     choose just one action from a user's compound instruction.
+
+    With strict=True, an attempted but incomprehensible multi-step command
+    returns None (instead of an empty plan), so Agent cannot mistakenly fall
+    back to executing only the first recognizable action.
     """
     if not isinstance(text, str) or not text.strip():
         return ()
@@ -259,14 +276,22 @@ def plan_actions(text: str, focus: str = "") -> tuple[PlayerIntent, ...]:
         parts = _PLAN_JOIN.split(command)
         for part in parts:
             part = _PLAN_PREFIX.sub("", part.strip(), count=1).strip()
+            if _PLAN_REPORT.match(part):
+                # "then tell me what you see" is a requested spoken conclusion
+                # to the survey. Godot's successful survey result already
+                # produces a first-person factual report, so no extra LLM call
+                # or imaginary "report" world action is needed.
+                if commands and commands[-1].action == "survey":
+                    continue
+                return None if strict and commands else ()
             result = _plan_step(part, current_focus)
             if result.kind != "action":
-                # A compound instruction containing an unsupported/ambiguous
-                # step must not quietly execute a partial interpretation.
-                return ()
+                # Never silently execute a subset via the old one-action
+                # fallback when a compound instruction was misunderstood.
+                return None if strict and commands else ()
             commands.append(result)
             if len(commands) > MAX_PLANNED_ACTIONS:
-                return ()
+                return None if strict and commands else ()
             if result.target != "room":
                 current_focus = result.target
     return tuple(commands)

@@ -435,13 +435,20 @@ class Agent:
             if referent not in world["objects"] or not world["objects"][referent].get("visible"):
                 referent = ""
             intent = classify(player_text, referent)
-            plan = plan_actions(player_text, referent)
+            plan = plan_actions(player_text, referent, strict=True)
             prompt = "PLAYER REQUEST:\n" + json.dumps({
                 "player_text": player_text,
                 "request_kind": intent.prompt_hint,
                 "world": self._perceived_world(world),
             }, ensure_ascii=False, separators=(",", ":"))
-            if len(plan) > 1:
+            if plan is None:
+                # A recognized multi-step instruction has an unsupported or
+                # ambiguous clause. NEVER let the legacy single-action
+                # classifier silently do just its first step instead.
+                result = Decision(
+                    "I understood part of that, but not the whole sequence. "
+                    "Can you tell me those steps again?", "wait", "", "cautious")
+            elif len(plan) > 1:
                 unavailable = []
                 for index, step in enumerate(plan):
                     if step.target == "room":
@@ -1041,7 +1048,10 @@ class Agent:
             is_on = bool(world.get("flashlight_on", "It is on." in description))
             return "Got it. The flashlight is " + ("on." if is_on else "off.")
         if action == "survey":
-            return "That's everything I can make out from here. Do you see anything I missed?"
+            # A completed survey MUST answer "tell me what you see" in Eli's
+            # own first person, from Godot's verified post-action snapshot.
+            # No second model call and no invented hidden puzzle details.
+            return Agent._describe_room(world)
         if action == "move_to":
             at = str(world.get("actor_at", ""))
             if at == target:
