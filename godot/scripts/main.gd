@@ -44,6 +44,7 @@ func _ready() -> void:
     update_dialog = ConfirmationDialog.new()
     update_dialog.title = "Update The Last Connection?"
     update_dialog.confirmed.connect(_install_update)
+    update_dialog.canceled.connect(_on_update_dialog_dismissed)
     add_child(update_dialog)
     world.action_finished.connect(_on_world_action_finished)
     _message("SYSTEM", "Connected to CAM 01. Type an instruction to talk to Eli.")
@@ -234,6 +235,10 @@ func _check_for_updates() -> void:
     if result != OK:
         _message("SYSTEM", "Couldn't start update check (error " + str(result) + ").")
         _update_idle()
+
+
+func _on_update_dialog_dismissed() -> void:
+    call_deferred("_restore_input_focus")
 
 
 func _install_update() -> void:
