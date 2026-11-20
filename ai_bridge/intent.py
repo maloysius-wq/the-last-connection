@@ -150,3 +150,108 @@ def classify(text: str, focus: str = "") -> PlayerIntent:
             return requests[-1]
         return PlayerIntent()
     return requests[0]
+
+
+# A physical-action plan is parsed deterministically from the CURRENT player
+# message. The local LLM may phrase Eli's response, but it never grants itself
+# actions or decides to keep exploring after an authorized sequence ends.
+MAX_PLANNED_ACTIONS = 5
+
+_PLAN_PREFIX = re.compile(
+    r"^\s*(?:please\s+|go\s+ahead\s+(?:and\s+)?|"
+    r"let(?:'s| us)\s+(?:(?:start|begin)\s+by\s+)?"
+    r"(?:having\s+you\s+|(?:get\s+you\s+to\s+))|"
+    r"(?:i\s+(?:want|need|would\s+like)\s+you\s+to)\s+|"
+    r"(?:can|could|would|will)\s+you\s+|"
+    r"(?:start|begin)\s+by\s+)+",
+    re.I,
+)
+_PLAN_VERB = (
+    r"(?:pick|grab|take|collect|retrieve|turn|switch|flip|toggle|"
+    r"look|scan|survey|inspect|examine|check|read|go|walk|head|"
+    r"move|approach|stand|open|unlock|use|enter|type|punch)"
+)
+# Only joiners introducing a SECOND imperative delimit steps; e.g.
+# "a keypad and a breaker" is never split.
+_PLAN_JOIN = re.compile(r",\s*(?:and\s+)?(?=" + _PLAN_VERB +
+                        r"\b)|\s+and\s+(?=" + _PLAN_VERB + r"\b)", re.I)
+_PLAN_IMPERATIVE = re.compile(
+    r"^(?:" + _PLAN_VERB + r")\b", re.I)
+_PLAN_SURVEY = re.compile(
+    r"^(?:look\s+around|look\s+over\s+the\s+room|"
+    r"scan\s+(?:the\s+)?room|survey\s+(?:the\s+)?room|"
+    r"inspect\s+(?:the\s+)?room|check\s+(?:out\s+)?"
+    r"(?:the\s+)?(?:whole\s+)?room)\b", re.I)
+_PLAN_FLASHLIGHT_LIGHT = re.compile(
+    r"^(?:turn|switch)\s+(on|off)\s+(?:(?:the|that|this|your)\s+)?"
+    r"(?:light|flashlight|torch|it)\b|"
+    r"^(?:turn|switch)\s+(?:(?:the|that|this|your)\s+)?"
+    r"(?:flashlight|torch|light|it)\s+(on|off)\b", re.I)
+
+
+def _plan_step(text: str, focus: str) -> PlayerIntent:
+    text = text.strip().rstrip(" .!?")
+    if not text or NEGATED.search(text):
+        return PlayerIntent()
+    if _PLAN_SURVEY.match(text):
+        return PlayerIntent("action", "survey", "room")
+    # "The light" can mean several fixtures. Only resolve it to the handheld
+    # torch after a prior explicit flashlight reference in this same request
+    # or a single unambiguous conversational referent.
+    light = _PLAN_FLASHLIGHT_LIGHT.match(text)
+    if light:
+        mode = (light.group(1) or light.group(2)).lower()
+        if re.search(r"\b(?:flashlight|torch)\b", text, re.I) or focus == "flashlight":
+            return PlayerIntent("action", "use", "flashlight", mode)
+        return PlayerIntent()
+    result = _classify_clause(text, focus)
+    if result.kind == "action":
+        # The user must supply actual digits. Never infer a secret code from
+        # world observations or the model's earlier conjectures.
+        if result.action == "enter_code" and not re.search(r"\b[0-9]{4}\b", text):
+            return PlayerIntent()
+        return result
+    return PlayerIntent()
+
+
+def plan_actions(text: str, focus: str = "") -> tuple[PlayerIntent, ...]:
+    """Recognize a short ordered sequence of independently authorized acts.
+
+    Pure conversation produces (). No LLM-generated action is accepted.
+    A multi-target sentence with no imperative stays conversational; a real
+    set of explicit instructions executes in spoken order. Do not silently
+    choose just one action from a user's compound instruction.
+    """
+    if not isinstance(text, str) or not text.strip():
+        return ()
+    commands: list[PlayerIntent] = []
+    current_focus = focus
+    for sentence in _COMMAND_SPLIT.split(text.strip()):
+        statement = sentence.strip()
+        if not statement:
+            continue
+        # Non-command observations may provide ONE explicit antecedent for
+        # "that", but cannot themselves authorize a physical action.
+        command = _PLAN_PREFIX.sub("", statement, count=1).strip()
+        is_directive = bool(_PLAN_IMPERATIVE.match(command) or _PLAN_SURVEY.match(command))
+        if not is_directive:
+            mentions = mentioned_targets(statement)
+            if len(mentions) == 1:
+                current_focus = next(iter(mentions))
+            elif len(mentions) > 1:
+                current_focus = ""
+            continue
+        parts = _PLAN_JOIN.split(command)
+        for part in parts:
+            part = _PLAN_PREFIX.sub("", part.strip(), count=1).strip()
+            result = _plan_step(part, current_focus)
+            if result.kind != "action":
+                # A compound instruction containing an unsupported/ambiguous
+                # step must not quietly execute a partial interpretation.
+                return ()
+            commands.append(result)
+            if len(commands) > MAX_PLANNED_ACTIONS:
+                return ()
+            if result.target != "room":
+                current_focus = result.target
+    return tuple(commands)
