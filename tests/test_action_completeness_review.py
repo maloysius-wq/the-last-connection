@@ -11,7 +11,7 @@ from unittest.mock import patch
 import unittest
 
 from ai_bridge.agent import Agent, BackendUnavailable, LlamaCppBackend, OllamaBackend, SessionStore
-from ai_bridge.semantic import REVIEW_SCHEMA
+from ai_bridge.semantic import REVIEW_SCHEMA, needs_action_review
 from test_semantic_planner import world, proposed, step
 
 PERSONA = Path(__file__).resolve().parents[1] / "data/characters/eli.json"
@@ -63,7 +63,7 @@ class TestActionCompleteness(unittest.TestCase):
         agent = Agent(backend, self.store, PERSONA)
         decision = agent.decide("review", message, world())
         self.assertEqual(backend.interpret_calls, 1)
-        if draft["kind"] == "action":
+        if draft["kind"] == "action" and needs_action_review(message, draft["steps"]):
             self.assertEqual(backend.review_calls, 1)
             self.assertIn("ACTION COMPLETENESS AUDITOR",
                           backend.last_review_input[0]["content"])
@@ -125,7 +125,7 @@ class TestActionCompleteness(unittest.TestCase):
         self.assertEqual(result.actions, ())
         self.assertIn("don't want to miss", result.speech)
 
-    def test_reviewed_hypothetical_extra_action_is_never_run(self):
+    def test_hypothetical_followup_cannot_make_simple_instruction_incomplete(self):
         text = "Pick up the flashlight. What if you opened the door?"
         result = self.decide(
             text,
@@ -134,10 +134,12 @@ class TestActionCompleteness(unittest.TestCase):
                 step("take", "flashlight", "Pick up the flashlight"),
                 step("use", "exit_door", "opened the door"),
             ]))
-        self.assertEqual(result.action, "wait")
-        self.assertEqual(result.actions, ())
+        # The one physical instruction is safe. A second model isn't allowed
+        # to turn an unrelated speculative question into a command.
+        self.assertEqual(result.action, "take")
+        self.assertEqual(len(result.actions), 1)
 
-    def test_review_model_cannot_invent_code(self):
+    def test_simple_keypad_walk_needs_no_second_model_guess(self):
         text = "Go to the keypad, please."
         result = self.decide(
             text,
@@ -146,7 +148,9 @@ class TestActionCompleteness(unittest.TestCase):
                 step("move_to", "keypad", "Go to the keypad"),
                 step("enter_code", "keypad", "please", "4317"),
             ]))
-        self.assertEqual(result.action, "wait")
+        self.assertEqual(result.action, "move_to")
+        self.assertEqual(result.actions, (
+            {"action": "move_to", "target": "keypad", "argument": ""},))
 
     def test_review_failure_cancels_without_attempting_first_action(self):
         result = self.decide(
