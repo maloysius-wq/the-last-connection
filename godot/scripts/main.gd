@@ -130,7 +130,7 @@ func _submit(message: String) -> void:
 
 func _request(path: String, body: Dictionary, stage: String) -> void:
     request_stage = stage
-    status.text = "Eli is thinking..." if stage == "decide" else "Eli is processing what happened..."
+    status.text = "Eli is thinking..." if stage == "decide" else "Saving the observation..."
     send_button.disabled = true
     input.editable = false
     var code := http.request(BRIDGE_URL + path,

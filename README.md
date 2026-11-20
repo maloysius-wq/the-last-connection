@@ -101,3 +101,9 @@ This is a **separate, self-launching Windows ZIP artifact**, not the source ZIP.
 4. The launcher starts local inference and the game automatically, then stops its model server when the game exits. Saves and AI memories live inside the portable game folder.
 
 See [portable/README.md](portable/README.md). The portable build is CPU-only in this first version, and may be slow on weaker PCs. The AI model must already be a compatible GGUF file. **It is not necessary to run LocalForge, Ollama, or a system Python installation.** Voice remains future work. GitHub Actions packaging cannot validate the private model stored on your PC.
+
+## Faster local AI responses (2026-11-19)
+
+The CPU-only portable build now generates **one** LLM response per player instruction rather than generating another response after every physical action. Godot validates the action, reports its observed result immediately, and the bridge saves it as a confirmed memory without a second inference. The next conversation uses that memory. Short in-character acknowledgments after actions are deterministic; the initial dialogue and decisions are still produced by the real local LLM.
+
+Recent dialogue and authoritative observations are compacted before sending them to llama.cpp, including for older saved sessions. The response token budget is reduced from 400 to 192 (with a fallback if a model cannot fit its JSON within the budget). These changes reduce redundant work but cannot guarantee a specific response time on a given CPU.
