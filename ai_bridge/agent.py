@@ -752,7 +752,7 @@ class Agent:
         if re.search(r"\b(?:hi|hello|hey)\s*,?\s*eli\b|"
                      r"\b(?:here to help|help you escape)\b", player_text, re.I):
             name = re.search(r"\b(?:i['’]m|i am|my name is)\s+([A-Z][a-z]{1,22})\b",
-                             player_text)
+                             player_text, re.I)
             greeting = "I hear you" + (", " + name.group(1) if name else "") + "."
             return (greeting + " I'm Eli. I don't know how I ended up here either. "
                     "Can you see the room from your side?")
