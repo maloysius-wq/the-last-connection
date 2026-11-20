@@ -225,3 +225,29 @@ naturally rather than repeating the log.
 Eli's desk interaction point has moved to an accessible location *in front*
 of the table, with a short aisle detour when approaching from wall fixtures.
 Old saves leaving Eli intersecting the tabletop are adjusted when loaded.
+
+
+## Sequential player-command queue (up to five actions)
+
+Eli now handles short, explicitly ordered instructions in one message. Example:
+
+> I see a flashlight on the desk next to you. Let's start by having you
+> pick that up, turn on the light, and look around the room to see if
+> you notice anything new.
+
+The local bridge creates a deterministic, bounded ordered plan and shows Eli's
+*intention*, not imaginary completed actions. The game physically executes each
+authorized step in sequence: pick up the flashlight, switch it on, then perform
+a real look-around animation and report only confirmed visible room details.
+
+The engine confirms one step at a time; an unsuccessful step, lost bridge
+connection or invalid instruction **cancels the remainder**. The interface
+shows step numbers and logged observations. It never retries failures,
+guesses hidden keypad codes or invents additional actions, and the player
+cannot submit a second command until the sequence finishes or stops. A single
+upfront plan does not trigger additional LLM generations after each action,
+so the fast response architecture remains intact.
+
+An ordinary single action and questions about the room remain supported.
+An ambiguous "turn on the light" requires a clear flashlight antecedent or
+an explicit fixture name; it won't silently switch an unrelated breaker.

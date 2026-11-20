@@ -72,26 +72,32 @@ class TestCommandTruth(unittest.TestCase):
         backend = HallucinatingBackend()
         result = self.agent(backend).decide("full", SCREENSHOT_INSTRUCTION, room())
         self.assertEqual((result.action, result.target, result.argument),
-                         ("use", "flashlight", "on"))
+                         ("take", "flashlight", ""))
+        self.assertEqual([(a["action"], a["target"], a["argument"])
+                          for a in result.actions],
+                         [("take", "flashlight", ""), ("use", "flashlight", "on")])
         self.assertIn("I'll pick up the flashlight", result.speech)
         self.assertNotIn("I've got it now", result.speech)
         self.assertEqual(backend.dialogue_calls, 0,
                          "A direct physical command must never use conversation generation")
-        self.assertEqual(backend.action_calls, 1)
+        self.assertEqual(backend.action_calls, 0)
 
     def test_confirmed_flashlight_outcome_has_no_extra_model_pass(self):
         backend = HallucinatingBackend()
         agent = self.agent(backend)
         result = agent.decide("execute", SCREENSHOT_INSTRUCTION, room())
-        self.assertEqual(result.action, "use")
+        self.assertEqual(result.action, "take")
+        after_pickup = room(holding=True, lit=False)
+        agent.outcome("execute", "take", "flashlight", True,
+                      "Eli picked up the flashlight from the desk.", after_pickup)
         after = room(holding=True, lit=True)
         after["actor_at"] = "flashlight"
         confirmed = agent.outcome(
             "execute", "use", "flashlight", True,
-            "Eli picked up the flashlight from the desk and switched it on.", after)
-        self.assertIn("see a little better", confirmed.speech)
+            "Eli switched on the handheld flashlight.", after)
+        self.assertIn("flashlight is on", confirmed.speech)
         self.assertEqual(backend.dialogue_calls, 0)
-        self.assertEqual(backend.action_calls, 1)
+        self.assertEqual(backend.action_calls, 0)
 
     def test_first_screenshot_false_flashlight_memory_is_blocked(self):
         backend = HallucinatingBackend(

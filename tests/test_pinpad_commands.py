@@ -87,9 +87,11 @@ class TestPinPadCommand(unittest.TestCase):
             reply = agent.decide(
                 "pinpad", "Okay great. Go over to the pin pad and take a look at the red glowing screen.",
                 WORLD)
-        self.assertEqual((reply.action, reply.target), ("inspect", "keypad"))
-        self.assertIn("closer look at the keypad", reply.speech.lower())
-        self.assertEqual(backend.structured_calls, 1)
+        self.assertEqual((reply.action, reply.target), ("move_to", "keypad"))
+        self.assertEqual([x["action"] for x in reply.actions],
+                         ["move_to", "inspect"])
+        self.assertIn("inspect the keypad", reply.speech.lower())
+        self.assertEqual(backend.structured_calls, 0)
         self.assertEqual(backend.conversation_calls, 0)
 
     def test_conversation_cannot_claim_movement_is_underway_without_action(self):

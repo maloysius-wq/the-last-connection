@@ -172,10 +172,13 @@ func perform_action(action: String, target: String, argument: String = "") -> vo
     if escaped:
         action_finished.emit(action, target, false, "Eli has already escaped the maintenance chamber.")
         return
-    if not snapshot()["objects"].has(target):
+    if action == "survey" and target != "room":
+        action_finished.emit(action, target, false, "Eli can only survey the room.")
+        return
+    if action != "survey" and not snapshot()["objects"].has(target):
         action_finished.emit(action, target, false, "Eli cannot see or reach that object yet.")
         return
-    if action not in ["move_to", "inspect", "take", "use", "enter_code"]:
+    if action not in ["move_to", "inspect", "take", "use", "enter_code", "survey"]:
         action_finished.emit(action, target, false, "Unsupported physical action.")
         return
     if action == "enter_code":
@@ -186,6 +189,15 @@ func perform_action(action: String, target: String, argument: String = "") -> vo
         action_finished.emit(action, target, false, "The flashlight can only be switched on or off.")
         return
     busy = true
+    if action == "survey":
+        # Eli visibly looks around without moving to a made-up object.
+        var original_y := actor.rotation.y
+        var glance := create_tween()
+        glance.tween_property(actor, "rotation:y", original_y - 0.65, 0.35)
+        glance.tween_property(actor, "rotation:y", original_y + 0.65, 0.40)
+        glance.tween_property(actor, "rotation:y", original_y, 0.35)
+        glance.finished.connect(_finish_action.bind(action, target, argument))
+        return
     # A repeated travel request should not claim new movement when he is already there.
     if action == "move_to" and actor.position.distance_to(object_positions[target]) < 0.12:
         call_deferred("_finish_action", action, target, argument)
@@ -216,7 +228,9 @@ func _finish_action(action: String, target: String, argument: String) -> void:
     busy = false
     var success := true
     var description := "Eli moved to " + target.replace("_", " ") + "."
-    if action == "move_to":
+    if action == "survey":
+        description = _survey_result()
+    elif action == "move_to":
         if actor.position.distance_to(object_positions[target]) > 0.12:
             success = false
             description = "Eli has not reached the " + target.replace("_", " ") + " yet."
@@ -295,10 +309,25 @@ func _finish_action(action: String, target: String, argument: String) -> void:
         else:
             success = false
             description = "Nothing happened when Eli tried that."
-    if success and actor.position.distance_to(object_positions[target]) < 0.12:
+    if success and object_positions.has(target) and actor.position.distance_to(object_positions[target]) < 0.12:
         actor_at = target
     last_observation = description
     action_finished.emit(action, target, success, description)
+
+func _survey_result() -> String:
+    # Draw only on current authoritative flags. No unexamined puzzle secrets
+    # appear merely because Eli glanced around.
+    var light_text := "The handheld flashlight is on." if flashlight_on else (
+        "The flashlight is in Eli's hand but switched off." if inventory.has("flashlight")
+        else "The flashlight is still on the desk.")
+    var power_text := "The overhead lights are on." if breaker_on else "The overhead lights are out."
+    var door_text := "The keypad glows green and the door is unlocked." if door_unlocked else (
+        "The keypad glows red beside the locked door.")
+    var note_text := " A folded note is visible on the desk, but its writing must be examined closely." if breaker_on else (
+        " Nothing else newly visible stands out from this position.")
+    return ("Eli looks around the maintenance room. " + light_text + " " + power_text +
+        " The breaker box is mounted on the wall. " + door_text + note_text)
+
 
 func export_state() -> Dictionary:
     return {"inventory": inventory.duplicate(), "breaker_on": breaker_on,

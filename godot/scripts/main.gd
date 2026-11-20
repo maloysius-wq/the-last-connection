@@ -29,6 +29,9 @@ var available_update_tag := ""
 var session_id: String
 var request_stage := "idle"
 var action_context := {"action": "", "target": ""}
+var queued_actions: Array[Dictionary] = []
+var queue_index := 0
+var last_step_succeeded := false
 
 func _ready() -> void:
     _build_ui()
@@ -165,33 +168,126 @@ func _request(path: String, body: Dictionary, stage: String) -> void:
         HTTPClient.METHOD_POST, JSON.stringify(body))
     if code != OK:
         _message("SYSTEM", "Unable to send request. Code: " + str(code))
+        if not queued_actions.is_empty():
+            _message("SYSTEM", "Sequence cancelled because the action outcome could not be recorded.")
         _idle()
 
 func _on_http_completed(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:
     if result != HTTPRequest.RESULT_SUCCESS or response_code != 200:
         var detail := body.get_string_from_utf8()
         _message("SYSTEM", "AI bridge error (HTTP " + str(response_code) + "): " + detail.left(350))
+        if not queued_actions.is_empty():
+            _message("SYSTEM", "The remaining actions were cancelled because the bridge failed.")
         _idle()
         return
     var response = JSON.parse_string(body.get_string_from_utf8())
     if typeof(response) != TYPE_DICTIONARY:
-        _message("SYSTEM", "Invalid response from the AI bridge.")
+        _message("SYSTEM", "Invalid response from the AI bridge. Sequence cancelled.")
         _idle()
         return
+
+    if request_stage == "outcome" and not queued_actions.is_empty():
+        # The engine has finished and the local bridge recorded this exact
+        # outcome. Do not continue a failed or unrecorded step.
+        if not last_step_succeeded:
+            _message("ELI", str(response.get("speech", "That didn't work.")))
+            if queued_actions.size() > 1:
+                _message("SYSTEM", "Sequence stopped at step " + str(queue_index + 1) +
+                    " of " + str(queued_actions.size()) +
+                    ". Later steps were NOT attempted.")
+            _idle()
+            return
+        if queue_index + 1 < queued_actions.size():
+            queue_index += 1
+            _start_queued_action()
+            return
+        _message("ELI", str(response.get("speech", "That's done.")))
+        if queued_actions.size() > 1:
+            _message("SYSTEM", "Sequence complete: " + str(queued_actions.size()) +
+                " of " + str(queued_actions.size()) + " steps confirmed.")
+        _idle()
+        return
+
     _message("ELI", str(response.get("speech", "...")))
     if request_stage == "decide":
-        var action: String = str(response.get("action", "wait"))
-        var target: String = str(response.get("target", ""))
-        var argument: String = str(response.get("argument", ""))
-        if action != "wait":
-            request_stage = "action"
-            status.text = "Eli is moving..."
-            action_context = {"action": action, "target": target, "argument": argument}
-            world.perform_action(action, target, argument)
+        var plan_value: Variant = response.get("actions", [])
+        if typeof(plan_value) == TYPE_ARRAY and not plan_value.is_empty():
+            if plan_value.size() > 5:
+                _message("SYSTEM", "The action sequence is too long. Nothing was attempted.")
+                _idle()
+                return
+            var valid := true
+            for step in plan_value:
+                if typeof(step) != TYPE_DICTIONARY or not _valid_queue_step(step):
+                    valid = false
+                    break
+            if not valid:
+                _message("SYSTEM", "Invalid action sequence from bridge. Nothing was attempted.")
+                _idle()
+                return
+            for step in plan_value:
+                queued_actions.append({
+                    "action": str(step.get("action", "")),
+                    "target": str(step.get("target", "")),
+                    "argument": str(step.get("argument", ""))
+                })
+            queue_index = 0
+            _start_queued_action()
+            return
+        # Backward compatibility with earlier bridge versions: one action.
+        var one_action: Dictionary = {
+            "action": str(response.get("action", "wait")),
+            "target": str(response.get("target", "")),
+            "argument": str(response.get("argument", ""))
+        }
+        if one_action["action"] != "wait":
+            if not _valid_queue_step(one_action):
+                _message("SYSTEM", "Invalid physical action from bridge. Nothing was attempted.")
+                _idle()
+                return
+            queued_actions = [one_action]
+            queue_index = 0
+            _start_queued_action()
             return
     _idle()
 
+
+func _valid_queue_step(step: Dictionary) -> bool:
+    var action: String = str(step.get("action", ""))
+    var target: String = str(step.get("target", ""))
+    var argument: String = str(step.get("argument", ""))
+    if action not in ["move_to", "inspect", "take", "use", "enter_code", "survey"]:
+        return false
+    if action == "survey":
+        return target == "room" and argument.is_empty()
+    # Target names are whitelisted, but only the ENGINE at execution time
+    # decides if an object is currently visible/reachable. Earlier planned
+    # actions may reveal objects, such as restoring power before reading a note.
+    if target not in ["flashlight", "breaker_box", "exit_door", "keypad", "maintenance_note"]:
+        return false
+    if action == "enter_code":
+        return target == "keypad" and argument.length() == 4 and argument.is_valid_int()
+    if action == "use" and target == "flashlight":
+        return argument in ["", "on", "off"]
+    return argument.is_empty()
+
+
+func _start_queued_action() -> void:
+    if queue_index >= queued_actions.size():
+        _idle()
+        return
+    var step: Dictionary = queued_actions[queue_index]
+    request_stage = "action"
+    var step_total := queued_actions.size()
+    status.text = ("Eli is performing step " + str(queue_index + 1) + "/" +
+        str(step_total) + "...") if step_total > 1 else "Eli is moving..."
+    action_context = step.duplicate()
+    world.perform_action(str(step["action"]), str(step["target"]),
+                         str(step.get("argument", "")))
+
+
 func _on_world_action_finished(action: String, target: String, success: bool, description: String) -> void:
+    last_step_succeeded = success
     _message("OBSERVATION", description)
     if success:
         _save()
@@ -200,6 +296,9 @@ func _on_world_action_finished(action: String, target: String, success: bool, de
     _request("/api/outcome", body, "outcome")
 
 func _idle() -> void:
+    queued_actions.clear()
+    queue_index = 0
+    last_step_succeeded = false
     request_stage = "idle"
     status.text = "Ready"
     send_button.disabled = false

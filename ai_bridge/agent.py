@@ -9,13 +9,13 @@ import re
 import threading
 from typing import Any, Protocol
 
-from .intent import PlayerIntent, classify, mentioned_targets
+from .intent import PlayerIntent, classify, mentioned_targets, plan_actions
 from urllib import request, error
 
 MODEL = os.environ.get("TLC_MODEL", "qwen3:4b-instruct")
 OLLAMA_URL = os.environ.get("TLC_OLLAMA_URL", "http://127.0.0.1:11434/api/chat")
 SESSION_DIR = Path(os.environ.get("TLC_SESSION_DIR", str(Path(__file__).resolve().parent / "sessions")))
-ACTION_SET = frozenset(("wait", "move_to", "inspect", "take", "use", "enter_code"))
+ACTION_SET = frozenset(("wait", "move_to", "inspect", "take", "use", "enter_code", "survey"))
 EMOTION_SET = frozenset(("calm", "cautious", "curious", "afraid"))
 SESSION_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 RESPONSE_SCHEMA = {
@@ -51,6 +51,8 @@ class Decision:
     target: str = ""
     emotion: str = "cautious"
     argument: str = ""
+    # Only commands from this player's explicit request can enter the queue.
+    actions: tuple[dict[str, str], ...] = ()
 
 
 class Backend(Protocol):
@@ -283,6 +285,8 @@ class Agent:
         else:
             argument = ""
         if action != "wait":
+            if action == "survey" and target == "room":
+                return Decision(speech, "survey", "room", emotion)
             obj = world["objects"].get(target)
             if not isinstance(obj, dict) or obj.get("visible") is not True:
                 # Do not let a model hallucinate or operate an undiscovered object.
@@ -417,12 +421,42 @@ class Agent:
             if referent not in world["objects"] or not world["objects"][referent].get("visible"):
                 referent = ""
             intent = classify(player_text, referent)
+            plan = plan_actions(player_text, referent)
             prompt = "PLAYER REQUEST:\n" + json.dumps({
                 "player_text": player_text,
                 "request_kind": intent.prompt_hint,
                 "world": self._perceived_world(world),
             }, ensure_ascii=False, separators=(",", ":"))
-            if intent.kind != "action" and self._room_overview_question(player_text):
+            if len(plan) > 1:
+                unavailable = []
+                for index, step in enumerate(plan):
+                    if step.target == "room":
+                        continue
+                    visible = world["objects"].get(step.target, {}).get("visible") is True
+                    # Breaker power can reveal the folded maintenance note;
+                    # Godot rechecks visibility when that queued step runs.
+                    revealed_later = (
+                        step.target == "maintenance_note" and
+                        any(previous.action == "use" and previous.target == "breaker_box"
+                            for previous in plan[:index])
+                    )
+                    if not visible and not revealed_later:
+                        unavailable.append(step.target)
+                if unavailable:
+                    result = Decision("I can't see everything you're asking me to use yet. "
+                                      "Could you help me find it first?", "wait")
+                else:
+                    sequence = tuple({"action": step.action, "target": step.target,
+                                      "argument": step.argument or step.light_mode}
+                                     for step in plan)
+                    first = sequence[0]
+                    result = Decision(self._sequence_phrase(plan), first["action"],
+                                      first["target"], "curious",
+                                      first["argument"], sequence)
+            elif len(plan) == 1 and plan[0].action == "survey":
+                result = Decision("I'll take a look around and tell you what stands out.",
+                                  "survey", "room", "curious")
+            elif intent.kind != "action" and self._room_overview_question(player_text):
                 result = Decision(self._describe_room(world), "wait", "", "curious")
             elif intent.kind != "action" and self._spatial_question(player_text):
                 result = Decision(self._describe_location(world), "wait", "", "calm")
@@ -443,7 +477,10 @@ class Agent:
             # Include Eli's own reply, because the operator might say
             # 'pick that up' after Eli mentions the desk flashlight.
             # Several mentioned props must not silently resolve 'that'.
-            if intent.kind == "action":
+            if plan:
+                named = [step.target for step in plan if step.target != "room"]
+                next_referent = named[-1] if named else ""
+            elif intent.kind == "action":
                 next_referent = intent.target
             else:
                 cited = {item for item in mentioned_targets(result.speech)
@@ -522,6 +559,33 @@ class Agent:
         # Always use a truthful FUTURE-TENSE statement, then wait for Godot.
         speech = Agent._plan_phrase(intent, world)
         return Decision(speech, intent.action, intent.target, result.emotion, argument)
+
+    @staticmethod
+    def _sequence_phrase(plan: tuple[PlayerIntent, ...]) -> str:
+        """Future-tense plan from current authorized instructions only."""
+        names = {"breaker_box": "breaker box", "exit_door": "exit door",
+                 "maintenance_note": "note", "keypad": "keypad"}
+        phrases: list[str] = []
+        for step in plan:
+            name = names.get(step.target, step.target.replace("_", " "))
+            if step.action == "take":
+                phrases.append("pick up the " + name)
+            elif step.action == "use" and step.target == "flashlight":
+                mode = step.light_mode
+                phrases.append(("switch " + mode + " the flashlight") if mode
+                               else "use the flashlight")
+            elif step.action == "survey":
+                phrases.append("look around the room")
+            elif step.action == "move_to":
+                phrases.append("walk to the " + name)
+            elif step.action == "inspect":
+                phrases.append("inspect the " + name)
+            elif step.action == "enter_code":
+                phrases.append("enter the code on the keypad")
+            else:
+                phrases.append("use the " + name)
+        return ("Okay. I'll " + ", then ".join(phrases) +
+                ". I'll stop if something doesn't work.")
 
     @staticmethod
     def _plan_phrase(intent: PlayerIntent, world: dict[str, Any]) -> str:
@@ -901,6 +965,8 @@ class Agent:
             description = str(obj.get("description", "")) if isinstance(obj, dict) else ""
             is_on = bool(world.get("flashlight_on", "It is on." in description))
             return "Got it. The flashlight is " + ("on." if is_on else "off.")
+        if action == "survey":
+            return "That's everything I can make out from here. Do you see anything I missed?"
         if action == "move_to":
             at = str(world.get("actor_at", ""))
             if at == target:

@@ -70,18 +70,22 @@ class TestFlashlightReferences(unittest.TestCase):
             "I'm able to see it. Please pick that up and turn it on.",
             room())
         self.assertEqual((reply.action, reply.target, reply.argument),
-                         ("use", "flashlight", "on"))
+                         ("take", "flashlight", ""))
+        self.assertEqual([(x["action"], x["target"]) for x in reply.actions],
+                         [("take", "flashlight"), ("use", "flashlight")])
         self.assertIn("I'll pick up the flashlight", reply.speech)
         self.assertNotIn("I grabbed", reply.speech)
         self.assertEqual(backend.conversations, 1)
-        self.assertEqual(backend.decisions, 1)
+        self.assertEqual(backend.decisions, 0)
+        agent.outcome("screenshot", "take", "flashlight", True,
+                      "Eli picked up the flashlight.", room(holding=True, switched=False))
         actual = room(holding=True, switched=True)
         actual["last_observation"] = "Eli picked up the flashlight from the desk and switched it on."
         acknowledgment = agent.outcome(
             "screenshot", "use", "flashlight", True, actual["last_observation"], actual)
         self.assertIn("see a little better", acknowledgment.speech)
-        self.assertEqual(backend.conversations + backend.decisions, 2,
-                         "No second model inference during Godot outcome")
+        self.assertEqual(backend.conversations + backend.decisions, 1,
+                         "No extra model inference during any queued outcome")
 
     def test_upgrading_existing_session_resolves_last_saved_eli_reply(self):
         # Older versions only persisted history/focus and could leave the
@@ -100,7 +104,9 @@ class TestFlashlightReferences(unittest.TestCase):
         result = self.agent(backend).decide(
             "upgraded", "I can see it. Please pick that up and turn it on.", room())
         self.assertEqual((result.action, result.target, result.argument),
-                         ("use", "flashlight", "on"))
+                         ("take", "flashlight", ""))
+        self.assertEqual(result.actions[1]["action"], "use")
+        self.assertEqual(result.actions[1]["argument"], "on")
         self.assertEqual(self.store.load("upgraded")["referent"], "flashlight")
 
     def test_upgrading_ambiguous_history_does_not_use_stale_focus(self):
