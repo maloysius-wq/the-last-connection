@@ -83,3 +83,14 @@ Primary repo: `maloysius-wq/the-last-connection` (public; created by user). Use 
 - Constrain conversation context to recent turns and six confirmed events, compress legacy save snapshots, filter invisible objects, and reduce llama.cpp generated token cap from 400 to 192.
 - Added tests that count backend calls, validate outcome memory, protect hidden facts and legacy sessions, and enforce bounded prompt size. Test using GitHub Actions on both Python/Godot and portable Windows workflows before merging.
 - Existing GGUF stays in its D: location; update does not move/copy weights. Real latency on user's machine should be observed after they download the refreshed build.
+
+## Latency optimization shipped (2026-11-19, user playtest follow-up)
+
+- PR #4 merged into `main` as `4dcc47d6b40d3c4878d2c704083c4df4b3998f47`.
+- GitHub Actions PR run `44658602430`: Python and Godot headless tests both passed.
+- Portable Windows PR build run `44658602351` passed; artifact ID `14594821021` named `TheLastConnection-Windows-Portable-NoModel`.
+- Downloaded and checked actual ZIP (`72,846,429` bytes): 1,042 files, no ZIP corruption; includes `TheLastConnection.exe`, `TheLastConnectionGame.exe`, and `runtime/llama/llama-server.exe`; includes no GGUF weights.
+- Response path now makes **one LLM request per player input** and **zero LLM requests to acknowledge action outcomes**. Acknowledgments are deterministic phrases based on authoritative Godot results. Confirmed facts persist and enter the next prompt.
+- Shortened model output cap to 192 and bounded prompt history; old histories compact on next turn. CI has 30 Python tests (25 previously + five new latency regression tests).
+- Next step: user tests D-drive portable game, observes initial thinking latency versus the now-fast post-action acknowledgment; do not promise instant first response on CPU. Potential subsequent optimization: optional GPU backend, runtime response timing instrumentation, model/quantization benchmarking.
+- Preserve `config.json`, `user_data/`, and user's external D-drive GGUF file on upgrades. Never duplicate model weights to C:.
