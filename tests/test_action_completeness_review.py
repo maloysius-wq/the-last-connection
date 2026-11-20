@@ -11,7 +11,7 @@ from unittest.mock import patch
 import unittest
 
 from ai_bridge.agent import Agent, BackendUnavailable, LlamaCppBackend, OllamaBackend, SessionStore
-from ai_bridge.semantic import REVIEW_SCHEMA, needs_action_review
+from ai_bridge.semantic import REVIEW_SCHEMA, needs_action_review, is_reflective_question
 from test_semantic_planner import world, proposed, step
 
 PERSONA = Path(__file__).resolve().parents[1] / "data/characters/eli.json"
@@ -26,6 +26,7 @@ class AuditedBackend:
         self.draft, self.reviewed = draft, reviewed
         self.interpret_calls = 0
         self.review_calls = 0
+        self.conversation_calls = 0
         self.last_review_input = None
 
     def interpret(self, messages):
@@ -40,7 +41,8 @@ class AuditedBackend:
         return self.reviewed
 
     def converse(self, messages):
-        raise AssertionError("No old free-form fallback")
+        self.conversation_calls += 1
+        return self.draft.get("speech", "I don't know yet.")
 
     def respond(self, messages):
         raise AssertionError("No old regex single-action fallback")
@@ -62,8 +64,12 @@ class TestActionCompleteness(unittest.TestCase):
         backend = AuditedBackend(draft, reviewer)
         agent = Agent(backend, self.store, PERSONA)
         decision = agent.decide("review", message, world())
-        self.assertEqual(backend.interpret_calls, 1)
-        if draft["kind"] == "action" and needs_action_review(message, draft["steps"]):
+        self.assertEqual(backend.interpret_calls,
+                         0 if is_reflective_question(message) else 1)
+        self.assertEqual(backend.conversation_calls,
+                         1 if is_reflective_question(message) else 0)
+        if (not is_reflective_question(message) and draft["kind"] == "action"
+                and needs_action_review(message, draft["steps"])):
             self.assertEqual(backend.review_calls, 1)
             self.assertIn("ACTION COMPLETENESS AUDITOR",
                           backend.last_review_input[0]["content"])
