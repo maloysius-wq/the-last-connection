@@ -260,11 +260,11 @@ func _valid_queue_step(step: Dictionary) -> bool:
         return false
     if action == "survey":
         return target == "room" and argument.is_empty()
-    if not world.snapshot()["objects"].has(target):
-        # The first step must already be visible; later steps can reveal new
-        # clues. World will revalidate targets when their turn arrives.
-        if queued_actions.is_empty() and queue_index == 0:
-            return false
+    # Target names are whitelisted, but only the ENGINE at execution time
+    # decides if an object is currently visible/reachable. Earlier planned
+    # actions may reveal objects, such as restoring power before reading a note.
+    if target not in ["flashlight", "breaker_box", "exit_door", "keypad", "maintenance_note"]:
+        return false
     if action == "enter_code":
         return target == "keypad" and argument.length() == 4 and argument.is_valid_int()
     if action == "use" and target == "flashlight":
