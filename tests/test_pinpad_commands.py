@@ -92,6 +92,17 @@ class TestPinPadCommand(unittest.TestCase):
         self.assertEqual(backend.structured_calls, 1)
         self.assertEqual(backend.conversation_calls, 0)
 
+    def test_conversation_cannot_claim_movement_is_underway_without_action(self):
+        with TemporaryDirectory() as temporary:
+            backend = ConfusedBackend()
+            agent = Agent(backend, SessionStore(Path(temporary)), PERSONA)
+            result = agent.decide("chat", "What do you think the red light means?", WORLD)
+        self.assertEqual(result.action, "wait")
+        self.assertNotIn("on my way", result.speech.lower())
+        self.assertIn("haven't started moving", result.speech.lower())
+        self.assertEqual(backend.conversation_calls, 1)
+        self.assertEqual(backend.structured_calls, 0)
+
     def test_decide_go_to_pinpad_then_target_is_keypad(self):
         with TemporaryDirectory() as temporary:
             backend = ConfusedBackend()
