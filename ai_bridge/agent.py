@@ -817,11 +817,18 @@ class Agent:
                 r"\b(?:the\s+)?(?:flashlight|light)\s*(?:['’]s|\s+is)\s+"
                 r"(?:on|working|switched\s+on)\b", clause, re.I)
             false_light = bool(light_assertion and not world.get("flashlight_on", False))
+            # Claimed trips to room fixtures and door openings are also world
+            # events; do not allow them to be narrated on a chat-only turn.
+            room_event = re.search(
+                r"\bi\s+(?:(?:just|already)\s+)?"
+                r"(?:walked|went|moved|headed|reached|opened|unlocked)\b"
+                r"[^.!?]{0,90}\b(?:keypad|pin\s*pad|breaker|door|desk|flashlight)\b",
+                clause, re.I)
             # Keep true confirmed states in ordinary conversation; never allow
             # unsupported 'I just did it' narration to replace engine actions.
             static_truth = bool(light_assertion and world.get("flashlight_on", False)
                                 and not re.search(r"\bi\s+(?:just|already)\b", clause, re.I))
-            if (unsupported and not static_truth) or motion or false_pickup or false_light:
+            if (unsupported and not static_truth) or motion or room_event or false_pickup or false_light:
                 removed = True
                 if unsupported == "flashlight" or false_pickup or false_light:
                     removed_target = "flashlight"
