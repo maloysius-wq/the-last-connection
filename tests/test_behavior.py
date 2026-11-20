@@ -119,6 +119,16 @@ class TestConversationGrounding(unittest.TestCase):
                          ("use", "flashlight", "on"))
         self.assertIn("flashlight", reply.speech.lower())
 
+    def test_flashlight_goal_survives_model_misreading_missing_pickup(self):
+        agent, backend = self.agent({
+            "speech": "I can't use it because I haven't picked it up.",
+            "action": "wait", "target": ""})
+        reply = agent.decide("a1b", "Please turn on the flashlight", world())
+        self.assertEqual((reply.action, reply.target, reply.argument),
+                         ("use", "flashlight", "on"))
+        self.assertIn("pick up", reply.speech)
+        self.assertEqual(len(backend.messages), 1)
+
     def test_request_pickup_is_not_replaced_with_inspection(self):
         agent, _ = self.agent({"speech": "I'll look at it first.",
                                "action": "inspect", "target": "flashlight"})
