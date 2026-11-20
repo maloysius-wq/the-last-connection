@@ -26,6 +26,27 @@ func _run() -> void:
         quit(1)
         return
     _expect(not world.snapshot()["inventory"].has("flashlight"), "Flashlight begins on desk")
+    # Turning on an uncollected flashlight must physically pick it up first.
+    world.perform_action("use", "flashlight", "on")
+    var flashlight_action: Array = await world.action_finished
+    _expect(flashlight_action[2] == true, "Using uncollected flashlight succeeds via pickup")
+    _expect("picked up" in str(flashlight_action[3]), "Outcome reports flashlight pickup truthfully")
+    _expect(world.snapshot()["inventory"].has("flashlight"), "Flashlight is in Eli's hand")
+    _expect(world.snapshot()["flashlight_on"] == true, "Flashlight is now on")
+    world.perform_action("use", "flashlight", "on")
+    flashlight_action = await world.action_finished
+    _expect(flashlight_action[2] == true and world.snapshot()["flashlight_on"] == true,
+        "Requesting ON twice does not accidentally toggle OFF")
+    world.perform_action("use", "flashlight", "off")
+    flashlight_action = await world.action_finished
+    _expect(flashlight_action[2] == true and world.snapshot()["flashlight_on"] == false,
+        "Explicit OFF state is respected")
+    world.reset_state()
+    _expect(not world.snapshot()["inventory"].has("flashlight"), "Reset returns flashlight to the desk")
+    world.perform_action("use", "flashlight", "off")
+    flashlight_action = await world.action_finished
+    _expect(flashlight_action[2] == true and not world.snapshot()["inventory"].has("flashlight"),
+        "Turning OFF a desk flashlight does not make Eli pick it up")
     world.perform_action("take", "flashlight")
     var result: Array = await world.action_finished
     _expect(result[2] == true, "Flashlight pickup succeeds")
