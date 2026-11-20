@@ -50,6 +50,28 @@ func _run() -> void:
         _expect(entry.has_focus(), "Chat regains focus after request is done")
         _expect(entry.text == "next instruction", "Draft survives between interactions")
         entry.clear()
+        # Lost Windows focus must not swallow the FIRST character when the
+        # terminal is already showing READY. No focus-exited regrab callback.
+        entry.release_focus()
+        var first_key := InputEventKey.new()
+        first_key.pressed = true
+        first_key.unicode = 120 # x
+        app.call("_unhandled_key_input", first_key)
+        _expect(entry.has_focus(), "Unfocused READY chat accepts a keyboard press")
+        _expect(entry.text == "x", "Unfocused READY chat does not lose the first typed character")
+        entry.clear()
+        # The UI logs the full bridge response; the bridge itself must ensure
+        # its text has a complete ending, not truncate at 650 characters.
+        var full_reply := "I'm listening. " + "This is an intentionally long complete sentence. ".repeat(18)
+        app.set("request_stage", "decide")
+        entry.release_focus()
+        app.call("_on_http_completed", HTTPRequest.RESULT_SUCCESS, 200,
+            PackedStringArray(),
+            JSON.stringify({"speech": full_reply, "action": "wait", "target": ""}).to_utf8_buffer())
+        _expect(full_reply in str(app.get("log_view").get_parsed_text()),
+            "Terminal preserves full responses beyond the old 650-character cutoff")
+        _expect(entry.has_focus(), "Chat focus is restored immediately when READY is shown")
+        entry.clear()
     # A prior focus-exited callback forced the input to grab focus while the
     # player was clicking CHECK FOR UPDATES, potentially canceling its press.
     var update_btn: Button = app.get("update_button")
