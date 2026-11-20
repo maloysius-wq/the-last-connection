@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parent.parent
 MAX_BODY = 16_384
 
 
-def create_handler(agent: Agent, mode: str):
+def create_handler(agent: Agent, mode: str, updater=None):
     class Handler(BaseHTTPRequestHandler):
         def _send(self, code: int, payload: dict):
             body = json.dumps(payload).encode("utf-8")
@@ -24,11 +24,37 @@ def create_handler(agent: Agent, mode: str):
             self.wfile.write(body)
 
         def do_GET(self):
+            if self.path == "/api/update/check" and updater is not None:
+                try:
+                    return self._send(200, updater.check())
+                except Exception as exc:
+                    # Update checks never interrupt AI gameplay.
+                    return self._send(503, {"error": str(exc)[:300]})
             if self.path == "/api/health":
                 return self._send(200, {"ok": True, "backend": mode, "model": MODEL if mode == "ollama" else "mock", "voice_ready": False})
             return self._send(404, {"error": "Not found"})
 
         def do_POST(self):
+            if self.path == "/api/update/request":
+                if updater is None:
+                    return self._send(404, {"error": "Updater is only available in the portable game."})
+                # Custom header + JSON cannot be sent as a browser simple request.
+                # Cross-origin preflight is intentionally unsupported on localhost.
+                if (self.headers.get("X-TLC-Update") != "1" or
+                        self.headers.get("Content-Type", "").split(";")[0].strip().lower() != "application/json"):
+                    return self._send(403, {"error": "Update request must originate from the game."})
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                    if not 0 < length <= 2048:
+                        raise InvalidRequest("Invalid update request size")
+                    data = json.loads(self.rfile.read(length))
+                    if not isinstance(data, dict) or data.get("confirm") is not True:
+                        return self._send(403, {"error": "Update requires explicit player confirmation."})
+                    return self._send(200, updater.queue(data.get("tag", "")))
+                except (ValueError, TypeError, InvalidRequest) as exc:
+                    return self._send(400, {"error": str(exc)})
+                except Exception as exc:
+                    return self._send(503, {"error": str(exc)[:300]})
             if self.path not in ("/api/decide", "/api/outcome"):
                 return self._send(404, {"error": "Not found"})
             try:
