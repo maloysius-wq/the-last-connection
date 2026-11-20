@@ -315,7 +315,7 @@ func restore_state(data: Dictionary) -> void:
     keypad_indicator.material_override = indicator_material
     actor.position = Vector3(float(data.get("actor_x", 0)), 0, float(data.get("actor_z", 0)))
     actor_at = str(data.get("actor_at", "room_center"))
-    if not object_positions.has(actor_at):
+    if not data.has("actor_at") or not object_positions.has(actor_at):
         actor_at = "room_center"
         for target in object_positions.keys():
             if actor.position.distance_to(object_positions[target]) < 0.12:
