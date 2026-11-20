@@ -472,6 +472,19 @@ class Agent:
                 "door_previously_attempted": has_door_attempt,
                 "your_current_room": self._perceived_world(world),
             }
+            if semantic:
+                held = [name for name in world.get("inventory", [])
+                        if isinstance(name, str) and
+                        isinstance(world.get("objects", {}).get(name), dict)]
+                if len(held) == 1:
+                    system_context += (
+                        "\nCURRENT SINGLE HELD ITEM: " + held[0] + ". "
+                        "If the operator says what you are holding or carrying "
+                        "and refers to 'it', that pronoun refers to this item "
+                        "unless the operator explicitly identifies another object. "
+                        "This is REFERENCE CONTEXT, not permission to act. "
+                        "Only explicit current-turn requests authorize movement "
+                        "or using the item.")
             system_context += ("\nCANONICAL PERSPECTIVE AND CURRENT PHYSICAL EVIDENCE. "
                                "These facts are true regardless of how the remote "
                                "speaker phrases things. The flashlight, wall panel, "
