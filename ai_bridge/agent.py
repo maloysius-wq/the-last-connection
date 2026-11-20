@@ -11,7 +11,8 @@ from typing import Any, Protocol
 
 from .intent import PlayerIntent, classify, mentioned_targets, plan_actions
 from .semantic import (SCHEMA as SEMANTIC_SCHEMA, INSTRUCTIONS as SEMANTIC_INSTRUCTIONS,
-                       REVIEW_SCHEMA, PlanRejected, review_messages, validated_steps)
+                       REVIEW_SCHEMA, PlanRejected, review_messages, validated_steps,
+                       is_reflective_question, needs_action_review)
 from urllib import request, error
 
 MODEL = os.environ.get("TLC_MODEL", "qwen3:4b-instruct")
@@ -335,7 +336,11 @@ class Agent:
             "in what you say and ask, not a long theatrical monologue. "
             "Only describe real observations as facts; do not invent keypad "
             "pulse counts, numeric sequences, timings or past key presses. "
-            "Say when an interpretation is only a guess. Finish your sentences."
+            "Say when an interpretation is only a guess. Finish your sentences. "
+            "When the operator is frustrated that you misunderstood a command "
+            "or asks why you hesitated, respond to their FEELINGS and question. "
+            "Briefly acknowledge the misunderstanding and show you're listening; "
+            "do not blame them or make up a physical reason for your hesitation."
         )
         # The production GGUF now decides whether language is chat or an
         # explicitly authorized action plan. Legacy deterministic parsing is
@@ -467,6 +472,19 @@ class Agent:
                 "door_previously_attempted": has_door_attempt,
                 "your_current_room": self._perceived_world(world),
             }
+            if semantic:
+                held = [name for name in world.get("inventory", [])
+                        if isinstance(name, str) and
+                        isinstance(world.get("objects", {}).get(name), dict)]
+                if len(held) == 1:
+                    system_context += (
+                        "\nCURRENT SINGLE HELD ITEM: " + held[0] + ". "
+                        "If the operator says what you are holding or carrying "
+                        "and refers to 'it', that pronoun refers to this item "
+                        "unless the operator explicitly identifies another object. "
+                        "This is REFERENCE CONTEXT, not permission to act. "
+                        "Only explicit current-turn requests authorize movement "
+                        "or using the item.")
             system_context += ("\nCANONICAL PERSPECTIVE AND CURRENT PHYSICAL EVIDENCE. "
                                "These facts are true regardless of how the remote "
                                "speaker phrases things. The flashlight, wall panel, "
@@ -517,25 +535,37 @@ class Agent:
             # Scripted mock and older test fakes preserve deterministic legacy
             # behavior, with no new implicit physical permissions.
             if semantic_mode:
-                raw = self.backend.interpret(
-                    self._messages(state, player_text, semantic=True, world=world))
-                if isinstance(raw, dict) and raw.get("kind") == "action" and callable(
-                        getattr(self.backend, "review", None)):
-                    # Physical requests get a second, focused completeness
-                    # check. A valid first step is NOT proof that all requested
-                    # steps were retained. A review failure executes nothing.
-                    try:
-                        audit = self.backend.review(
-                            review_messages(player_text, raw.get("steps", []),
-                                            world, referent))
-                    except BackendUnavailable:
-                        audit = {"kind": "clarify", "steps": [],
-                                 "reason": "The plan could not be reviewed"}
-                    result = self._reviewed_semantic_decision(
-                        raw, audit, player_text, world, state, referent)
+                if is_reflective_question(player_text) and callable(
+                        getattr(self.backend, "converse", None)):
+                    # A direct question about Eli is conversation, not a
+                    # request for a physical plan. The constrained action
+                    # JSON response caused such questions to degenerate into
+                    # "Which actions do you mean?" instead of real dialogue.
+                    speech = self.backend.converse(
+                        self._messages(state, player_text, dialogue=True, world=world))
+                    speech = self._ground_dialogue(speech, world, state, player_text)
+                    result = Decision(speech, "wait", "", "cautious")
                 else:
-                    result = self._semantic_decision(
-                        raw, player_text, world, state, referent)
+                    raw = self.backend.interpret(
+                        self._messages(state, player_text, semantic=True, world=world))
+                    if (isinstance(raw, dict) and raw.get("kind") == "action" and
+                            needs_action_review(player_text, raw.get("steps", [])) and
+                            callable(getattr(self.backend, "review", None))):
+                        # Review compound plans for *missing steps*, but do
+                        # not let a second small-model inference contradict a
+                        # grounded one-step command such as "Turn it on!".
+                        try:
+                            audit = self.backend.review(
+                                review_messages(player_text, raw.get("steps", []),
+                                                world, referent))
+                        except BackendUnavailable:
+                            audit = {"kind": "clarify", "steps": [],
+                                     "reason": "The plan could not be reviewed"}
+                        result = self._reviewed_semantic_decision(
+                            raw, audit, player_text, world, state, referent)
+                    else:
+                        result = self._semantic_decision(
+                            raw, player_text, world, state, referent)
                 plan = ()
             else:
                 intent = classify(player_text, referent)
@@ -710,6 +740,66 @@ class Agent:
                 return reviewed
         return reviewed
 
+    @staticmethod
+    def _safe_live_action_acknowledgment(raw_speech: Any,
+                                          verified: tuple[dict[str, str], ...]) -> str:
+        """Use Eli's own brief future-tense reaction when it is safe.
+
+        Earlier semantic releases discarded every generated action reply and
+        substituted a canned line. Keep a model's frightened/human reaction
+        only when it names no unrequested prop and promises the right action
+        *without* claiming that the engine has already completed it.
+        """
+        if len(verified) != 1 or not isinstance(raw_speech, str):
+            return ""
+        speech = Agent._finish_spoken_reply(raw_speech)
+        if not speech or len(speech) > 260:
+            return ""
+        if not re.search(r"\b(?:i['’]ll|i\s+will|let\s+me|i['’]m\s+going\s+to)\b",
+                         speech, re.I):
+            return ""
+        if re.search(
+                r"\b(?:i['’]ve|i\s+have|i\s+just|i\s+already|i\s+did|"
+                r"it['’]s\s+(?:done|on|off|open|unlocked)|"
+                r"it\s+is\s+(?:done|on|off|open|unlocked)|"
+                r"i\s+(?:picked|switched|turned|opened|unlocked|walked|moved|entered)|"
+                r"i['’]m\s+(?:already|holding|walking|moving))\b", speech, re.I):
+            return ""
+        action = verified[0]["action"]
+        target = verified[0]["target"]
+        described = mentioned_targets(speech)
+        if described and (described - {target}):
+            return ""
+        # Even on the same prop or in the room, Eli must never promise a
+        # SECOND physical action that the one-step plan does not contain.
+        if re.search(
+                r"\b(?:and\s+(?:then\s+)?|then\s+|after\s+that\s+)"
+                r"(?:i['’]ll\s+|i\s+will\s+)?"
+                r"(?:grab|pick|take|turn|switch|flip|open|unlock|"
+                r"look\s+around|inspect|walk|go|move|read|scan|use)\b",
+                speech, re.I):
+            return ""
+        # The line must describe the action that will actually be attempted,
+        # not simply promise an unrelated operation or say "Okay, what next".
+        cues = {
+            "take": r"\b(?:pick|grab|take|collect|retrieve)\b",
+            "move_to": r"\b(?:go|walk|head|move|approach|step)\b",
+            "inspect": r"\b(?:look|inspect|examine|read|check|study)\b",
+            "survey": r"\b(?:look|scan|survey|check|see)\b",
+            "enter_code": r"\b(?:enter|type|key|punch|try)\b",
+            "use": r"\b(?:switch|turn|activate|use|try|flip|open|power)\b",
+        }
+        if not re.search(cues[action], speech, re.I):
+            return ""
+        if action == "use" and target == "flashlight":
+            # Prevent a model's 'I'll pick it up' from sounding like a promise
+            # to merely pick up when the actual planned goal is switching ON.
+            mode = verified[0]["argument"]
+            if mode and not re.search(r"\b" + re.escape(mode) + r"\b",
+                                      speech, re.I):
+                return ""
+        return speech
+
     def _semantic_decision(self, raw: Any, player_text: str,
                            world: dict[str, Any], state: dict[str, Any],
                            referent: str) -> Decision:
@@ -760,6 +850,12 @@ class Agent:
         first = verified[0]
         speech = (self._sequence_phrase(commands) if len(commands) > 1 else
                   self._plan_phrase(commands[0], world))
+        # Model dialogue is safe only as a future-tense introduction. The
+        # actual result must still come from Godot's action_finished signal.
+        natural = self._safe_live_action_acknowledgment(
+            raw.get("speech"), verified)
+        if natural:
+            speech = natural
         return Decision(speech, first["action"], first["target"],
                         emotion, first["argument"], verified)
 

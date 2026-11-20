@@ -34,6 +34,61 @@ PRONOUN = re.compile(r"\b(?:it|that|this|one|there|them)\b", re.I)
 SUGGESTION_REQUEST = re.compile(
     r"^\s*(?:why\s+don't\s+you|how\s+about(?!\s+if\b))\b", re.I)
 
+# These are speech-act / complexity HINTS, never a phrase-based permission
+# system. The existing model still proposes all actions and the evidence/world
+# validator still approves every proposed act. This prevents a second small-
+# model review from vetoing a simple, fully grounded one-step request.
+DIRECT_COMMAND = re.compile(
+    r"^\s*(?:(?:please|just)\s+)?(?:go|walk|head|move|come|"
+    r"pick|grab|take|bring|fetch|switch|turn|toggle|flip|"
+    r"look|check|examine|inspect|read|survey|open|unlock|"
+    r"enter|type|punch|try|use|activate|stop\s+by)\b", re.I)
+ACTION_CHAIN = re.compile(r"\b(?:and|then|next|after\s+that|followed\s+by)\b", re.I)
+REFLECTIVE_QUESTION = re.compile(
+    r"^\s*(?:why(?!\s+don['’]?t\s+you\b)|"
+    r"what|which|who|where|when|"
+    r"how(?!\s+about\b)|"
+    r"do\s+you\s+(?:think|remember|know)|"
+    r"does\s+it|is\s+it|are\s+you|were\s+you|"
+    r"would\s+it|should\s+(?:we|i)|what\s+if)\b", re.I)
+
+
+def is_reflective_question(message: str) -> bool:
+    """Grounded conversation takes priority for unambiguously *asking* Eli.
+
+    Only the final independent sentence is considered. "Why did you resist?"
+    is conversation; "Why did you resist? Turn it on!" remains an action turn.
+    This is a speech-act boundary, not a list of commands Eli can understand.
+    """
+    if not isinstance(message, str) or not message.strip().endswith("?"):
+        return False
+    clauses = [part.strip() for part in re.split(r"[.!?]+", message)
+               if part.strip()]
+    if not clauses or not REFLECTIVE_QUESTION.match(clauses[-1]):
+        return False
+    # A question appended AFTER a concrete instruction does not erase that
+    # instruction. Let the semantic planner handle mixed instruction+question
+    # turns while retaining the strict per-action authorization checks.
+    return not any(DIRECT_COMMAND.match(clause) for clause in clauses[:-1])
+
+
+def needs_action_review(message: str, steps: Any) -> bool:
+    """Audit potentially compound commands, not obvious one-step directives.
+
+    A single clear action already has strict permission and world validation.
+    Sending that action back to the same small GGUF for another opinion made
+    'turn it on' fail despite Eli physically holding the only flashlight.
+    Multi-step requests still get the extra coverage review.
+    """
+    if not isinstance(steps, list) or len(steps) != 1:
+        return True
+    if ACTION_CHAIN.search(message):
+        return True
+    clauses = [part.strip() for part in re.split(r"[.!?;]+", message)
+               if part.strip()]
+    return sum(bool(DIRECT_COMMAND.match(part)) for part in clauses) > 1
+
+
 # Limit output structure, not Eli's in-character phrasing.
 SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -279,7 +334,20 @@ def validated_steps(raw: Any, message: str, world: dict[str, Any],
                 elif recent:
                     raise PlanRejected("Ambiguous pronoun")
                 elif target != referent:
-                    raise PlanRejected("Unresolved pronoun")
+                    # A held object is a stronger physical referent than a
+                    # stale conversational focus. "You're already holding it.
+                    # Turn it on!" must not fail because Eli omitted the word
+                    # flashlight. Do not guess when zero/multiple items are held.
+                    inventory = world.get("inventory", [])
+                    held = [name for name in inventory
+                            if isinstance(name, str) and name in TARGETS] if isinstance(inventory, list) else []
+                    holding_context = bool(re.search(
+                        r"\b(?:holding|held|in\s+your\s+hand|you(?:'re|\s+are)\s+carrying)\b",
+                        message[:start], re.I))
+                    explicit_mode = action == "use" and target == "flashlight" and argument in ("on", "off")
+                    if not (len(held) == 1 and held[0] == target and
+                            (holding_context or (not referent and explicit_mode))):
+                        raise PlanRejected("Unresolved pronoun")
             previous_target = target
         result.append({"action": action, "target": target, "argument": argument})
     return tuple(result)
