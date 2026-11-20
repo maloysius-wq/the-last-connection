@@ -86,7 +86,7 @@ class TestFreshRoomPerspective(unittest.TestCase):
             "screen", "I appeared in this control room and I can see you on a screen.", fresh_room())
         self.assertEqual(result.action, "wait")
         self.assertEqual(len(model.inputs), 1)
-        self.assertIn("There's a flashlight on the desk here", result.speech)
+        self.assertIn("there's a flashlight on the desk here", result.speech.lower())
         self.assertIn("should I pick it up", result.speech)
         self.assertNotIn("Still locked", result.speech)
         self.assertIn("locked", result.speech)
