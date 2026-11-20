@@ -64,7 +64,12 @@ def is_reflective_question(message: str) -> bool:
         return False
     clauses = [part.strip() for part in re.split(r"[.!?]+", message)
                if part.strip()]
-    return bool(clauses and REFLECTIVE_QUESTION.match(clauses[-1]))
+    if not clauses or not REFLECTIVE_QUESTION.match(clauses[-1]):
+        return False
+    # A question appended AFTER a concrete instruction does not erase that
+    # instruction. Let the semantic planner handle mixed instruction+question
+    # turns while retaining the strict per-action authorization checks.
+    return not any(DIRECT_COMMAND.match(clause) for clause in clauses[:-1])
 
 
 def needs_action_review(message: str, steps: Any) -> bool:
