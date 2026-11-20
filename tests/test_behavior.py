@@ -179,7 +179,7 @@ class TestConversationGrounding(unittest.TestCase):
         after["flashlight_on"] = True
         result = agent.outcome("a8", "use", "flashlight", True,
                                "Eli picked up the flashlight from the desk and switched it on.", after)
-        self.assertIn("picked it up", result.speech)
+        self.assertIn("see a little better", result.speech)
         self.assertEqual(len(backend.messages), 1)
 
     def test_conversation_context_contains_plain_speech_not_json_actions(self):
