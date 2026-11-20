@@ -245,3 +245,10 @@ Primary repo: `maloysius-wq/the-last-connection` (public; created by user). Use 
 - Fix: clause-by-clause command parsing to separate room-description context from one authorized physical instruction; per-clause negation and question filtering. Multi-target commands remain ambiguous. Expanded conversational physical-claim filter; no LLM narration is authoritative about physical acts.
 - Regression tests use full user screenshots. Real Godot engine smoke now simulates decision HTTP completion and checks command dispatch through the game UI, actor travel, inventory pickup, switched-on light, and real outcome, in addition to previous direct world action tests.
 - Maintain one model call per conversational player turn and zero post-action generation. Test actual local GGUF visually after release; CI cannot verify live model semantics.
+
+## 2026-11-20 verified release for full-message action parsing
+
+- PR #13 merged into main as 5bb03c9dd5fb8befd21cd19d1401778707790960. The production Python and Godot checks passed; 121 Python tests passed, including both complete playtest screenshot regressions and the new main.gd decision-to-world smoke. Windows production build run 44775176277 completed successfully.
+- Public GitHub Release portable-5bb03c9dd5fb8befd21cd19d1401778707790960 published with TheLastConnection-Windows-Portable.zip (~125 MB) and SHA256SUMS.txt. Latest link: https://github.com/maloysius-wq/the-last-connection/releases/latest.
+- Downloaded and independently inspected corresponding main-run Actions artifact 14649856318 (TheLastConnection-Verified-Actions-Fix-Windows.zip): 1,097 archive entries, no CRC failures, game executable, launcher, updater and correct build-info exact commit/tag, no GGUF model weights.
+- User can use in-game CHECK FOR UPDATES after previous click-fix build; if still unresponsive, manually extract official release while preserving config.json, user_data, models, logs. Real on-device GGUF/Windows validation still needed, and rules-based hallucination detection cannot guarantee perfect truthfulness for all novel phrasings. Preserve authoritative action/observation mechanism.
