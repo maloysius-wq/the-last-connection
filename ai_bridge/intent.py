@@ -159,7 +159,8 @@ def classify(text: str, focus: str = "") -> PlayerIntent:
 MAX_PLANNED_ACTIONS = 5
 
 _PLAN_PREFIX = re.compile(
-    r"^\s*(?:please\s+|go\s+ahead\s+(?:and\s+)?|"
+    r"^\s*(?:(?:first|second|third|then|next|finally|after\s+that)\s*[:,]?\s*|"
+    r"please\s+|go\s+ahead\s+(?:and\s+)?|"
     r"let(?:'s| us)\s+(?:(?:start|begin)\s+by\s+)?"
     r"(?:having\s+you\s+|(?:get\s+you\s+to\s+))|"
     r"(?:i\s+(?:want|need|would\s+like)\s+you\s+to)\s+|"
@@ -174,8 +175,14 @@ _PLAN_VERB = (
 )
 # Only joiners introducing a SECOND imperative delimit steps; e.g.
 # "a keypad and a breaker" is never split.
-_PLAN_JOIN = re.compile(r",\s*(?:and\s+)?|\s+and\s+(?=" +
-                        _PLAN_VERB + r"\b)", re.I)
+_PLAN_JOIN = re.compile(
+    # A comma only separates steps when the following text is itself an
+    # instruction. Ordinary descriptive object lists do not create actions.
+    r",\s*(?:(?:and\s+)?(?:then|next|finally)\s*[:,]?\s*|"
+    r"after\s+that\s*[:,]?\s*|(?:and\s+)?(?=" + _PLAN_VERB + r"\b))|"
+    r"\s+(?:(?:and\s+)?then|after\s+that|next|finally)\s+(?=" +
+    _PLAN_VERB + r"\b)|"
+    r"\s+and\s+(?=" + _PLAN_VERB + r"\b)", re.I)
 _PLAN_IMPERATIVE = re.compile(
     r"^(?:" + _PLAN_VERB + r")\b", re.I)
 _PLAN_SURVEY = re.compile(
