@@ -602,7 +602,7 @@ class Agent:
         kind = raw.get("kind")
         steps = raw.get("steps")
         emotion = raw.get("emotion", "cautious")
-        if emotion not in EMOTION_SET:
+        if not isinstance(emotion, str) or emotion not in EMOTION_SET:
             emotion = "cautious"
         if kind not in ("conversation", "action", "clarify") or not isinstance(steps, list):
             return Decision("Hang on. Could you tell me that again?",
