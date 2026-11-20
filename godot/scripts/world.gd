@@ -20,11 +20,13 @@ var flashlight_on := false
 var actor_at := "room_center"
 var last_observation := ""
 var object_positions: Dictionary = {
-    "flashlight": Vector3(-1.7, 0.0, -1.4),
+    # Approach from the CAMERA side. The desk occupies z=-1.85..-0.95;
+    # standing at z=-1.4 put Eli's body right through the tabletop.
+    "flashlight": Vector3(-1.7, 0.0, -0.40),
     "breaker_box": Vector3(0.0, 0.0, -1.8),
     "exit_door": Vector3(2.0, 0.0, -1.8),
     "keypad": Vector3(2.9, 0.0, -1.8),
-    "maintenance_note": Vector3(-1.3, 0.0, -1.4)
+    "maintenance_note": Vector3(-1.3, 0.0, -0.40)
 }
 var descriptions := {
     "flashlight": "A metal flashlight resting on the left-hand desk.",
@@ -196,7 +198,18 @@ func perform_action(action: String, target: String, argument: String = "") -> vo
         return
     var destination: Vector3 = object_positions[target]
     var tween := create_tween()
-    tween.tween_property(actor, "position", destination, 1.2)
+    var approaching_desk := target in ["flashlight", "maintenance_note"]
+    var leaving_desk := actor_at in ["flashlight", "maintenance_note"]
+    var aisle := Vector3(-0.38, 0.0, -0.40)
+    # Avoid passing straight through the desk on the way to/from wall props.
+    if approaching_desk and actor.position.z < -0.90:
+        tween.tween_property(actor, "position", aisle, 0.85)
+        tween.tween_property(actor, "position", destination, 0.85)
+    elif leaving_desk and destination.z < -0.90:
+        tween.tween_property(actor, "position", aisle, 0.85)
+        tween.tween_property(actor, "position", destination, 0.85)
+    else:
+        tween.tween_property(actor, "position", destination, 1.2)
     tween.finished.connect(_finish_action.bind(action, target, argument))
 
 func _finish_action(action: String, target: String, argument: String) -> void:
@@ -321,6 +334,10 @@ func restore_state(data: Dictionary) -> void:
             if actor.position.distance_to(object_positions[target]) < 0.12:
                 actor_at = target
                 break
+    # Older saves positioned Eli INSIDE the desk. Move only those legacy desk
+    # saves to the newly accessible front edge without changing inventory.
+    if actor_at in ["flashlight", "maintenance_note"] and actor.position.z < -0.90:
+        actor.position = object_positions[actor_at]
     last_observation = str(data.get("last_observation", "")).left(500)
 
 func reset_state() -> void:
