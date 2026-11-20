@@ -740,6 +740,57 @@ class Agent:
                 return reviewed
         return reviewed
 
+    @staticmethod
+    def _safe_live_action_acknowledgment(raw_speech: Any,
+                                          verified: tuple[dict[str, str], ...]) -> str:
+        """Use Eli's own brief future-tense reaction when it is safe.
+
+        Earlier semantic releases discarded every generated action reply and
+        substituted a canned line. Keep a model's frightened/human reaction
+        only when it names no unrequested prop and promises the right action
+        *without* claiming that the engine has already completed it.
+        """
+        if len(verified) != 1 or not isinstance(raw_speech, str):
+            return ""
+        speech = Agent._finish_spoken_reply(raw_speech)
+        if not speech or len(speech) > 260:
+            return ""
+        if not re.search(r"\b(?:i['’]ll|i\s+will|let\s+me|i['’]m\s+going\s+to)\b",
+                         speech, re.I):
+            return ""
+        if re.search(
+                r"\b(?:i['’]ve|i\s+have|i\s+just|i\s+already|i\s+did|"
+                r"it['’]s\s+(?:done|on|off|open|unlocked)|"
+                r"it\s+is\s+(?:done|on|off|open|unlocked)|"
+                r"i\s+(?:picked|switched|turned|opened|unlocked|walked|moved|entered)|"
+                r"i['’]m\s+(?:already|holding|walking|moving))\b", speech, re.I):
+            return ""
+        action = verified[0]["action"]
+        target = verified[0]["target"]
+        described = mentioned_targets(speech)
+        if described and (described - {target}):
+            return ""
+        # The line must describe the action that will actually be attempted,
+        # not simply promise an unrelated operation or say "Okay, what next".
+        cues = {
+            "take": r"\b(?:pick|grab|take|collect|retrieve)\b",
+            "move_to": r"\b(?:go|walk|head|move|approach|step)\b",
+            "inspect": r"\b(?:look|inspect|examine|read|check|study)\b",
+            "survey": r"\b(?:look|scan|survey|check|see)\b",
+            "enter_code": r"\b(?:enter|type|key|punch|try)\b",
+            "use": r"\b(?:switch|turn|activate|use|try|flip|open|power)\b",
+        }
+        if not re.search(cues[action], speech, re.I):
+            return ""
+        if action == "use" and target == "flashlight":
+            # Prevent a model's 'I'll pick it up' from sounding like a promise
+            # to merely pick up when the actual planned goal is switching ON.
+            mode = verified[0]["argument"]
+            if mode and not re.search(r"\b" + re.escape(mode) + r"\b",
+                                      speech, re.I):
+                return ""
+        return speech
+
     def _semantic_decision(self, raw: Any, player_text: str,
                            world: dict[str, Any], state: dict[str, Any],
                            referent: str) -> Decision:
@@ -790,6 +841,12 @@ class Agent:
         first = verified[0]
         speech = (self._sequence_phrase(commands) if len(commands) > 1 else
                   self._plan_phrase(commands[0], world))
+        # Model dialogue is safe only as a future-tense introduction. The
+        # actual result must still come from Godot's action_finished signal.
+        natural = self._safe_live_action_acknowledgment(
+            raw.get("speech"), verified)
+        if natural:
+            speech = natural
         return Decision(speech, first["action"], first["target"],
                         emotion, first["argument"], verified)
 
