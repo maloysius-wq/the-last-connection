@@ -551,13 +551,18 @@ class Agent:
             speech = re.sub(
                 r"\b(?:you(?:'ve| have)\s+got|you\s+have)\s+(?:a|the)\s+flashlight"
                 r"\s+on\s+(?:the|your)\s+desk\b",
-                "there's a flashlight on the desk here",
+                lambda match: ("There's" if match.group(0)[0].isupper() else "there's")
+                              + " a flashlight on the desk here",
                 speech, flags=re.I)
-            speech = re.sub(
-                r"\b(?:can|could|would|will)\s+you\s+(?:(?:grab|take|pick\s+up)"
-                r"\s+(?:that|it|the\s+flashlight)|pick\s+(?:it|that)\s+up)\b",
-                "should I pick it up",
-                speech, flags=re.I)
+            # Only rewrite the question if the current reply really concerns
+            # the on-camera flashlight, not a possession the remote speaker
+            # separately described in their own room.
+            if re.search(r"\bflashlight\b", speech, re.I):
+                speech = re.sub(
+                    r"\b(?:can|could|would|will)\s+you\s+(?:(?:grab|take|pick\s+up)"
+                    r"\s+(?:that|it|the\s+flashlight)|pick\s+(?:it|that)\s+up)\b",
+                    "should I pick it up",
+                    speech, flags=re.I)
         # A fresh room or a session with no attempted door interaction does
         # not provide evidence that the door REMAINS locked from an earlier
         # attempt. "The door is locked" is a present observation and valid.
@@ -566,6 +571,10 @@ class Agent:
             and f.get("action") in ("use", "enter_code")
             for f in state.get("facts", []))
         if not prior_door_attempt:
+            # Keep the correction grammatical after a sentence/question break.
+            speech = re.sub(r"([?!\.]\s+)still\s+(locked|shut|closed)\b",
+                            lambda m: m.group(1) + "It's " + m.group(2).lower(),
+                            speech, flags=re.I)
             speech = re.sub(r"\bstill\s+(locked|shut|closed)\b",
                             lambda m: m.group(1), speech, flags=re.I)
         if not state.get("facts"):
