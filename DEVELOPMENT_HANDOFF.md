@@ -1,6 +1,6 @@
 # DEVELOPMENT HANDOFF — The Last Connection
 
-Updated: 2026-11-19
+Updated: 2026-11-20
 
 ## Product
 
@@ -282,3 +282,11 @@ Primary repo: `maloysius-wq/the-last-connection` (public; created by user). Use 
 - Godot world supports `survey room`: brief visible head/body scan, world-grounded room overview, no secret-note code leakage or invented discoveries. Survey leaves Eli's position unchanged; its outcome is authoritative and saved.
 - Added Python screenshot parsing/no-extra-LLM tests plus Godot headless end-to-end queue tests including all 3 steps in order, progress indicators, actual world pickup+on+survey, and locked-door stopping remaining breaker action.
 - CI and Windows portable release must pass before shipping. Real Windows/local GGUF playtest still needed; update in-app using published GitHub Release.
+
+## 2026-11-20 live character dialogue, cutoff and focus follow-up
+
+- User showed Eli responding to a question about a keypad with a lengthy unverified story (invented code "7733", measured pulses and timing), with the visible final reply ending mid-sentence. They want natural real-time, fearful, initially suspicious dialogue, not overly terse commands or theatrical monologues.
+- Root cause of visible chopped text: `Agent._ground_dialogue` returned `reply[:650]`, cutting mid-word/sentence. A separate fallback in `_decision` also cut structured reply text at 350 characters. Changed both to retain complete sentences with contextual response-length limits; unfinished model-token tails are discarded instead of displayed. Local dialogue token headroom increased to 384; ordinary answers are guided toward 1-3 short, real-time sentences, with longer answers for explicit detailed requests.
+- Eli's character guidance now emphasizes fear, guarded questions, mistrust of an unknown remote observer and gradual rapport through confirmed help. Dialogue must ground any keypad numbers, pulse sequences, timing and prior actions in actual evidence rather than fabricate dramatic theories. A narrowly scoped post-generation check removes unsupported specific keypad histories and keeps safe emotional speech.
+- Restored immediate chat focus on READY, with another next-frame attempt. Added a keyboard-only fallback that refocuses an orphaned chat editor and inserts the **first** unhandled printable keystroke without losing it. This does **not** reconnect `focus_exited`, change button `FOCUS_NONE` or intercept mouse input. CHECK FOR UPDATES must remain clickable; modal confirmation must keep its focus.
+- Regression tests added for complete spoken replies and bridge output headroom, live tone/initial trust, invented keypad codes and timings, response display longer than 650 characters, immediate READY focus, first-key capture and updater button behavior. Tests through GitHub Python and Godot plus portable Windows packaging are required before merging/releasing. Real installed Windows GGUF quality and focus/click timing still require user playtesting.
