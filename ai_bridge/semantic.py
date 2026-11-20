@@ -25,7 +25,8 @@ HYPOTHETICAL = re.compile(
     r"should\s+(?:we|i)|why\b|how\b|what\b|when\b|where\b|who\b)",
     re.I)
 NEGATION = re.compile(r"\b(?:do\s+not|don't|dont|never|not\s+to|"
-                      r"shouldn't|should\s+not|stop)\b", re.I)
+                      r"shouldn't|should\s+not|stop\s+(?:touching|using|"
+                      r"opening|pressing|turning|picking|grabbing|trying))\b", re.I)
 PRONOUN = re.compile(r"\b(?:it|that|this|one|there|them)\b", re.I)
 
 # Limit output structure, not Eli's in-character phrasing.
@@ -156,9 +157,21 @@ def validated_steps(raw: Any, message: str, world: dict[str, Any],
             elif action == "use" and target == "flashlight":
                 if argument not in ("", "on", "off"):
                     raise PlanRejected("Invalid flashlight mode")
-                if argument and not re.search(
-                    r"\b" + re.escape(argument) + r"\b", quote, re.I):
+                # Explicit ON/OFF is idempotent. Never let a small model omit
+                # that field and accidentally toggle an already-on light off.
+                requested_modes = {mode.lower() for mode in
+                                   re.findall(r"\b(?:on|off)\b", quote, re.I)}
+                if len(requested_modes) > 1:
+                    raise PlanRejected("Ambiguous flashlight state")
+                if argument and argument not in requested_modes:
+                    raise PlanRejected("Flashlight state contradicts the player")
+                if not argument and requested_modes:
+                    argument = next(iter(requested_modes))
+                if not requested_modes and argument:
                     raise PlanRejected("Flashlight state was not requested")
+                if re.fullmatch(r"(?:turn|switch)\s+(?:on|off)\s+(?:the\s+)?light", quote, re.I):
+                    if previous_target != "flashlight" and referent != "flashlight":
+                        raise PlanRejected("Ambiguous room light versus handheld flashlight")
             elif argument:
                 raise PlanRejected("Unrequested action argument")
             names = mentioned_targets(quote)
