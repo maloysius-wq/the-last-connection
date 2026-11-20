@@ -187,3 +187,17 @@ Conversational model output is also checked for unverified first-person prop
 interactions like "I'll grab the flashlight" or "I pressed it". When no
 world action was performed, it reports the actual state rather than inventing
 a pickup or switch press. These checks do not introduce a second LLM call.
+
+
+## Update button mouse click and visible status
+
+The portable terminal's **CHECK FOR UPDATES** mouse button uses Godot's
+`FOCUS_NONE` mode, keeping the chat entry active without forcibly refocusing
+the input while a mouse click is in progress. A prior focus-loss callback could
+steal the click before the button's `pressed` signal fired. The game now shows
+**Checking GitHub releases...** immediately and logs the check attempt under
+SYSTEM. If GitHub/the local bridge cannot be reached, the resulting error is
+visible in the chat rather than seeming like a dead button.
+
+No scheduled checking, automatic downloads or new model dependencies were
+introduced. Updating remains explicitly initiated by the player.
