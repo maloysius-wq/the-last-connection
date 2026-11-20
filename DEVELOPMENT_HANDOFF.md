@@ -227,3 +227,12 @@ Primary repo: `maloysius-wq/the-last-connection` (public; created by user). Use 
 - Exact two-turn screenshot regression test on mock LLM (conversation mention → indirect user imperative → structured `use flashlight on`), no-second-inference outcome test, ambiguous references, no referent cases, false action narration, and personal-story protection.
 - Godot smoke checks actor physically moves **from breaker to flashlight desk** and has inventory + flashlight_on true before saying pickup succeeded.
 - Preserve one LLM request per player command and zero post-action requests; actual on-device user playtest needed to verify local GGUF conversation and camera.
+
+
+## 2026-11-20: Check for Updates button appears inert
+
+- User pressed **CHECK FOR UPDATES** in the self-updating Windows version and saw no visible response; asked whether the latest GitHub build was missing. Verified public `releases/latest` already returned stable `portable-50b93c80e4ea672a350bb4c7afa537994d0f2bf9` with both `TheLastConnection-Windows-Portable.zip` (~125 MB) and `SHA256SUMS.txt`; missing publication was not the issue.
+- Investigated `godot/scripts/main.gd`. Earlier always-active chat fix connected `input.focus_exited` to a deferred `grab_focus` regardless of why focus was lost. This could interrupt a button click during mouse-down/mouse-up. Removed the global focus-exited recapture and instead assigned `Control.FOCUS_NONE` to Transmit, Check for Updates, and New Session buttons; clicks work without taking keyboard focus away from chat. Deferred refocus after sending, completion, modal dismissal and window reactivation remains.
+- Update click now immediately sets button text to `CHECKING GITHUB...`, changes status to `Checking GitHub releases...`, and writes a SYSTEM log entry. Successful no-update checks and failed HTTP requests show durable visible status, not silent resets; dialog confirmation unchanged.
+- Expanded headless Godot smoke to verify signal wiring, button focus modes, removal of intrusive blur callback, immediate status/log text, and reset after canceling a pending update check. Existing separate bridge and update-service HTTP tests still cover requests and explicit confirmation.
+- Validate Python + Godot engine + Windows packaging CI before publishing; user should see immediate CHECKING GITHUB on click. If not, they may be running an older executable. Actual graphical Windows click test is still required.
