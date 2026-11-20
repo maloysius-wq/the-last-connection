@@ -45,6 +45,9 @@ jobs:
           pyinstaller --noconfirm --clean --onefile --windowed --name TheLastConnectionUpdater --paths . portable/updater.py
           Copy-Item 'dist/TheLastConnectionUpdater.exe' 'dist/TheLastConnection/TheLastConnectionUpdater.exe' -Force
           if (!(Test-Path 'dist/TheLastConnection/TheLastConnectionUpdater.exe')) { throw 'Missing updater helper' }
+          $updater = Join-Path (Get-Location).Path 'dist/TheLastConnection/TheLastConnectionUpdater.exe'
+          $proc = Start-Process -FilePath $updater -ArgumentList @('--help') -PassThru -Wait
+          if ($proc.ExitCode -ne 0) { throw "Packaged updater did not launch successfully: $($proc.ExitCode)" }
       - uses: chickensoft-games/setup-godot@v2
         with:
           version: 4.5.2
