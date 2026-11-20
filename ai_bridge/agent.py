@@ -599,7 +599,8 @@ class Agent:
         return speech
 
     @staticmethod
-    def _unverified_prop_action(speech: str, world: dict[str, Any]) -> bool:
+    def _unverified_prop_action(speech: str, world: dict[str, Any],
+                                state: dict[str, Any]) -> str:
         """Reject unexecuted physical interactions in free conversation.
 
         Genuine confirmed events use the outcome channel. This examines
@@ -613,16 +614,29 @@ class Agent:
             r"activate(?:d)?|collect(?:ed)?|hold|held)\b",
             speech, re.I)
         if not action_claim:
-            return False
-        # Narrow to visible camera-room props, not autobiography.
-        first_person_clause = speech[action_claim.start():action_claim.end() + 100]
+            return ""
+        # Narrow to actual room-prop terms or physical pronouns near the claim,
+        # not unrelated autobiographical phrases such as 'I took the bus'.
+        clause = speech[action_claim.start():action_claim.end() + 85]
         prop_near_action = re.search(
             r"\b(?:flashlight|torch|breaker|keypad|pin\s*pad|switch|"
             r"button|panel|door|note|paper|it|that)\b",
-            first_person_clause, re.I)
+            clause, re.I)
+        if not prop_near_action:
+            return ""
         visible_names = {x for x in mentioned_targets(speech)
-                         if x in world.get("objects", {})}
-        return bool(prop_near_action and visible_names)
+                         if x in world.get("objects", {})
+                         and world["objects"][x].get("visible") is True}
+        if len(visible_names) == 1:
+            return next(iter(visible_names))
+        if len(visible_names) > 1:
+            return "ambiguous"
+        # If Eli only said 'I pressed it', ground 'it' in the most recent
+        # conversation referent, not in a guessed room object.
+        referent = state.get("referent", "")
+        if referent in world.get("objects", {}) and world["objects"][referent].get("visible"):
+            return referent
+        return "ambiguous"
 
     @staticmethod
     def _ground_dialogue(raw: str, world: dict[str, Any], state: dict[str, Any]) -> str:
@@ -636,8 +650,9 @@ class Agent:
         speech = Agent._correct_room_perspective(speech, world, state)
         # Conversational replies have NO matching Godot action. A 4B model
         # may narrate '(Pause) ... I pressed it' despite never touching it.
-        if Agent._unverified_prop_action(speech, world):
-            if "flashlight" in world.get("objects", {}):
+        claimed_target = Agent._unverified_prop_action(speech, world, state)
+        if claimed_target:
+            if claimed_target == "flashlight":
                 if "flashlight" in world.get("inventory", []):
                     on = bool(world.get("flashlight_on", False))
                     return ("I'm holding the flashlight, and it's " +
@@ -645,8 +660,10 @@ class Agent:
                             " I haven't changed it just now.")
                 return ("The flashlight is still on the desk. I haven't picked it up "
                         "or switched it on. Tell me if you want me to do that.")
-            return (Agent._describe_location(world) +
-                    " I haven't touched anything new.")
+            if claimed_target != "ambiguous":
+                return ("I can see the " + claimed_target.replace("_", " ") +
+                        ", but I haven't done anything new with it.")
+            return "I haven't touched anything new. What would you like me to do?"
         # Conversational replies cannot initiate movement. If the model
         # describes walking as already underway while no action was issued,
         # replace that unverifiable progress claim with the true position.
