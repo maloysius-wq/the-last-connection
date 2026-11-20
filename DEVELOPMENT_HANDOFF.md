@@ -163,3 +163,15 @@ Primary repo: `maloysius-wq/the-last-connection` (public; created by user). Use 
 - New `ai_bridge/intent.py` conservatively distinguishes questions/speculation from explicit physical requests, restricts attempted actions to user-requested visible targets, and supports flashlight on/off and pronoun focus. Preserves roleplay conversation via natural-speech history, richer Eli persona, and generated token ceiling 320 vs 192.
 - Godot `use flashlight` now performs pick-up-then-switch-on when needed; on/off directives are idempotent. Confirmed outcomes are described truthfully with helpful prerequisites, without a second LLM call.
 - Do not claim real Qwen GGUF conversation quality is completely verified by mocked tests. Ask user to playtest direct questions, unrelated actions, flashlight, and latency; tune based on the actual behavior. In-app updater button should find new published release.
+
+
+## Location-grounded dialogue and action verification pass (November 19, 2026)
+
+- User playtest: Eli says physical actions happened when they did not, describes keypad while at breaker, sometimes reports movement without actually moving; conversation still shallow. Asked if reintroducing expensive post-action reasoning would help.
+- **Decision:** Do not restore blocking second model generation. It cannot prove movement and would undo a major responsiveness improvement.
+- Godot now tracks and saves `actor_at` and the last completed `last_observation` from real physical outcomes. Move actions report success only when actor reaches target, and already-arrived movement is reported accurately.
+- Expand direct movement intent phrasings (including walk over to/stand by). Physical pre-action narration comes from a deterministic, **future-tense** plan tied to the authorized requested object; the model can no longer announce arbitrary completed actions before Godot verification.
+- Local llama.cpp/Ollama backends now use a separate *natural plain-text* conversation request for questions instead of the forced JSON action schema. Dialogue prompt includes actual location, confirmed observations, and visible world details. Replies remain a single model generation; outcomes remain zero generations.
+- Location questions are answered directly from verified Godot location, with no model call. Unsupported recent room-action claims in conversational text are corrected against confirmed observations, while autobiographical stories are left alone.
+- Regression tests cover action narration, real movement and save/restore, geographic context, false event claims, and natural conversation; Python, headless Godot and portable Windows CI required before shipping.
+- User should test via in-app updater after release; actual GGUF naturalness and camera visual movement still need on-device feedback.
