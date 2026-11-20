@@ -211,7 +211,12 @@ def _plan_step(text: str, focus: str) -> PlayerIntent:
         mode = (light.group(1) or light.group(2)).lower()
         if re.search(r"\b(?:flashlight|torch)\b", text, re.I) or focus == "flashlight":
             return PlayerIntent("action", "use", "flashlight", mode)
-        return PlayerIntent()
+        if re.search(r"\b(?:light|torch|flashlight)\b", text, re.I):
+            # "The light" is ambiguous when the focus isn't the torch.
+            return PlayerIntent()
+        # "Turn IT on" can refer to a grounded breaker or another fixture;
+        # let the ordinary intent classifier resolve that pronoun. Do not
+        # falsely force every "it" reference to mean the flashlight.
     result = _classify_clause(text, focus)
     if result.kind == "action":
         # The user must supply actual digits. Never infer a secret code from
