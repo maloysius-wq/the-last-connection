@@ -368,9 +368,17 @@ class Agent:
                     speech = "I'm listening. I don't know for certain, but we can figure it out together."
             return Decision(speech, "wait", "", result.emotion)
 
-        # A perfectly good refusal or question does not need to become an action.
+        # Preserve an actual refusal, but don't let a generic non-answer
+        # swallow an unambiguous, permitted physical instruction.
         if result.action == "wait":
-            return result
+            if re.search(r"\b(?:i can't|i cannot|i won't|i will not|not safe|don't want|"
+                         r"need you to clarify|which one|what do you mean)\b",
+                         result.speech, re.I):
+                return result
+            if intent.target not in world["objects"] or world["objects"][intent.target].get("visible") is not True:
+                return Decision("I can't see that from here yet. Can you point me toward it?",
+                                "wait", "", "cautious")
+            result = Decision(result.speech, intent.action, intent.target, result.emotion)
         if intent.target not in world["objects"] or world["objects"][intent.target].get("visible") is not True:
             return Decision("I can't see that from here yet. Can you point me toward it?",
                             "wait", "", "cautious")
@@ -398,11 +406,16 @@ class Agent:
         return Decision(speech, intent.action, intent.target, result.emotion, argument)
 
     @staticmethod
-    def _acknowledge(action: str, target: str, success: bool, world: dict[str, Any]) -> str:
+    def _acknowledge(action: str, target: str, success: bool, world: dict[str, Any],
+                     description: str = "") -> str:
         """Immediate, truthful character reaction with zero additional LLM calls."""
         if not success:
             if target == "flashlight" and action == "use" and "flashlight" not in world.get("inventory", []):
-                return "The flashlight is still on the desk. I'd need to pick it up first."
+                return "The flashlight is still on the desk. I'd have to pick it up first."
+            if "unpowered" in description.lower():
+                return "The keypad has no power yet. We need to restore the electricity first."
+            if action == "take":
+                return "I can't pick that up. It doesn't seem portable."
             if action == "enter_code":
                 return "No, the keypad didn't accept that."
             if target == "exit_door":
@@ -420,6 +433,8 @@ class Agent:
         if action == "use" and target == "exit_door":
             return "I'm through the door. I think I'm out."
         if action == "use" and target == "flashlight":
+            if "picked up" in description.lower() and bool(world.get("flashlight_on", False)):
+                return "I picked it up and switched it on. That's better."
             if "flashlight" not in world.get("inventory", []):
                 return "It's still on the desk. I haven't picked it up."
             obj = world.get("objects", {}).get("flashlight", {})
@@ -447,5 +462,5 @@ class Agent:
                 {"action": action, "target": target, "success": success, "description": description}
             ])[-60:]
             self.store.save(session_id, state)
-            return Decision(self._acknowledge(action, target, success, world),
+            return Decision(self._acknowledge(action, target, success, world, description),
                             "wait", "", "curious" if success else "cautious")
