@@ -43,6 +43,7 @@ class PlayerIntent:
     action: str = ""
     target: str = ""
     light_mode: str = ""
+    argument: str = ""
     # Exposed to the model only as high-level guidance, not an execution permit.
     @property
     def prompt_hint(self) -> dict[str, str]:
@@ -208,8 +209,11 @@ def _plan_step(text: str, focus: str) -> PlayerIntent:
     if result.kind == "action":
         # The user must supply actual digits. Never infer a secret code from
         # world observations or the model's earlier conjectures.
-        if result.action == "enter_code" and not re.search(r"\b[0-9]{4}\b", text):
-            return PlayerIntent()
+        if result.action == "enter_code":
+            code = re.search(r"\b[0-9]{4}\b", text)
+            if not code:
+                return PlayerIntent()
+            return PlayerIntent("action", "enter_code", "keypad", "", code.group(0))
         return result
     return PlayerIntent()
 
