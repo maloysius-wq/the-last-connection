@@ -368,17 +368,26 @@ class Agent:
                     speech = "I'm listening. I don't know for certain, but we can figure it out together."
             return Decision(speech, "wait", "", result.emotion)
 
-        # Preserve an actual refusal, but don't let a generic non-answer
-        # swallow an unambiguous, permitted physical instruction.
+        # A genuine refusal preserves Eli's agency. But misunderstanding the
+        # flashlight's missing pickup is not a real blocker: Godot handles
+        # that prerequisite when the player asks for the light to be on.
         if result.action == "wait":
-            if re.search(r"\b(?:i can't|i cannot|i won't|i will not|not safe|don't want|"
-                         r"need you to clarify|which one|what do you mean)\b",
-                         result.speech, re.I):
+            refusal = re.search(r"\b(?:i can't|i cannot|i won't|i will not|not safe|"
+                                r"don't want|need you to clarify|which one|what do you mean)\b",
+                                result.speech, re.I)
+            explicit_light_goal = (intent.target == "flashlight" and
+                                   intent.action == "use" and intent.light_mode == "on")
+            if refusal and not explicit_light_goal:
                 return result
             if intent.target not in world["objects"] or world["objects"][intent.target].get("visible") is not True:
                 return Decision("I can't see that from here yet. Can you point me toward it?",
                                 "wait", "", "cautious")
-            result = Decision(result.speech, intent.action, intent.target, result.emotion)
+            speech = "Okay, I'll try that."
+            if explicit_light_goal:
+                speech = ("I'll pick up the flashlight first, then switch it on."
+                          if "flashlight" not in world.get("inventory", [])
+                          else "I'll switch the flashlight on.")
+            result = Decision(speech, intent.action, intent.target, result.emotion)
         if intent.target not in world["objects"] or world["objects"][intent.target].get("visible") is not True:
             return Decision("I can't see that from here yet. Can you point me toward it?",
                             "wait", "", "cautious")
