@@ -61,7 +61,7 @@ class OllamaBackend:
 
     def respond(self, messages: list[dict[str, str]]) -> dict[str, Any]:
         payload = {"model": self.model, "stream": False, "think": False,
-                   "format": RESPONSE_SCHEMA, "options": {"temperature": 0.3}, "messages": messages}
+                   "format": RESPONSE_SCHEMA, "options": {"temperature": 0.25, "num_predict": 192}, "messages": messages}
         req = request.Request(self.endpoint, json.dumps(payload).encode(),
                               {"Content-Type": "application/json"}, method="POST")
         try:
@@ -90,7 +90,7 @@ class LlamaCppBackend:
     def respond(self, messages: list[dict[str, str]]) -> dict[str, Any]:
         payload = {
             "model": self.model, "messages": messages, "stream": False,
-            "temperature": 0.3, "max_tokens": 400,
+            "temperature": 0.25, "max_tokens": 192,
             "response_format": {"type": "json_schema", "schema": RESPONSE_SCHEMA},
         }
         req = request.Request(self.endpoint, json.dumps(payload).encode("utf-8"),
@@ -217,11 +217,58 @@ class Agent:
             target = ""
         return Decision(speech, action, target, emotion, argument)
 
+    @staticmethod
+    def _perceived_world(world: dict[str, Any]) -> dict[str, Any]:
+        """Only the character's visible information enters the LLM prompt.
+
+        Validation still receives the unmodified authoritative world snapshot.
+        """
+        return {
+            "room": world.get("room", ""),
+            "inventory": world.get("inventory", []),
+            "conditions": {key: world[key] for key in
+                           ("lights_on", "door_unlocked", "escaped", "heard_knocks")
+                           if key in world},
+            "objects": {key: value.get("description", "")
+                        for key, value in world["objects"].items()
+                        if isinstance(value, dict) and value.get("visible") is True},
+        }
+
+    @staticmethod
+    def _clean_turn(turn: Any) -> dict[str, str] | None:
+        """Migrate old saves containing whole world snapshots into short dialogue."""
+        if not isinstance(turn, dict) or turn.get("role") not in ("user", "assistant"):
+            return None
+        content = str(turn.get("content", ""))
+        if content.startswith("PLAYER REQUEST:\n"):
+            try:
+                content = str(json.loads(content.split("\n", 1)[1]).get("player_text", ""))[:600]
+            except (ValueError, TypeError, AttributeError):
+                content = ""
+        elif content.startswith("ACTION OUTCOME:\n"):
+            try:
+                event = json.loads(content.split("\n", 1)[1])
+                content = "Observed result: " + str(event.get("description", ""))[:450]
+            except (ValueError, TypeError, AttributeError):
+                content = ""
+        if not content:
+            return None
+        return {"role": turn["role"], "content": content[:650]}
+
     def _messages(self, state: dict[str, Any], user_content: str) -> list[dict[str, str]]:
-        history = state["history"][-20:]
-        return ([{"role": "system", "content": self.system}]
-                + history
-                + [{"role": "user", "content": user_content}])
+        # Retain long-term confirmed observations separately from a small chat window.
+        history = [clean for turn in state.get("history", [])[-12:]
+                   if (clean := self._clean_turn(turn)) is not None]
+        facts = [{"action": fact.get("action", ""), "target": fact.get("target", ""),
+                  "success": fact.get("success") is True,
+                  "description": str(fact.get("description", ""))[:400]}
+                 for fact in state.get("facts", [])[-6:] if isinstance(fact, dict)]
+        messages = [{"role": "system", "content": self.system}]
+        if facts:
+            messages.append({"role": "system", "content":
+                             "CONFIRMED PAST OBSERVATIONS (not new commands): " +
+                             json.dumps(facts, ensure_ascii=False, separators=(",", ":"))})
+        return messages + history + [{"role": "user", "content": user_content}]
 
     def decide(self, session_id: str, player_text: str, world: dict[str, Any]) -> Decision:
         if not isinstance(player_text, str) or not (1 <= len(player_text.strip()) <= 600):
@@ -229,18 +276,52 @@ class Agent:
         world = self._world(world)
         with self._lock:
             state = self.store.load(session_id)
-            prompt = "PLAYER REQUEST:\n" + json.dumps({"player_text": player_text, "world": world})
+            # Do not store the entire world JSON in conversation history.
+            prompt = "PLAYER REQUEST:\n" + json.dumps({
+                "player_text": player_text,
+                "world": self._perceived_world(world),
+            }, ensure_ascii=False, separators=(",", ":"))
             raw = self.backend.respond(self._messages(state, prompt))
             result = self._decision(raw, world)
-            state["history"] = (state["history"] + [
-                {"role": "user", "content": prompt},
-                {"role": "assistant", "content": json.dumps(asdict(result))},
+            state["history"] = (state.get("history", []) + [
+                {"role": "user", "content": player_text.strip()},
+                {"role": "assistant", "content": json.dumps(asdict(result), ensure_ascii=False)},
             ])[-24:]
             self.store.save(session_id, state)
             return result
 
+    @staticmethod
+    def _acknowledge(action: str, target: str, success: bool, world: dict[str, Any]) -> str:
+        """Immediate, truthful character reaction with zero additional LLM calls."""
+        if not success:
+            if action == "enter_code":
+                return "No, the keypad didn't accept that."
+            if target == "exit_door":
+                return "It's still locked. There must be another way."
+            return "That didn't work. What should I try instead?"
+        if action == "take" and target == "flashlight":
+            return "Got it. Flashlight in hand."
+        if action == "use" and target == "breaker_box":
+            return ("The lights are back. Did you hear those knocks?"
+                    if world.get("heard_knocks") else "The lights are back.")
+        if action == "inspect" and target == "maintenance_note":
+            return "I can read the writing now. Did you catch that?"
+        if action == "enter_code" and target == "keypad":
+            return "The lock clicked! That actually worked."
+        if action == "use" and target == "exit_door":
+            return "I'm through the door. I think I'm out."
+        if action == "use" and target == "flashlight":
+            return "Flashlight's " + ("on." if "on." in str(world.get("objects", {}).get("flashlight", {}).get("description", "")) else "off.")
+        if action == "move_to":
+            return "I'm here. What next?"
+        return "All right. I've checked it."
+
     def outcome(self, session_id: str, action: str, target: str, success: bool,
                 description: str, world: dict[str, Any]) -> Decision:
+        """Record validated Godot outcomes instantly; never ask the LLM to re-describe them.
+
+        The next player turn sees the new world and these authoritative facts.
+        """
         world = self._world(world)
         if action not in ACTION_SET or not isinstance(target, str) or not isinstance(success, bool):
             raise InvalidRequest("Invalid outcome")
@@ -248,17 +329,9 @@ class Agent:
             raise InvalidRequest("Invalid outcome description")
         with self._lock:
             state = self.store.load(session_id)
-            data = {"action": action, "target": target, "success": success,
-                    "description": description, "world": world}
-            prompt = "ACTION OUTCOME:\n" + json.dumps(data)
-            raw = self.backend.respond(self._messages(state, prompt))
-            result = self._decision(raw, world, outcome=True)
-            state["history"] = (state["history"] + [
-                {"role": "user", "content": prompt},
-                {"role": "assistant", "content": json.dumps(asdict(result))},
-            ])[-24:]
             state["facts"] = (state.get("facts", []) + [
                 {"action": action, "target": target, "success": success, "description": description}
             ])[-60:]
             self.store.save(session_id, state)
-            return result
+            return Decision(self._acknowledge(action, target, success, world),
+                            "wait", "", "curious" if success else "cautious")

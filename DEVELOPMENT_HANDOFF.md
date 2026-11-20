@@ -74,3 +74,12 @@ Primary repo: `maloysius-wq/the-last-connection` (public; created by user). Use 
 - Python test suite: 25 passing on Windows. Godot Linux headless gameplay smoke tests still passing.
 - User must test with actual GGUF file from D:; model compatibility and real-world latency not verified by hosted workflow.
 - Prioritize user playtest feedback / portable startup issues. Do not claim voice is done.
+
+## 2026-11-19 latency/interaction optimization
+
+- User confirmed the portable build launches and model works with their local GGUF, but found a long pause before actions and another after them.
+- Root cause: every action outcome was sent through a second full llama.cpp inference; conversation history also repeatedly stored and resent whole world snapshots. This grew the prompt on CPU with each interaction.
+- Updated `Agent.outcome` to immediately persist authoritative action facts and return a safe, deterministic in-character acknowledgment; no additional LLM call. The next `/api/decide` includes confirmed facts.
+- Constrain conversation context to recent turns and six confirmed events, compress legacy save snapshots, filter invisible objects, and reduce llama.cpp generated token cap from 400 to 192.
+- Added tests that count backend calls, validate outcome memory, protect hidden facts and legacy sessions, and enforce bounded prompt size. Test using GitHub Actions on both Python/Godot and portable Windows workflows before merging.
+- Existing GGUF stays in its D: location; update does not move/copy weights. Real latency on user's machine should be observed after they download the refreshed build.
