@@ -54,6 +54,15 @@ class PlayerIntent:
         return result
 
 
+
+def mentioned_targets(text: str) -> set[str]:
+    """Find explicit visible-object references in a human or Eli utterance.
+
+    Pronouns are intentionally NOT resolved here. A subsequent pronoun may
+    refer to the latest unambiguous object Eli named, but never a guessed prop.
+    """
+    return {target for target, pattern in TARGETS if re.search(pattern, text, re.I)}
+
 def classify(text: str, focus: str = "") -> PlayerIntent:
     lower = text.strip().lower()
     if not lower or NEGATED.search(lower):

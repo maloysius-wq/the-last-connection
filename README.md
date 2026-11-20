@@ -170,3 +170,20 @@ transmission, completion, resets and returning to the window. Confirming a
 GitHub update still takes focus while its dialog is open. A draft typed while
 Eli is busy is never sent until you explicitly press Transmit or Enter once
 he's ready.
+
+
+## Eli remembers which object he's talking about
+
+If Eli says "There's a flashlight on the desk. Do you see it?" and the player
+answers "Please pick **that** up and turn **it** on", the next turn resolves
+"that" against the **last unique visible object Eli actually mentioned**.
+The action is grounded to `use flashlight on`, so Godot moves him to the
+desk, picks up the flashlight and switches it on before reporting success.
+If Eli mentioned several props, the game does not silently guess the target.
+This fixes the case where a perfectly clear follow-up became free conversation
+and Eli claimed to have picked something up without physically acting.
+
+Conversational model output is also checked for unverified first-person prop
+interactions like "I'll grab the flashlight" or "I pressed it". When no
+world action was performed, it reports the actual state rather than inventing
+a pickup or switch press. These checks do not introduce a second LLM call.
