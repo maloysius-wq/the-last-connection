@@ -159,7 +159,8 @@ def classify(text: str, focus: str = "") -> PlayerIntent:
 MAX_PLANNED_ACTIONS = 5
 
 _PLAN_PREFIX = re.compile(
-    r"^\s*(?:please\s+|go\s+ahead\s+(?:and\s+)?|"
+    r"^\s*(?:(?:first|second|third|then|next|finally|after\s+that)\s*[:,]?\s*|"
+    r"please\s+|go\s+ahead\s+(?:and\s+)?|"
     r"let(?:'s| us)\s+(?:(?:start|begin)\s+by\s+)?"
     r"(?:having\s+you\s+|(?:get\s+you\s+to\s+))|"
     r"(?:i\s+(?:want|need|would\s+like)\s+you\s+to)\s+|"
@@ -174,8 +175,13 @@ _PLAN_VERB = (
 )
 # Only joiners introducing a SECOND imperative delimit steps; e.g.
 # "a keypad and a breaker" is never split.
-_PLAN_JOIN = re.compile(r",\s*(?:and\s+)?|\s+and\s+(?=" +
-                        _PLAN_VERB + r"\b)", re.I)
+_PLAN_JOIN = re.compile(
+    # Always expose comma-separated parts so an unknown requested step
+    # ("dance a jig") invalidates the WHOLE plan rather than being skipped.
+    r",\s*(?:and\s+)?|"
+    r"\s+(?:(?:and\s+)?then|after\s+that|next|finally)\s+(?=" +
+    _PLAN_VERB + r"\b)|"
+    r"\s+and\s+(?=" + _PLAN_VERB + r"\b)", re.I)
 _PLAN_IMPERATIVE = re.compile(
     r"^(?:" + _PLAN_VERB + r")\b", re.I)
 _PLAN_SURVEY = re.compile(
@@ -204,7 +210,12 @@ def _plan_step(text: str, focus: str) -> PlayerIntent:
         mode = (light.group(1) or light.group(2)).lower()
         if re.search(r"\b(?:flashlight|torch)\b", text, re.I) or focus == "flashlight":
             return PlayerIntent("action", "use", "flashlight", mode)
-        return PlayerIntent()
+        if re.search(r"\b(?:light|torch|flashlight)\b", text, re.I):
+            # "The light" is ambiguous when the focus isn't the torch.
+            return PlayerIntent()
+        # "Turn IT on" can refer to a grounded breaker or another fixture;
+        # let the ordinary intent classifier resolve that pronoun. Do not
+        # falsely force every "it" reference to mean the flashlight.
     result = _classify_clause(text, focus)
     if result.kind == "action":
         # The user must supply actual digits. Never infer a secret code from
