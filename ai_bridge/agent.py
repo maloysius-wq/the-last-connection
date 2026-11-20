@@ -745,6 +745,11 @@ class Agent:
             greeting = "I hear you" + (", " + name.group(1) if name else "") + "."
             return (greeting + " I'm Eli. I don't know how I ended up here either. "
                     "Can you see the room from your side?")
+        if re.search(r"\b(?:what happened|what did you (?:do|find)|did it work)\b",
+                     player_text, re.I) and world.get("last_observation"):
+            observed = str(world["last_observation"])[:350]
+            observed = re.sub(r"^Eli\b", "I", observed)
+            return "What I know for sure: " + observed
         if re.search(r"\b(?:flashlight|torch)\b", player_text, re.I):
             if "flashlight" in world.get("inventory", []):
                 return ("I've got the flashlight. It's " +
@@ -777,6 +782,7 @@ class Agent:
             local_state["referent"] = next(iter(visible_mentions))
         safe: list[str] = []
         removed = False
+        removed_target = ""
         for sentence in re.split(r"(?<=[.!?])\s+", speech):
             clause = sentence.strip()
             if not clause:
@@ -802,6 +808,11 @@ class Agent:
                 r"\bflashlight(?:['’]s|\s+is)\s+in\s+my\s+hand\b",
                 clause, re.I)
             false_pickup = bool(pickup and "flashlight" not in world.get("inventory", []))
+            if re.search(
+                    r"\bi(?:['’]ll|\s+will)\s+keep\s+(?:it|the\s+flashlight)"
+                    r"\s+in\s+my\s+hand\b", clause, re.I) and (
+                    "flashlight" not in world.get("inventory", [])):
+                false_pickup = True
             light_assertion = re.search(
                 r"\b(?:the\s+)?(?:flashlight|light)\s*(?:['’]s|\s+is)\s+"
                 r"(?:on|working|switched\s+on)\b", clause, re.I)
@@ -812,6 +823,8 @@ class Agent:
                                 and not re.search(r"\bi\s+(?:just|already)\b", clause, re.I))
             if (unsupported and not static_truth) or motion or false_pickup or false_light:
                 removed = True
+                if unsupported == "flashlight" or false_pickup or false_light:
+                    removed_target = "flashlight"
                 continue
             safe.append(clause)
         reply = " ".join(safe).strip()
@@ -819,6 +832,15 @@ class Agent:
                 r"(?:i\s+(?:haven't|have not)\s+(?:touched|done)\s+anything\s+new[.!]?\s*)?"
                 r"(?:what\s+(?:would you like|should i)\s+(?:me\s+)?(?:to\s+)?do(?:\s+next)?\??)?",
                 reply, re.I)):
+            # When the model hallucinated an interaction on a question about
+            # that prop, give a grounded answer instead of an invented event.
+            if removed_target == "flashlight" and not re.search(
+                    r"\b(?:hi|hello|hey)\s*,?\s*eli\b|\bhelp you escape\b",
+                    player_text, re.I):
+                if "flashlight" not in world.get("inventory", []):
+                    return "The flashlight's still on the desk. I haven't picked it up."
+                return ("I've got the flashlight, and it's " +
+                        ("on." if world.get("flashlight_on") else "off."))
             return Agent._conversational_fallback(player_text, world)
         # If we filtered a hallucination, keep the safe meaningful content,
         # not a robotic disclaimer. The result is still just Eli's speech.
