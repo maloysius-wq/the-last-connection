@@ -9,7 +9,7 @@ import re
 import threading
 from typing import Any, Protocol
 
-from .intent import PlayerIntent, classify
+from .intent import PlayerIntent, classify, mentioned_targets
 from urllib import request, error
 
 MODEL = os.environ.get("TLC_MODEL", "qwen3:4b-instruct")
@@ -389,7 +389,12 @@ class Agent:
             state = self.store.load(session_id)
             # Action permission comes from the *current* player turn, never
             # from the LLM's impulse or previous observations.
-            intent = classify(player_text, state.get("focus", ""))
+            # Resolve 'pick THAT up and turn IT on' against the latest
+            # unique visible object ELI mentioned, not a stale location.
+            referent = state.get("referent", state.get("focus", ""))
+            if referent not in world["objects"] or not world["objects"][referent].get("visible"):
+                referent = ""
+            intent = classify(player_text, referent)
             prompt = "PLAYER REQUEST:\n" + json.dumps({
                 "player_text": player_text,
                 "request_kind": intent.prompt_hint,
@@ -410,14 +415,20 @@ class Agent:
                 raw = self.backend.respond(self._messages(state, prompt))
                 result = self._decision(raw, world)
                 result = self._ground_decision(result, intent, player_text, world)
-            if intent.target and intent.target in world["objects"]:
-                state["focus"] = intent.target
+            # Track the latest grounded referent for the NEXT message.
+            # Include Eli's own reply, because the operator might say
+            # 'pick that up' after Eli mentions the desk flashlight.
+            # Several mentioned props must not silently resolve 'that'.
+            if intent.kind == "action":
+                next_referent = intent.target
             else:
-                # Track explicitly mentioned objects in conversation too,
-                # so "turn it on" can refer back to "the flashlight".
-                mentioned = classify("inspect " + player_text)
-                if mentioned.target in world["objects"]:
-                    state["focus"] = mentioned.target
+                cited = {item for item in mentioned_targets(result.speech)
+                         if item in world["objects"]
+                         and world["objects"][item].get("visible") is True}
+                next_referent = next(iter(cited)) if len(cited) == 1 else ""
+            state["referent"] = next_referent
+            if next_referent:
+                state["focus"] = next_referent
             # Persist the compacted form too, so pre-update saves shrink naturally.
             compact_history = [clean for turn in state.get("history", [])[-22:]
                                if (clean := self._clean_turn(turn)) is not None]
@@ -588,6 +599,32 @@ class Agent:
         return speech
 
     @staticmethod
+    def _unverified_prop_action(speech: str, world: dict[str, Any]) -> bool:
+        """Reject unexecuted physical interactions in free conversation.
+
+        Genuine confirmed events use the outcome channel. This examines
+        first-person action claims only; it never changes world state.
+        """
+        action_claim = re.search(
+            r"\bI(?:'ll|\s+will|\s+just|\s+already|\s+have|"
+            r"\s+did|\s+am\s+going\s+to|\s+was\s+going\s+to|"
+            r"['’]ve|\s+)?\s*(?:grab(?:bed)?|take|took|pick(?:ed)?\s+up|"
+            r"press(?:ed)?|switch(?:ed)?|turn(?:ed)?|use(?:d)?|flip(?:ped)?|"
+            r"activate(?:d)?|collect(?:ed)?|hold|held)\b",
+            speech, re.I)
+        if not action_claim:
+            return False
+        # Narrow to visible camera-room props, not autobiography.
+        first_person_clause = speech[action_claim.start():action_claim.end() + 100]
+        prop_near_action = re.search(
+            r"\b(?:flashlight|torch|breaker|keypad|pin\s*pad|switch|"
+            r"button|panel|door|note|paper|it|that)\b",
+            first_person_clause, re.I)
+        visible_names = {x for x in mentioned_targets(speech)
+                         if x in world.get("objects", {})}
+        return bool(prop_near_action and visible_names)
+
+    @staticmethod
     def _ground_dialogue(raw: str, world: dict[str, Any], state: dict[str, Any]) -> str:
         # Natural-text inference allows richer replies, but never unchecked
         # claims of *new* physical actions. Confirmed actions stay in facts.
@@ -597,6 +634,19 @@ class Agent:
         if not speech:
             return "I'm here. Could you repeat that?"
         speech = Agent._correct_room_perspective(speech, world, state)
+        # Conversational replies have NO matching Godot action. A 4B model
+        # may narrate '(Pause) ... I pressed it' despite never touching it.
+        if Agent._unverified_prop_action(speech, world):
+            if "flashlight" in world.get("objects", {}):
+                if "flashlight" in world.get("inventory", []):
+                    on = bool(world.get("flashlight_on", False))
+                    return ("I'm holding the flashlight, and it's " +
+                            ("on." if on else "off.") +
+                            " I haven't changed it just now.")
+                return ("The flashlight is still on the desk. I haven't picked it up "
+                        "or switched it on. Tell me if you want me to do that.")
+            return (Agent._describe_location(world) +
+                    " I haven't touched anything new.")
         # Conversational replies cannot initiate movement. If the model
         # describes walking as already underway while no action was issued,
         # replace that unverifiable progress claim with the true position.
@@ -694,6 +744,7 @@ class Agent:
             ])[-60:]
             if success and action in ("move_to", "inspect", "take", "use"):
                 state["focus"] = target
+                state["referent"] = target
             self.store.save(session_id, state)
             return Decision(self._acknowledge(action, target, success, world, description),
                             "wait", "", "curious" if success else "cautious")
