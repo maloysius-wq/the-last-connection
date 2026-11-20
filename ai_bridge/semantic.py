@@ -7,6 +7,7 @@ ordering, allowed targets/arguments and ambiguity, not exact command phrases.
 """
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
@@ -86,6 +87,79 @@ INSTRUCTIONS = (
     "success in speech before the engine confirms it. Keep speech short, "
     "frightened, believable and conversational, not a verbose monologue."
 )
+
+
+# A SECOND, narrowly scoped model pass is used only for physical requests.
+# This is an independent coverage audit, not permission to perform actions.
+# The same tiny local GGUF is reused, and the reviewer receives only a short
+# world summary plus the original request and draft plan.
+REVIEW_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "kind": {"type": "string", "enum": ["action", "clarify"]},
+        "steps": SCHEMA["properties"]["steps"],
+        "reason": {"type": "string"},
+    },
+    "required": ["kind", "steps", "reason"],
+    "additionalProperties": False,
+}
+
+REVIEW_INSTRUCTIONS = (
+    "ACTION COMPLETENESS AUDITOR. You are checking the actions another model "
+    "extracted from a single player's request. You DO NOT control the world. "
+    "Re-read ALL of the current operator message independently, beginning to end. "
+    "Ignore the draft until you've identified the entire set of explicitly "
+    "requested physical operations, their order and intended result. "
+    "The draft can be missing steps or may be entirely wrong. "
+    "Do not rubber-stamp a plan just because its first step is correct. "
+    "Critical example: 'let's start with picking up the flashlight on the "
+    "table there, and turning it on' requires BOTH taking the flashlight and "
+    "switching it ON. A draft containing only take/flashlight is INCOMPLETE. "
+    "The same principle applies to all objects and phrasings. "
+    "You may use one use/flashlight/on action when it performs both operations "
+    "because the engine automatically picks up a flashlight before switching "
+    "it on, but a bare take/flashlight is NOT enough. "
+    "Surveying the room and telling the player what is seen is survey/room; "
+    "the report comes from the confirmed post-survey state, not an invented "
+    "extra physical step. Never add prerequisites that the engine already "
+    "handles, unless the operator explicitly requested them separately. "
+    "Every distinct user-requested physical outcome must be covered. "
+    "Return kind=action with the COMPLETE, ORDERED list of 1-5 requested "
+    "steps. Each step includes action, target, argument and a separate "
+    "evidence quote taken EXACTLY AND CONTIGUOUSLY from this current user "
+    "message, in sequence. Only actions: move_to, inspect, take, use, "
+    "enter_code, survey. Valid targets: flashlight, breaker_box, keypad, "
+    "exit_door, maintenance_note, room (survey only). "
+    "Flashlight switch ON requires argument=on; switch OFF uses argument=off. "
+    "Other action arguments empty, except keypad requires four digits given "
+    "explicitly in the user message. Do not infer a code. "
+    "Do not treat a question about an imagined action, a negated instruction, "
+    "or mere mention of an object as permission to touch it. "
+    "If the user was only discussing possibilities, or action targets are "
+    "ambiguous, or the proposed step count is too large, return kind=clarify "
+    "with steps=[] and a brief reason. The output is JSON only."
+)
+
+
+def review_messages(message: str, draft: Any, world: dict[str, Any],
+                    referent: str = "") -> list[dict[str, str]]:
+    """Minimal local-GGUF review context, with no saved prompt or hidden clue."""
+    objects = world.get("objects", {})
+    visible = [name for name, obj in objects.items()
+               if isinstance(obj, dict) and obj.get("visible") is True]
+    request = {
+        "current_player_message": message,
+        "draft_steps_not_yet_executed": draft if isinstance(draft, list) else [],
+        "visible_targets": visible,
+        "held_objects": world.get("inventory", []),
+        "last_unambiguous_object": referent,
+        "flashlight_on": bool(world.get("flashlight_on")),
+    }
+    return [
+        {"role": "system", "content": REVIEW_INSTRUCTIONS},
+        {"role": "user", "content": json.dumps(
+            request, ensure_ascii=False, separators=(",", ":"))},
+    ]
 
 
 class PlanRejected(Exception):
