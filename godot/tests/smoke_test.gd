@@ -87,6 +87,15 @@ func _run() -> void:
     _expect(world.actor.position.distance_to(world.object_positions["keypad"]) < 0.12,
         "Eli stands by keypad after inspecting it")
     world.reset_state()
+    # Recreate screenshot: Eli stands at breaker, flashlight remains on desk.
+    # The player's indirect "pick that up and turn it on" resolves in the
+    # bridge to use/flashlight/on. Godot must actually walk back to the desk.
+    world.perform_action("move_to", "breaker_box")
+    moved = await world.action_finished
+    _expect(moved[2] == true and world.snapshot().get("actor_at") == "breaker_box",
+        "Flashlight scenario begins with Eli physically at the breaker")
+    _expect(not world.snapshot()["inventory"].has("flashlight"),
+        "Flashlight still rests on the desk before instruction")
     # Turning on an uncollected flashlight must physically pick it up first.
     world.perform_action("use", "flashlight", "on")
     var flashlight_action: Array = await world.action_finished
@@ -94,6 +103,10 @@ func _run() -> void:
     _expect("picked up" in str(flashlight_action[3]), "Outcome reports flashlight pickup truthfully")
     _expect(world.snapshot()["inventory"].has("flashlight"), "Flashlight is in Eli's hand")
     _expect(world.snapshot()["flashlight_on"] == true, "Flashlight is now on")
+    _expect(world.snapshot().get("actor_at") == "flashlight",
+        "Eli's confirmed location changes from breaker to flashlight desk")
+    _expect(world.actor.position.distance_to(world.object_positions["flashlight"]) < 0.12,
+        "Eli visibly travels to flashlight before claiming pickup")
     world.perform_action("use", "flashlight", "on")
     flashlight_action = await world.action_finished
     _expect(flashlight_action[2] == true and world.snapshot()["flashlight_on"] == true,
