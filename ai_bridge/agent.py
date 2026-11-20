@@ -391,7 +391,22 @@ class Agent:
             # from the LLM's impulse or previous observations.
             # Resolve 'pick THAT up and turn IT on' against the latest
             # unique visible object ELI mentioned, not a stale location.
-            referent = state.get("referent", state.get("focus", ""))
+            if "referent" in state:
+                referent = state["referent"]
+            else:
+                # One-time migration for pre-update sessions: derive the
+                # referent from Eli's last saved reply rather than the old
+                # 'focus' field, which often held an unrelated prior location.
+                recent_reply = next(
+                    (clean["content"] for turn in reversed(state.get("history", []))
+                     if turn.get("role") == "assistant"
+                     if (clean := self._clean_turn(turn)) is not None),
+                    "")
+                cited = {item for item in mentioned_targets(recent_reply)
+                         if item in world["objects"]
+                         and world["objects"][item].get("visible") is True}
+                referent = next(iter(cited)) if len(cited) == 1 else ""
+                state["referent"] = referent
             if referent not in world["objects"] or not world["objects"][referent].get("visible"):
                 referent = ""
             intent = classify(player_text, referent)
