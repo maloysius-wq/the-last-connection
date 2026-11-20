@@ -243,6 +243,13 @@ class Agent:
             "a nearby object is not the same as an object across the room. "
             "Do not reveal concealed puzzle information from object IDs or "
             "unexamined clues. If uncertain, admit it and reason conversationally. "
+            "When the operator introduces themselves or says they arrived "
+            "to help, greet them, acknowledge the strange situation and reply "
+            "like a real person. Do not volunteer administrative reports about "
+            "what you haven't touched. When asked about the room, describe "
+            "what is visible around you, not merely your location or inventory. "
+            "Never speak in third person about your own inventory, or use "
+            "technical terms like world snapshot, objects, actor_at or item IDs. "
             "Avoid the constant 'what next?' refrain. A reply may be up to "
             "three natural sentences."
         )
@@ -415,7 +422,9 @@ class Agent:
                 "request_kind": intent.prompt_hint,
                 "world": self._perceived_world(world),
             }, ensure_ascii=False, separators=(",", ":"))
-            if intent.kind != "action" and self._spatial_question(player_text):
+            if intent.kind != "action" and self._room_overview_question(player_text):
+                result = Decision(self._describe_room(world), "wait", "", "curious")
+            elif intent.kind != "action" and self._spatial_question(player_text):
                 result = Decision(self._describe_location(world), "wait", "", "calm")
             elif intent.kind != "action" and callable(getattr(self.backend, "converse", None)):
                 # Passing the player's literal statement as USER text prevents
@@ -423,7 +432,7 @@ class Agent:
                 # possessions or physical location.
                 speech = self.backend.converse(
                     self._messages(state, player_text, dialogue=True, world=world))
-                speech = self._ground_dialogue(speech, world, state)
+                speech = self._ground_dialogue(speech, world, state, player_text)
                 result = Decision(speech, "wait", "", "curious")
             else:
                 # Mock/test backends still use the existing structured API.
@@ -542,25 +551,83 @@ class Agent:
         return "I'll try that, and let you know what happens."
 
     @staticmethod
+    def _room_overview_question(message: str) -> bool:
+        """A broad room survey is not a question about the nearest object."""
+        return bool(re.search(
+            r"\b(?:what (?:do|can) you see(?:\s+(?:in|around)\s+(?:the|this)\s+room)?"
+            r"|what(?:'s| is) (?:around you|in (?:the|this) room)"
+            r"|describe (?:the|this) room|look around"
+            r"|tell me (?:what you see|about (?:the|this) room))\b",
+            message, flags=re.I))
+
+    @staticmethod
     def _spatial_question(message: str) -> bool:
+        """Answer where Eli stands, not a complete room inventory."""
         return bool(re.search(
             r"\b(?:where (?:are|r) you|where (?:are|were) you standing|"
             r"what(?:'s| is) (?:(?:right|directly) )?(?:in front of|near|beside|next to) you|"
-            r"what (?:are|r) you looking at|what (?:are|r) you standing (?:by|near)|"
-            r"what (?:can|do) you see(?: (?:in front of you|right here|now))?)\b",
+            r"what (?:are|r) you looking at|what (?:are|r) you standing (?:by|near))\b",
             message.lower()))
 
     @staticmethod
+    def _where_am_i(world: dict[str, Any]) -> str:
+        place = str(world.get("actor_at", "room_center"))
+        return {
+            "room_center": "I'm near the middle of the room.",
+            "flashlight": "I'm beside the desk.",
+            "maintenance_note": "I'm beside the desk.",
+            "breaker_box": "I'm at the breaker box on the back wall.",
+            "keypad": "I'm at the keypad beside the door.",
+            "exit_door": "I'm by the exit door.",
+        }.get(place, "I'm in the maintenance room.")
+
+    @staticmethod
     def _describe_location(world: dict[str, Any]) -> str:
-        actor_at = str(world.get("actor_at", "room_center"))
-        if actor_at == "room_center":
-            return "I'm standing near the middle of the room. I can see a desk, a breaker box and an exit door."
-        obj = world.get("objects", {}).get(actor_at)
-        name = actor_at.replace("_", " ")
-        if not isinstance(obj, dict) or obj.get("visible") is not True:
-            return "I'm in the maintenance room, but I can't get a good look at what's beside me."
-        description = str(obj.get("description", "")).strip().rstrip(".")
-        return "I'm standing right by the " + name + ". " + (description + "." if description else "")
+        """Translate engine coordinates/state into Eli's own natural words."""
+        place = str(world.get("actor_at", "room_center"))
+        location = Agent._where_am_i(world)
+        if place in ("flashlight", "maintenance_note"):
+            if "flashlight" in world.get("inventory", []):
+                condition = "on" if world.get("flashlight_on") else "off"
+                return location + " I've got the flashlight in my hand, and it's " + condition + "."
+            return location + " The flashlight is lying on the desk."
+        if place == "breaker_box":
+            return location + (" Its lever is up." if world.get("lights_on") else " Its lever is down.")
+        if place == "keypad":
+            return location + (" Its indicator is green." if world.get("door_unlocked")
+                               else " Its indicator glows red.")
+        if place == "exit_door":
+            return location + (" It's unlocked." if world.get("door_unlocked")
+                               else " It looks firmly locked.")
+        return location
+
+    @staticmethod
+    def _describe_room(world: dict[str, Any]) -> str:
+        """Overview based only on visible, confirmed facts, not internal JSON labels."""
+        objects = world.get("objects", {})
+        fragments: list[str] = []
+        if "flashlight" in objects and objects["flashlight"].get("visible"):
+            if "flashlight" in world.get("inventory", []):
+                fragments.append("I've got the flashlight in my hand, and it's " +
+                                 ("on" if world.get("flashlight_on") else "off"))
+            else:
+                fragments.append("there's a flashlight resting on the desk")
+        if "breaker_box" in objects and objects["breaker_box"].get("visible"):
+            fragments.append("a breaker box is mounted on the back wall")
+        if "keypad" in objects and objects["keypad"].get("visible"):
+            fragments.append(("a green-lit keypad" if world.get("door_unlocked")
+                              else "a red-lit keypad") + " sits beside the exit door")
+        if "exit_door" in objects and objects["exit_door"].get("visible"):
+            fragments.append("the exit door is " +
+                             ("unlocked" if world.get("door_unlocked") else "locked"))
+        if "maintenance_note" in objects and objects["maintenance_note"].get("visible"):
+            fragments.append("there's a folded note on the desk")
+        if not fragments:
+            return Agent._where_am_i(world) + " It's hard to make anything else out."
+        details = "; ".join(fragments)
+        light = ("The overhead lights are working." if world.get("lights_on")
+                 else "The overhead lights are still out.")
+        return Agent._where_am_i(world) + " I can make out a few things: " + details + ". " + light
 
     @staticmethod
     def _correct_room_perspective(speech: str, world: dict[str, Any],
