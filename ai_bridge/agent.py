@@ -10,7 +10,8 @@ import threading
 from typing import Any, Protocol
 
 from .intent import PlayerIntent, classify, mentioned_targets, plan_actions
-from .semantic import SCHEMA as SEMANTIC_SCHEMA, INSTRUCTIONS as SEMANTIC_INSTRUCTIONS, PlanRejected, validated_steps
+from .semantic import (SCHEMA as SEMANTIC_SCHEMA, INSTRUCTIONS as SEMANTIC_INSTRUCTIONS,
+                       REVIEW_SCHEMA, PlanRejected, review_messages, validated_steps)
 from urllib import request, error
 
 MODEL = os.environ.get("TLC_MODEL", "qwen3:4b-instruct")
@@ -101,6 +102,24 @@ class OllamaBackend:
         except (OSError, error.URLError, ValueError, KeyError, TypeError) as exc:
             raise BackendUnavailable("Local model could not interpret the request") from exc
 
+    def review(self, messages: list[dict[str, str]]) -> dict[str, Any]:
+        """Independently audit physical action coverage with the SAME GGUF."""
+        payload = {"model": self.model, "stream": False, "think": False,
+                   "format": REVIEW_SCHEMA,
+                   "options": {"temperature": 0.1, "num_predict": 600},
+                   "messages": messages}
+        req = request.Request(self.endpoint, json.dumps(payload).encode("utf-8"),
+                              {"Content-Type": "application/json"}, method="POST")
+        try:
+            with request.urlopen(req, timeout=120) as res:
+                content = json.loads(res.read(1_000_000))["message"]["content"]
+            parsed = json.loads(content)
+            if not isinstance(parsed, dict):
+                raise ValueError("Expected an action review object")
+            return parsed
+        except (OSError, error.URLError, ValueError, KeyError, TypeError) as exc:
+            raise BackendUnavailable("Local action completeness review failed") from exc
+
     def converse(self, messages: list[dict[str, str]]) -> str:
         """Natural dialogue, without a forced tool-call JSON envelope."""
         payload = {"model": self.model, "stream": False, "think": False,
@@ -161,6 +180,23 @@ class LlamaCppBackend:
             return parsed
         except (OSError, error.URLError, ValueError, KeyError, TypeError, IndexError) as exc:
             raise BackendUnavailable("Local model could not interpret the request") from exc
+
+    def review(self, messages: list[dict[str, str]]) -> dict[str, Any]:
+        """Independently audit physical action coverage, no second model."""
+        payload = {"model": self.model, "messages": messages, "stream": False,
+                   "temperature": 0.1, "max_tokens": 600,
+                   "response_format": {"type": "json_schema", "schema": REVIEW_SCHEMA}}
+        req = request.Request(self.endpoint, json.dumps(payload).encode("utf-8"),
+                              {"Content-Type": "application/json"}, method="POST")
+        try:
+            with request.urlopen(req, timeout=300) as res:
+                content = json.loads(res.read(1_000_000))["choices"][0]["message"]["content"]
+            parsed = json.loads(content)
+            if not isinstance(parsed, dict):
+                raise ValueError("Expected an action review object")
+            return parsed
+        except (OSError, error.URLError, ValueError, KeyError, TypeError, IndexError) as exc:
+            raise BackendUnavailable("Local action completeness review failed") from exc
 
     def converse(self, messages: list[dict[str, str]]) -> str:
         """Unconstrained natural speech for conversational turns."""
@@ -483,7 +519,23 @@ class Agent:
             if semantic_mode:
                 raw = self.backend.interpret(
                     self._messages(state, player_text, semantic=True, world=world))
-                result = self._semantic_decision(raw, player_text, world, state, referent)
+                if isinstance(raw, dict) and raw.get("kind") == "action" and callable(
+                        getattr(self.backend, "review", None)):
+                    # Physical requests get a second, focused completeness
+                    # check. A valid first step is NOT proof that all requested
+                    # steps were retained. A review failure executes nothing.
+                    try:
+                        audit = self.backend.review(
+                            review_messages(player_text, raw.get("steps", []),
+                                            world, referent))
+                    except BackendUnavailable:
+                        audit = {"kind": "clarify", "steps": [],
+                                 "reason": "The plan could not be reviewed"}
+                    result = self._reviewed_semantic_decision(
+                        raw, audit, player_text, world, state, referent)
+                else:
+                    result = self._semantic_decision(
+                        raw, player_text, world, state, referent)
                 plan = ()
             else:
                 intent = classify(player_text, referent)
@@ -587,6 +639,76 @@ class Agent:
             ])[-24:]
             self.store.save(session_id, state)
             return result
+
+    @staticmethod
+    def _plans_match_or_extend(first: tuple[dict[str, str], ...],
+                               second: tuple[dict[str, str], ...]) -> bool:
+        """Both plans are compatible when one is an ordered prefix of another.
+
+        Flashlight ON already includes its pickup in the engine. A compact
+        use/on and an explicit take+use/on describe equivalent end goals.
+        """
+        def compact(steps: tuple[dict[str, str], ...]) -> tuple[tuple[str, str, str], ...]:
+            sequence = [(s["action"], s["target"], s["argument"]) for s in steps]
+            sequence = [s for i, s in enumerate(sequence)
+                        if not (s == ("take", "flashlight", "") and
+                                i + 1 < len(sequence) and
+                                sequence[i + 1] == ("use", "flashlight", "on"))]
+            return tuple(sequence)
+        raw_a = tuple((s["action"], s["target"], s["argument"]) for s in first)
+        raw_b = tuple((s["action"], s["target"], s["argument"]) for s in second)
+        if raw_a == raw_b[:len(raw_a)] or raw_b == raw_a[:len(raw_b)]:
+            return True
+        a, b = compact(first), compact(second)
+        if a == b[:len(a)] or b == a[:len(b)]:
+            return True
+        # A pickup-only draft may be corrected by an audited flashlight-ON
+        # action; Godot will pick it up as an engine prerequisite.
+        return bool(
+            (a == (("take", "flashlight", ""),) and
+             b == (("use", "flashlight", "on"),)) or
+            (b == (("take", "flashlight", ""),) and
+             a == (("use", "flashlight", "on"),))
+        )
+
+    def _reviewed_semantic_decision(self, first: Any, audit: Any,
+                                    player_text: str, world: dict[str, Any],
+                                    state: dict[str, Any], referent: str) -> Decision:
+        """Use the second reading to prevent valid-but-incomplete action plans.
+
+        Neither reading can authorize an unsupported act. Prefer the more
+        complete mutually compatible verified sequence; contradictions stop
+        before any movement, rather than silently doing only step one.
+        """
+        fallback = Decision(
+            "Wait. I don't want to miss part of what you're asking. "
+            "Can you repeat those steps?", "wait", "", "cautious")
+        if (not isinstance(audit, dict) or audit.get("kind") != "action" or
+                not isinstance(audit.get("steps"), list)):
+            return fallback
+
+        reviewed = self._semantic_decision(
+            {**first, "kind": "action", "steps": audit["steps"]},
+            player_text, world, state, referent)
+        if reviewed.action == "wait":
+            return reviewed
+        original = self._semantic_decision(
+            first, player_text, world, state, referent)
+        if original.action == "wait":
+            # First draft was inaccurate; the independently audited plan is
+            # still subject to all current-user and world constraints.
+            return reviewed
+        a, b = original.actions, reviewed.actions
+        if not self._plans_match_or_extend(a, b):
+            return fallback
+        if len(a) > len(b):
+            return original
+        if len(a) == len(b):
+            if a[0]["action"] == "use" and a[0]["target"] == "flashlight" and a[0]["argument"] == "on":
+                return original
+            if b[0]["action"] == "use" and b[0]["target"] == "flashlight" and b[0]["argument"] == "on":
+                return reviewed
+        return reviewed
 
     def _semantic_decision(self, raw: Any, player_text: str,
                            world: dict[str, Any], state: dict[str, Any],
