@@ -855,8 +855,8 @@ class Agent:
         the previous [:650] output cap cut Eli off visibly. Preserve the last
         complete thought, with a comfortable, adaptive dialogue length.
         """
-        max_sentences = 6 if detailed else 3
-        max_chars = 1150 if detailed else 590
+        max_sentences = 8 if detailed else 7
+        max_chars = 1150 if detailed else 500
         pieces = re.split(r"(?<=[.!?])\s+", text.strip())
         kept: list[str] = []
         for part in pieces:
