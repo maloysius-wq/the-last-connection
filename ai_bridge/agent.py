@@ -10,6 +10,7 @@ import threading
 from typing import Any, Protocol
 
 from .intent import PlayerIntent, classify, mentioned_targets
+from .action_queue import parse_sequence
 from urllib import request, error
 
 MODEL = os.environ.get("TLC_MODEL", "qwen3:4b-instruct")
@@ -51,6 +52,8 @@ class Decision:
     target: str = ""
     emotion: str = "cautious"
     argument: str = ""
+    # Subsequent explicit actions; created by our parser, never the LLM.
+    queue: tuple[dict[str, str], ...] = ()
 
 
 class Backend(Protocol):
@@ -417,12 +420,40 @@ class Agent:
             if referent not in world["objects"] or not world["objects"][referent].get("visible"):
                 referent = ""
             intent = classify(player_text, referent)
+            sequence = parse_sequence(player_text, referent)
+            # A two-step request can simplify to a single engine action:
+            # inspecting already walks there; using flashlight ON picks it up.
+            # Otherwise leave existing single-command LLM behavior unchanged.
+            use_sequence = sequence is not None and (
+                len(sequence) != 1 or intent.kind != "action")
             prompt = "PLAYER REQUEST:\n" + json.dumps({
                 "player_text": player_text,
                 "request_kind": intent.prompt_hint,
                 "world": self._perceived_world(world),
             }, ensure_ascii=False, separators=(",", ":"))
-            if intent.kind != "action" and self._room_overview_question(player_text):
+            if use_sequence:
+                if not sequence:
+                    result = Decision(
+                        "I couldn't follow that sequence clearly. Could you give me the steps one at a time?",
+                        "wait", "", "cautious")
+                elif not isinstance(world["objects"].get(sequence[0].target), dict) or (
+                        world["objects"][sequence[0].target].get("visible") is not True):
+                    result = Decision(
+                        "I can't see the first thing you want me to use yet. Where should I start?",
+                        "wait", "", "cautious")
+                else:
+                    def to_action(step: PlayerIntent) -> dict[str, str]:
+                        argument = (step.argument if step.action == "enter_code" else
+                                    step.light_mode if (step.action == "use" and
+                                                        step.target == "flashlight") else "")
+                        return {"action": step.action, "target": step.target, "argument": argument}
+                    first = to_action(sequence[0])
+                    remaining = tuple(to_action(step) for step in sequence[1:])
+                    result = Decision(
+                        "I'll try those steps in order. I'll stop if something doesn't work.",
+                        first["action"], first["target"], "cautious", first["argument"],
+                        remaining)
+            elif intent.kind != "action" and self._room_overview_question(player_text):
                 result = Decision(self._describe_room(world), "wait", "", "curious")
             elif intent.kind != "action" and self._spatial_question(player_text):
                 result = Decision(self._describe_location(world), "wait", "", "calm")
@@ -443,7 +474,9 @@ class Agent:
             # Include Eli's own reply, because the operator might say
             # 'pick that up' after Eli mentions the desk flashlight.
             # Several mentioned props must not silently resolve 'that'.
-            if intent.kind == "action":
+            if use_sequence and sequence:
+                next_referent = sequence[0].target
+            elif intent.kind == "action":
                 next_referent = intent.target
             else:
                 cited = {item for item in mentioned_targets(result.speech)
