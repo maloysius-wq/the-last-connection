@@ -96,7 +96,10 @@ jobs:
             }
             $server = Join-Path $target 'llama-server.exe'
             if (!(Test-Path $server -PathType Leaf)) { throw "Missing $backend model server" }
-            if ((Get-Item $server).Length -lt 1000000) { throw "Invalid $backend model server" }
+            $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path $server))
+            if ($bytes.Length -lt 30000 -or $bytes[0] -ne 77 -or $bytes[1] -ne 90) {
+              throw "Invalid $backend Windows model server (not a PE executable)"
+            }
             Write-Host "$backend llama.cpp server packaged ($((Get-Item $server).Length) bytes)"
           }
       - name: Include portable build guide
