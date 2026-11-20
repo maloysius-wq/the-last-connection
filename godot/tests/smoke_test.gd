@@ -25,6 +25,12 @@ func _run() -> void:
     if world == null:
         quit(1)
         return
+    # The world smoke test drives actions directly. Disconnect the real
+    # terminal's bridge callback so it does not attempt localhost POSTs
+    # without a server and interfere with the input-focus test.
+    var bridge_callback := Callable(app, "_on_world_action_finished")
+    if world.action_finished.is_connected(bridge_callback):
+        world.action_finished.disconnect(bridge_callback)
     var entry: LineEdit = app.get("input")
     _expect(entry != null, "Terminal chat field exists")
     if entry != null:
