@@ -11,7 +11,7 @@ import unittest
 from unittest.mock import patch
 
 from ai_bridge.agent import Agent, LlamaCppBackend, OllamaBackend, SessionStore
-from ai_bridge.semantic import validated_steps, PlanRejected
+from ai_bridge.semantic import validated_steps, PlanRejected, is_reflective_question
 
 PERSONA = Path(__file__).resolve().parents[1] / "data/characters/eli.json"
 
@@ -51,7 +51,8 @@ class SemanticBackend:
     def respond(self, messages):
         raise AssertionError("Should not fall back to old single-action parser")
     def converse(self, messages):
-        raise AssertionError("Single semantic inference covers conversation")
+        self.calls.append(messages)
+        return self.response.get("speech", "I don't know.")
 
 
 class SemanticPlannerTests(unittest.TestCase):
@@ -67,7 +68,12 @@ class SemanticPlannerTests(unittest.TestCase):
             self.store.save("player", state)
         decision = agent.decide("player", user, room or world())
         self.assertEqual(len(backend.calls), 1)
-        self.assertIn("SEMANTIC ACTION INTERPRETATION", backend.calls[0][0]["content"])
+        if not is_reflective_question(user):
+            self.assertIn("SEMANTIC ACTION INTERPRETATION",
+                          backend.calls[0][0]["content"])
+        else:
+            self.assertIn("live private conversation",
+                          backend.calls[0][0]["content"])
         self.assertEqual(backend.calls[0][-1]["content"], user)
         return decision
 
