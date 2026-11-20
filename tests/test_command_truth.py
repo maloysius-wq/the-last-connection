@@ -95,7 +95,7 @@ class TestCommandTruth(unittest.TestCase):
         confirmed = agent.outcome(
             "execute", "use", "flashlight", True,
             "Eli switched on the handheld flashlight.", after)
-        self.assertIn("see a little better", confirmed.speech)
+        self.assertIn("flashlight is on", confirmed.speech)
         self.assertEqual(backend.dialogue_calls, 0)
         self.assertEqual(backend.action_calls, 0)
 
