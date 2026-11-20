@@ -102,3 +102,13 @@ Primary repo: `maloysius-wq/the-last-connection` (public; created by user). Use 
 - Added first-run GGUF setup: use existing model when available, recover stale configured model path after transferring folder, or obtain explicit consent to download Qwen3-4B-Instruct-2507 Q4_K_M (~2.5GB) into `models/` beside game. Downloads use resumable `.part` and never write GGUF weights to C: unless that is the user's selected game drive.
 - Cross-platform unit tests cover GPU fallback and model setup. GitHub Actions builds both CPU and Vulkan runtimes. Keep model self-contained/local-only after optional one-time download; no cloud inference.
 - Next validation: check successful GitHub Windows artifact, inspect file tree, verify real model speed and active Vulkan offload using the user's computer. GitHub hosted runners do not test real GPU inference.
+
+## GPU portable build VERIFIED & merged (2026-11-19)
+
+- PR #5 merged to main: `94a8b85e2b95d4286df3bf6ae94399c09e26f2d1`.
+- Passing GitHub Actions PR workflow: `44663330813`, artifact ID `14597450024`, name `TheLastConnection-Windows-GPU-Portable` (~112.7 MB ZIP); Python + Godot workflows also passed for the branch. GPU inference with a real NVIDIA/AMD/Intel card was NOT measured on hosted runners.
+- Retrieved ZIP and inspected: 1,095 files, zero corruption, `TheLastConnection.exe`, `TheLastConnectionGame.exe`, `runtime/llama/cpu/llama-server.exe`, `runtime/llama/vulkan/llama-server.exe`, `runtime/llama/vulkan/ggml-vulkan.dll` and dependencies, no bundled GGUF.
+- GitHub Actions originally failed an overstrict runtime exe size check: upstream llama-server.exe is a small (~9.7kB) DLL-linked Windows PE, validated with `MZ` header rather than a 1MB minimum. The corrected workflow is green.
+- Installer/runner first launch supports existing GGUF path or explicit single-file download (~2.5GB) into game/models. The user's existing D-drive model remains untouched. When transferring to a new PC, copy ZIP and optionally bring your .gguf into models for fully offline setup.
+- Launcher records selected backend in logs/runtime-status.json. Note: backend selection is not proof of actual GPU-layer offload; inspect logs/llama-server.log for layer offload count during local playtests.
+- Future priority: user checks initial response time, mode, Vulkan GPU logs, compatibility and memory footprint, then continue voice input/output. Test on real hardware is required before promises about speed.
