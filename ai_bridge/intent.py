@@ -283,15 +283,15 @@ def plan_actions(text: str, focus: str = "", *, strict: bool = False) -> tuple[P
                 # or imaginary "report" world action is needed.
                 if commands and commands[-1].action == "survey":
                     continue
-                return None if strict else ()
+                return None if strict and commands else ()
             result = _plan_step(part, current_focus)
             if result.kind != "action":
                 # Never silently execute a subset via the old one-action
                 # fallback when a compound instruction was misunderstood.
-                return None if strict else ()
+                return None if strict and commands else ()
             commands.append(result)
             if len(commands) > MAX_PLANNED_ACTIONS:
-                return None if strict else ()
+                return None if strict and commands else ()
             if result.target != "room":
                 current_focus = result.target
     return tuple(commands)
