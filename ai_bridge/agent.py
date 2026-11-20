@@ -616,42 +616,57 @@ class Agent:
     @staticmethod
     def _unverified_prop_action(speech: str, world: dict[str, Any],
                                 state: dict[str, Any]) -> str:
-        """Reject unexecuted physical interactions in free conversation.
+        """Identify an unexecuted physical claim in a conversation-only reply.
 
-        Genuine confirmed events use the outcome channel. This examines
-        first-person action claims only; it never changes world state.
+        Natural LLM language is not an event stream. First-person claims,
+        stage directions, and statements of an altered flashlight state
+        require authoritative Godot evidence, not believable-sounding prose.
+        This function only finds suspect claims; it never changes the world.
         """
         action_claim = re.search(
-            r"\bI(?:'ll|\s+will|\s+just|\s+already|\s+have|"
-            r"\s+did|\s+am\s+going\s+to|\s+was\s+going\s+to|"
-            r"['’]ve|\s+)?\s*(?:grab(?:bed)?|take|took|pick(?:ed)?\s+up|"
-            r"press(?:ed)?|switch(?:ed)?|turn(?:ed)?|use(?:d)?|flip(?:ped)?|"
-            r"activate(?:d)?|collect(?:ed)?|hold|held)\b",
+            r"\b(?:"
+            # Straight and curly apostrophes, past/present and contractions.
+            r"i(?:['’]ve|\s+have)?\s+(?:just\s+|already\s+)?"
+            r"(?:got|grabbed|picked\s+up|taken|took|pressed|switched|turned|"
+            r"flipped|activated|collected|used)\b|"
+            r"i(?:['’]m|\s+am)\s+(?:already\s+)?"
+            r"(?:(?:right\s+there|over\s+there)[,\s]+)?"
+            r"(?:picking\s+up|grabbing|holding|carrying|pressing|"
+            r"switching|turning|using)\b|"
+            r"i(?:['’]ll|\s+will|\s+am\s+going\s+to)\s+"
+            r"(?:pick\s+up|grab|take|press|switch|turn|flip|activate|use)\b|"
+            r"i\s+(?:grab|take|pick\s+up|press|switch|turn|flip|"
+            r"activate|use)\b|"
+            r"(?:flashlight|(?:the\s+)?light)\s*(?:['’]s|\s+is)\s+"
+            r"(?:on|switched\s+on|working)\b"
+            r")",
             speech, re.I)
         if not action_claim:
             return ""
-        # Narrow to actual room-prop terms or physical pronouns near the claim,
-        # not unrelated autobiographical phrases such as 'I took the bus'.
-        clause = speech[action_claim.start():action_claim.end() + 85]
-        prop_near_action = re.search(
-            r"\b(?:flashlight|torch|breaker|keypad|pin\s*pad|switch|"
-            r"button|panel|door|note|paper|it|that)\b",
-            clause, re.I)
-        if not prop_near_action:
-            return ""
-        visible_names = {x for x in mentioned_targets(speech)
-                         if x in world.get("objects", {})
-                         and world["objects"][x].get("visible") is True}
+
+        visible_names = {
+            name for name in mentioned_targets(speech)
+            if isinstance(world.get("objects", {}).get(name), dict)
+            and world["objects"][name].get("visible") is True
+        }
         if len(visible_names) == 1:
             return next(iter(visible_names))
         if len(visible_names) > 1:
             return "ambiguous"
-        # If Eli only said 'I pressed it', ground 'it' in the most recent
-        # conversation referent, not in a guessed room object.
+
+        # 'I pressed it' may be understood only if the operator and Eli
+        # were already discussing one well-grounded physical object.
         referent = state.get("referent", "")
-        if referent in world.get("objects", {}) and world["objects"][referent].get("visible"):
+        if (referent in world.get("objects", {}) and
+                world["objects"][referent].get("visible") is True):
             return referent
-        return "ambiguous"
+        # A false claim that 'the light's on' still concerns the room light.
+        if (re.search(r"\b(?:light|flashlight)\s*(?:['’]s|\s+is)\s+on\b",
+                      speech, re.I) and
+                "flashlight" in world.get("objects", {})):
+            return "flashlight"
+        # Without any in-room object connection, don't censor autobiography.
+        return ""
 
     @staticmethod
     def _ground_dialogue(raw: str, world: dict[str, Any], state: dict[str, Any]) -> str:
