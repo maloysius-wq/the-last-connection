@@ -656,7 +656,16 @@ class Agent:
                                 sequence[i + 1] == ("use", "flashlight", "on"))]
             return tuple(sequence)
         a, b = compact(first), compact(second)
-        return a == b[:len(a)] or b == a[:len(b)]
+        if a == b[:len(a)] or b == a[:len(b)]:
+            return True
+        # A pickup-only draft may be corrected by an audited flashlight-ON
+        # action; Godot will pick it up as an engine prerequisite.
+        return bool(
+            (a == (("take", "flashlight", ""),) and
+             b == (("use", "flashlight", "on"),)) or
+            (b == (("take", "flashlight", ""),) and
+             a == (("use", "flashlight", "on"),))
+        )
 
     def _reviewed_semantic_decision(self, first: Any, audit: Any,
                                     player_text: str, world: dict[str, Any],
@@ -690,6 +699,11 @@ class Agent:
             return fallback
         if len(a) > len(b):
             return original
+        if len(a) == len(b):
+            if a[0]["action"] == "use" and a[0]["target"] == "flashlight" and a[0]["argument"] == "on":
+                return original
+            if b[0]["action"] == "use" and b[0]["target"] == "flashlight" and b[0]["argument"] == "on":
+                return reviewed
         return reviewed
 
     def _semantic_decision(self, raw: Any, player_text: str,
