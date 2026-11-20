@@ -85,7 +85,7 @@ class OllamaBackend:
     def converse(self, messages: list[dict[str, str]]) -> str:
         """Natural dialogue, without a forced tool-call JSON envelope."""
         payload = {"model": self.model, "stream": False, "think": False,
-                   "options": {"temperature": 0.55, "num_predict": 250},
+                   "options": {"temperature": 0.55, "num_predict": 384},
                    "messages": messages}
         req = request.Request(self.endpoint, json.dumps(payload).encode("utf-8"),
                               {"Content-Type": "application/json"}, method="POST")
@@ -129,7 +129,7 @@ class LlamaCppBackend:
     def converse(self, messages: list[dict[str, str]]) -> str:
         """Unconstrained natural speech for conversational turns."""
         payload = {"model": self.model, "messages": messages, "stream": False,
-                   "temperature": 0.55, "max_tokens": 250}
+                   "temperature": 0.55, "max_tokens": 384}
         req = request.Request(self.endpoint, json.dumps(payload).encode("utf-8"),
                               {"Content-Type": "application/json"}, method="POST")
         try:
@@ -252,8 +252,18 @@ class Agent:
             "what is visible around you, not merely your location or inventory. "
             "Never speak in third person about your own inventory, or use "
             "technical terms like world snapshot, objects, actor_at or item IDs. "
-            "Avoid the constant 'what next?' refrain. A reply may be up to "
-            "three natural sentences."
+            "Avoid the constant 'what next?' refrain. Reactions are live dialogue, "
+            "not a narrator's recap: generally respond in 1-3 short, natural "
+            "sentences (roughly 25-65 words). Answer the question first. "
+            "More detail is welcome when specifically requested, but never "
+            "repeat a theory five different ways or narrate imaginary history. "
+            "At the beginning you are frightened, defensive and suspicious of "
+            "the unknown person watching you; demand some explanation before "
+            "assuming their intentions are good. Fear and distrust come through "
+            "in what you say and ask, not a long theatrical monologue. "
+            "Only describe real observations as facts; do not invent keypad "
+            "pulse counts, numeric sequences, timings or past key presses. "
+            "Say when an interpretation is only a guess. Finish your sentences."
         )
         self._lock = threading.Lock()
 
@@ -372,6 +382,10 @@ class Agent:
                 "speaker_location_known": False,
                 "first_contact": not bool(state.get("history")) and not bool(state.get("facts")),
                 "any_confirmed_physical_actions": bool(state.get("facts")),
+                "rapport": ("frightened and distrustful of the unknown remote voice"
+                           if sum(1 for fact in state.get("facts", [])
+                                  if isinstance(fact, dict) and fact.get("success")) < 3
+                           else "still scared, but cautiously cooperating after verified help"),
                 "door_previously_attempted": has_door_attempt,
                 "your_current_room": self._perceived_world(world),
             }
@@ -834,6 +848,42 @@ class Agent:
                 "but I'm glad we can talk.")
 
     @staticmethod
+    def _finish_spoken_reply(text: str, *, detailed: bool = False) -> str:
+        """Keep only COMPLETE spoken sentences, never slice the last word.
+
+        Local GGUF backends can reach their token ceiling in mid-sentence, and
+        the previous [:650] output cap cut Eli off visibly. Preserve the last
+        complete thought, with a comfortable, adaptive dialogue length.
+        """
+        max_sentences = 6 if detailed else 3
+        max_chars = 1150 if detailed else 590
+        pieces = re.split(r"(?<=[.!?])\s+", text.strip())
+        kept: list[str] = []
+        for part in pieces:
+            part = part.strip()
+            if not part:
+                continue
+            completed = bool(re.search(r"[.!?][\"'”’]?\s*$", part))
+            if not completed:
+                # If the backend ran out of tokens, discard the dangling
+                # fragment rather than showing "it isn't just a ...".
+                if kept:
+                    break
+                if re.search(
+                    r"(?:[,;:]|\b(?:a|an|the|and|or|but|because|to|of|"
+                    r"with|for|if|that|this|is|was|not|just))\s*$",
+                    part, re.I):
+                    return ""
+                part += "."
+            if kept and (len(kept) >= max_sentences or
+                         sum(len(item) for item in kept) + len(part) + len(kept) > max_chars):
+                break
+            kept.append(part)
+            if not completed:
+                break
+        return " ".join(kept)
+
+    @staticmethod
     def _ground_dialogue(raw: str, world: dict[str, Any], state: dict[str, Any],
                          player_text: str = "") -> str:
         """Preserve Eli's real conversation; remove only unsupported room-action claims.
@@ -844,7 +894,7 @@ class Agent:
         """
         speech = re.sub(r"(?is)<think>.*?</think>", "", raw).strip()
         speech = re.sub(r"^(?:Eli|Assistant)\s*:\s*", "", speech, flags=re.I)
-        speech = Agent._correct_room_perspective(speech[:1100].strip(), world, state)
+        speech = Agent._correct_room_perspective(speech[:6000].strip(), world, state)
         if not speech:
             return Agent._conversational_fallback(player_text, world)
         # Scene and inventory claims belong to Godot. Resolve pronouns against
@@ -858,6 +908,13 @@ class Agent:
         safe: list[str] = []
         removed = False
         removed_target = ""
+        # Numbers, timed pulses and invented past key presses are NOT evidence.
+        # The keypad only has a confirmed red/green indicator and may flash on
+        # failure; a small LLM can otherwise improvise a whole false timeline.
+        keypad_context = (state.get("referent") == "keypad" or
+                          bool(re.search(r"\b(?:keypad|pin\s*pad|red\s+(?:screen|light))\b",
+                                         player_text + " " + speech, re.I)))
+        evidence = str(world.get("last_observation", "")).lower()
         for sentence in re.split(r"(?<=[.!?])\s+", speech):
             clause = sentence.strip()
             if not clause:
@@ -903,7 +960,18 @@ class Agent:
             # unsupported 'I just did it' narration to replace engine actions.
             static_truth = bool(light_assertion and world.get("flashlight_on", False)
                                 and not re.search(r"\bi\s+(?:just|already)\b", clause, re.I))
-            if (unsupported and not static_truth) or motion or room_event or false_pickup or false_light:
+            invented_keypad_history = bool(keypad_context and (
+                re.search(r"\b(?:after|before|since)\s+[0-9]{4}\b", clause, re.I) or
+                re.search(r"\b(?:first|second|third)\s+pulse\b|"
+                          r"\b(?:pulse|rhythm|countdown|cycle)\b[^.!?]{0,65}"
+                          r"\b(?:seconds?|milliseconds?|faster|slower|timed|pattern)\b",
+                          clause, re.I) or
+                re.search(r"\b(?:every\s+time\s+i\s+(?:press|type)|"
+                          r"i(?:'ve|\s+have)\s+been\s+watching\s+it\s+for\s+a\s+while)\b",
+                          clause, re.I)
+            ) and not ("pulse" in evidence and "pulse" in clause.lower()))
+            if ((unsupported and not static_truth) or motion or room_event or
+                    false_pickup or false_light or invented_keypad_history):
                 removed = True
                 if unsupported == "flashlight" or false_pickup or false_light:
                     removed_target = "flashlight"
@@ -924,9 +992,16 @@ class Agent:
                 return ("I've got the flashlight, and it's " +
                         ("on." if world.get("flashlight_on") else "off."))
             return Agent._conversational_fallback(player_text, world)
-        # If we filtered a hallucination, keep the safe meaningful content,
-        # not a robotic disclaimer. The result is still just Eli's speech.
-        return reply[:650]
+        # Preserve complete dialogue, never a mid-word/mid-sentence truncation.
+        detailed = bool(re.search(r"\b(?:in detail|detailed|full story|tell me a story|"
+                                  r"longer explanation|explain fully|everything you remember)\b",
+                                  player_text, re.I))
+        finished = Agent._finish_spoken_reply(reply, detailed=detailed)
+        if finished:
+            return finished
+        if keypad_context:
+            return "I don't know for sure. The keypad's light worries me, but I might be reading too much into it."
+        return Agent._conversational_fallback(player_text, world)
 
     @staticmethod
     def _acknowledge(action: str, target: str, success: bool, world: dict[str, Any],
