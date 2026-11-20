@@ -176,10 +176,9 @@ _PLAN_VERB = (
 # Only joiners introducing a SECOND imperative delimit steps; e.g.
 # "a keypad and a breaker" is never split.
 _PLAN_JOIN = re.compile(
-    # A comma only separates steps when the following text is itself an
-    # instruction. Ordinary descriptive object lists do not create actions.
-    r",\s*(?:(?:and\s+)?(?:then|next|finally)\s*[:,]?\s*|"
-    r"after\s+that\s*[:,]?\s*|(?:and\s+)?(?=" + _PLAN_VERB + r"\b))|"
+    # Always expose comma-separated parts so an unknown requested step
+    # ("dance a jig") invalidates the WHOLE plan rather than being skipped.
+    r",\s*(?:and\s+)?|"
     r"\s+(?:(?:and\s+)?then|after\s+that|next|finally)\s+(?=" +
     _PLAN_VERB + r"\b)|"
     r"\s+and\s+(?=" + _PLAN_VERB + r"\b)", re.I)
