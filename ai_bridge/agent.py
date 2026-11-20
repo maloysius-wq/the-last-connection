@@ -263,12 +263,13 @@ class Agent:
                   "success": fact.get("success") is True,
                   "description": str(fact.get("description", ""))[:400]}
                  for fact in state.get("facts", [])[-6:] if isinstance(fact, dict)]
-        messages = [{"role": "system", "content": self.system}]
+        system_context = self.system
         if facts:
-            messages.append({"role": "system", "content":
-                             "CONFIRMED PAST OBSERVATIONS (not new commands): " +
-                             json.dumps(facts, ensure_ascii=False, separators=(",", ":"))})
-        return messages + history + [{"role": "user", "content": user_content}]
+            # Keep a single system message for strict GGUF chat-template compatibility.
+            system_context += ("\nCONFIRMED PAST OBSERVATIONS (not new commands): " +
+                               json.dumps(facts, ensure_ascii=False, separators=(",", ":")))
+        return ([{"role": "system", "content": system_context}]
+                + history + [{"role": "user", "content": user_content}])
 
     def decide(self, session_id: str, player_text: str, world: dict[str, Any]) -> Decision:
         if not isinstance(player_text, str) or not (1 <= len(player_text.strip()) <= 600):
@@ -283,7 +284,10 @@ class Agent:
             }, ensure_ascii=False, separators=(",", ":"))
             raw = self.backend.respond(self._messages(state, prompt))
             result = self._decision(raw, world)
-            state["history"] = (state.get("history", []) + [
+            # Persist the compacted form too, so pre-update saves shrink naturally.
+            compact_history = [clean for turn in state.get("history", [])[-22:]
+                               if (clean := self._clean_turn(turn)) is not None]
+            state["history"] = (compact_history + [
                 {"role": "user", "content": player_text.strip()},
                 {"role": "assistant", "content": json.dumps(asdict(result), ensure_ascii=False)},
             ])[-24:]
