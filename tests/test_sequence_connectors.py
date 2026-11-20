@@ -71,7 +71,7 @@ class TestStepConnectors(unittest.TestCase):
         self.assertEqual([(x["action"], x["target"]) for x in result.actions], [
             ("use", "breaker_box"), ("inspect", "maintenance_note")])
         self.assertEqual((result.action, result.target), ("use", "breaker_box"))
-        self.assertIn("order", result.speech.lower())
+        self.assertIn("then inspect", result.speech.lower())
 
 
 if __name__ == "__main__":
