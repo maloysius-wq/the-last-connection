@@ -597,6 +597,17 @@ class Agent:
         if not speech:
             return "I'm here. Could you repeat that?"
         speech = Agent._correct_room_perspective(speech, world, state)
+        # Conversational replies cannot initiate movement. If the model
+        # describes walking as already underway while no action was issued,
+        # replace that unverifiable progress claim with the true position.
+        # Explicit movement instructions take the structured action path.
+        motion_claim = re.search(
+            r"\bI(?:'|’)?m\s+(?:already\s+)?(?:on\s+my\s+way|walking|heading|moving|going)"
+            r"\b[^.!?]{0,80}\b(?:keypad|pin\s*pad|breaker|door|desk|flashlight)\b",
+            speech, re.I)
+        if motion_claim:
+            return (Agent._describe_location(world) +
+                    " I haven't started moving anywhere new. Tell me where you'd like me to go.")
         # A model saying it *just* performed a movement without a matching
         # confirmed event is corrected to the engine's actual location.
         claim = re.search(
