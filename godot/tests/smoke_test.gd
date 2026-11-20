@@ -50,6 +50,33 @@ func _run() -> void:
         _expect(entry.has_focus(), "Chat regains focus after request is done")
         _expect(entry.text == "next instruction", "Draft survives between interactions")
         entry.clear()
+    # A prior focus-exited callback forced the input to grab focus while the
+    # player was clicking CHECK FOR UPDATES, potentially canceling its press.
+    var update_btn: Button = app.get("update_button")
+    var transmit_btn: Button = app.get("send_button")
+    _expect(update_btn != null and transmit_btn != null, "Terminal buttons exist")
+    if update_btn != null and transmit_btn != null and entry != null:
+        _expect(update_btn.focus_mode == Control.FOCUS_NONE,
+            "Checking for updates does not steal chat keyboard focus")
+        _expect(transmit_btn.focus_mode == Control.FOCUS_NONE,
+            "Transmit does not steal chat keyboard focus")
+        _expect(entry.get_signal_connection_list("focus_exited").is_empty(),
+            "No focus-exited callback can interrupt a button click")
+        # Exercise the actual signal wiring and immediate feedback without
+        # relying on GitHub or an AI bridge in the headless test runner.
+        update_btn.pressed.emit()
+        _expect(str(app.get("update_stage")) == "check",
+            "Update button press starts a release check")
+        _expect(update_btn.text == "CHECKING GITHUB...",
+            "Release check immediately changes the button label")
+        _expect(str(app.get("status").text) == "Checking GitHub releases...",
+            "Release check immediately shows feedback beside the conversation")
+        _expect("Checking GitHub for a newer Windows game release" in str(app.get("log_view").text),
+            "Release check leaves a visible SYSTEM status in the chat log")
+        app.get("update_http").cancel_request()
+        app.call("_update_idle")
+        _expect(not update_btn.disabled and update_btn.text == "CHECK FOR UPDATES",
+            "Update button can be used again after a check finishes")
     _expect(not world.snapshot()["inventory"].has("flashlight"), "Flashlight begins on desk")
     world.perform_action("move_to", "breaker_box")
     var moved: Array = await world.action_finished
