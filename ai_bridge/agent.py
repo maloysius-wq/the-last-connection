@@ -10,6 +10,7 @@ import threading
 from typing import Any, Protocol
 
 from .intent import PlayerIntent, classify, mentioned_targets, plan_actions
+from .semantic import SCHEMA as SEMANTIC_SCHEMA, INSTRUCTIONS as SEMANTIC_INSTRUCTIONS, PlanRejected, validated_steps
 from urllib import request, error
 
 MODEL = os.environ.get("TLC_MODEL", "qwen3:4b-instruct")
@@ -82,6 +83,24 @@ class OllamaBackend:
         except (KeyError, TypeError, ValueError) as exc:
             raise BackendUnavailable("Ollama returned an invalid structured response") from exc
 
+    def interpret(self, messages: list[dict[str, str]]) -> dict[str, Any]:
+        """One local structured inference for both live speech and actions."""
+        payload = {"model": self.model, "stream": False, "think": False,
+                   "format": SEMANTIC_SCHEMA,
+                   "options": {"temperature": 0.20, "num_predict": 650},
+                   "messages": messages}
+        req = request.Request(self.endpoint, json.dumps(payload).encode("utf-8"),
+                              {"Content-Type": "application/json"}, method="POST")
+        try:
+            with request.urlopen(req, timeout=120) as res:
+                answer = json.loads(res.read(1_000_000))["message"]["content"]
+            parsed = json.loads(answer)
+            if not isinstance(parsed, dict):
+                raise ValueError("Expected a JSON object")
+            return parsed
+        except (OSError, error.URLError, ValueError, KeyError, TypeError) as exc:
+            raise BackendUnavailable("Local model could not interpret the request") from exc
+
     def converse(self, messages: list[dict[str, str]]) -> str:
         """Natural dialogue, without a forced tool-call JSON envelope."""
         payload = {"model": self.model, "stream": False, "think": False,
@@ -125,6 +144,23 @@ class LlamaCppBackend:
             return parsed
         except (OSError, error.URLError, ValueError, KeyError, TypeError, IndexError) as exc:
             raise BackendUnavailable("Local llama.cpp server is unavailable or returned invalid JSON") from exc
+
+    def interpret(self, messages: list[dict[str, str]]) -> dict[str, Any]:
+        """Use GGUF constrained JSON for semantic intent and Eli's response."""
+        payload = {"model": self.model, "messages": messages, "stream": False,
+                   "temperature": 0.20, "max_tokens": 650,
+                   "response_format": {"type": "json_schema", "schema": SEMANTIC_SCHEMA}}
+        req = request.Request(self.endpoint, json.dumps(payload).encode("utf-8"),
+                              {"Content-Type": "application/json"}, method="POST")
+        try:
+            with request.urlopen(req, timeout=300) as res:
+                reply = json.loads(res.read(1_000_000))
+            parsed = json.loads(reply["choices"][0]["message"]["content"])
+            if not isinstance(parsed, dict):
+                raise ValueError("Expected a JSON object")
+            return parsed
+        except (OSError, error.URLError, ValueError, KeyError, TypeError, IndexError) as exc:
+            raise BackendUnavailable("Local model could not interpret the request") from exc
 
     def converse(self, messages: list[dict[str, str]]) -> str:
         """Unconstrained natural speech for conversational turns."""
@@ -265,6 +301,10 @@ class Agent:
             "pulse counts, numeric sequences, timings or past key presses. "
             "Say when an interpretation is only a guess. Finish your sentences."
         )
+        # The production GGUF now decides whether language is chat or an
+        # explicitly authorized action plan. Legacy deterministic parsing is
+        # retained only for old test doubles and explicitly scripted mock mode.
+        self.semantic_system = personality["system_prompt"] + SEMANTIC_INSTRUCTIONS
         self._lock = threading.Lock()
 
     @staticmethod
@@ -357,6 +397,7 @@ class Agent:
         return {"role": turn["role"], "content": content[:650]}
 
     def _messages(self, state: dict[str, Any], user_content: str, *, dialogue: bool = False,
+                  semantic: bool = False,
                   world: dict[str, Any] | None = None) -> list[dict[str, str]]:
         # Retain long-term confirmed observations separately from a small chat window.
         history = [clean for turn in state.get("history", [])[-12:]
@@ -365,8 +406,9 @@ class Agent:
                   "success": fact.get("success") is True,
                   "description": str(fact.get("description", ""))[:400]}
                  for fact in state.get("facts", [])[-6:] if isinstance(fact, dict)]
-        system_context = self.conversation_system if dialogue else self.system
-        if dialogue and world is not None:
+        system_context = (self.semantic_system if semantic else
+                          self.conversation_system if dialogue else self.system)
+        if (dialogue or semantic) and world is not None:
             # Keep environment facts in Eli's SYSTEM context rather than
             # mixing them into the remote player's words.
             has_door_attempt = any(
@@ -434,14 +476,27 @@ class Agent:
                 state["referent"] = referent
             if referent not in world["objects"] or not world["objects"][referent].get("visible"):
                 referent = ""
-            intent = classify(player_text, referent)
-            plan = plan_actions(player_text, referent, strict=True)
-            prompt = "PLAYER REQUEST:\n" + json.dumps({
-                "player_text": player_text,
-                "request_kind": intent.prompt_hint,
-                "world": self._perceived_world(world),
-            }, ensure_ascii=False, separators=(",", ":"))
-            if plan is None:
+            semantic_mode = callable(getattr(self.backend, "interpret", None))
+            # Production: one local GGUF call understands any natural wording.
+            # Scripted mock and older test fakes preserve deterministic legacy
+            # behavior, with no new implicit physical permissions.
+            if semantic_mode:
+                raw = self.backend.interpret(
+                    self._messages(state, player_text, semantic=True, world=world))
+                result = self._semantic_decision(raw, player_text, world, state, referent)
+                plan = ()
+            else:
+                intent = classify(player_text, referent)
+                plan = plan_actions(player_text, referent, strict=True)
+            if not semantic_mode:
+                prompt = "PLAYER REQUEST:\n" + json.dumps({
+                    "player_text": player_text,
+                    "request_kind": intent.prompt_hint,
+                    "world": self._perceived_world(world),
+                }, ensure_ascii=False, separators=(",", ":"))
+            if semantic_mode:
+                pass  # Result already validated; no regex fallback is allowed.
+            elif plan is None:
                 # A recognized multi-step instruction has an unsupported or
                 # ambiguous clause. NEVER let the legacy single-action
                 # classifier silently do just its first step instead.
@@ -498,7 +553,19 @@ class Agent:
             # Include Eli's own reply, because the operator might say
             # 'pick that up' after Eli mentions the desk flashlight.
             # Several mentioned props must not silently resolve 'that'.
-            if plan:
+            if semantic_mode:
+                if result.actions:
+                    named = [step["target"] for step in result.actions
+                             if step["target"] != "room"]
+                    next_referent = named[-1] if named else referent
+                elif result.action != "wait" and result.target != "room":
+                    next_referent = result.target
+                else:
+                    cited = {item for item in mentioned_targets(result.speech)
+                             if item in world["objects"]
+                             and world["objects"][item].get("visible") is True}
+                    next_referent = next(iter(cited)) if len(cited) == 1 else ""
+            elif plan:
                 named = [step.target for step in plan if step.target != "room"]
                 next_referent = named[-1] if named else ""
             elif intent.kind == "action":
@@ -520,6 +587,59 @@ class Agent:
             ])[-24:]
             self.store.save(session_id, state)
             return result
+
+    def _semantic_decision(self, raw: Any, player_text: str,
+                           world: dict[str, Any], state: dict[str, Any],
+                           referent: str) -> Decision:
+        """Interpret natural requests, verify each physical step, never guess.
+
+        In this mode the model handles language; the deterministic code is
+        limited to hard safety invariants and world-truth enforcement.
+        """
+        if not isinstance(raw, dict):
+            return Decision("Sorry, I didn't quite follow that. Could you say it again?",
+                            "wait", "", "cautious")
+        kind = raw.get("kind")
+        steps = raw.get("steps")
+        emotion = raw.get("emotion", "cautious")
+        if not isinstance(emotion, str) or emotion not in EMOTION_SET:
+            emotion = "cautious"
+        if kind not in ("conversation", "action", "clarify") or not isinstance(steps, list):
+            return Decision("Hang on. Could you tell me that again?",
+                            "wait", "", "cautious")
+        if kind != "action":
+            if steps:
+                # A model saying "conversation" is never permission to act.
+                return Decision("Wait, are you asking me to do something, or just thinking out loud?",
+                                "wait", "", "cautious")
+            speech = self._ground_dialogue(str(raw.get("speech", "")), world, state, player_text)
+            return Decision(speech, "wait", "", emotion)
+
+        try:
+            verified = validated_steps(steps, player_text, world, referent)
+        except PlanRejected as exc:
+            if "Code" in str(exc) or "Keypad" in str(exc):
+                return Decision("Which four digits do you want me to try?",
+                                "wait", "", "cautious")
+            if "not visible" in str(exc):
+                return Decision("I can't see that clearly yet. What should I look for?",
+                                "wait", "", "cautious")
+            return Decision("I'm not completely sure which actions you mean. "
+                            "Could you clarify before I move?", "wait", "", "cautious")
+
+        # Always announce intent, never use generated claims that might say a
+        # physical event already happened. The model does not get to invent
+        # extra physical steps in its spoken preamble.
+        commands = tuple(PlayerIntent(
+            "action", step["action"], step["target"],
+            step["argument"] if step["target"] == "flashlight" else "",
+            step["argument"] if step["action"] == "enter_code" else "")
+            for step in verified)
+        first = verified[0]
+        speech = (self._sequence_phrase(commands) if len(commands) > 1 else
+                  self._plan_phrase(commands[0], world))
+        return Decision(speech, first["action"], first["target"],
+                        emotion, first["argument"], verified)
 
     @staticmethod
     def _ground_decision(result: Decision, intent: PlayerIntent, player_text: str,
@@ -614,6 +734,8 @@ class Agent:
                  "maintenance_note": "maintenance note", "keypad": "keypad",
                  "flashlight": "flashlight"}
         name = names.get(intent.target, intent.target.replace("_", " "))
+        if intent.action == "survey":
+            return "I'll take a look around and tell you what I can actually see."
         if intent.action == "move_to":
             if world.get("actor_at") == intent.target:
                 return "I'm already by the " + name + ". I'll stay here."
