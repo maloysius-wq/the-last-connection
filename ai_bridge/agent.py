@@ -603,31 +603,42 @@ class Agent:
 
     @staticmethod
     def _describe_room(world: dict[str, Any]) -> str:
-        """Overview based only on visible, confirmed facts, not internal JSON labels."""
+        """A brief, conversational overview, using only confirmed visible facts."""
         objects = world.get("objects", {})
-        fragments: list[str] = []
+        sentences = [Agent._where_am_i(world)]
         if "flashlight" in objects and objects["flashlight"].get("visible"):
             if "flashlight" in world.get("inventory", []):
-                fragments.append("I've got the flashlight in my hand, and it's " +
-                                 ("on" if world.get("flashlight_on") else "off"))
+                light_state = "on" if world.get("flashlight_on") else "off"
+                sentences[0] = sentences[0].rstrip(".") + (
+                    ", with the flashlight " + light_state + " in my hand.")
             else:
-                fragments.append("there's a flashlight resting on the desk")
+                sentences.append("There's a flashlight on the desk.")
+        visible = []
         if "breaker_box" in objects and objects["breaker_box"].get("visible"):
-            fragments.append("a breaker box is mounted on the back wall")
-        if "keypad" in objects and objects["keypad"].get("visible"):
-            fragments.append(("a green-lit keypad" if world.get("door_unlocked")
-                              else "a red-lit keypad") + " sits beside the exit door")
-        if "exit_door" in objects and objects["exit_door"].get("visible"):
-            fragments.append("the exit door is " +
-                             ("unlocked" if world.get("door_unlocked") else "locked"))
+            visible.append("a breaker box on the back wall")
+        has_keypad = "keypad" in objects and objects["keypad"].get("visible")
+        has_door = "exit_door" in objects and objects["exit_door"].get("visible")
+        if has_keypad and has_door:
+            color = "green" if world.get("door_unlocked") else "red"
+            lock = "unlocked" if world.get("door_unlocked") else "locked"
+            visible.append("a " + color + "-lit keypad beside the " + lock + " exit door")
+        elif has_keypad:
+            visible.append("a keypad beside the doorway")
+        elif has_door:
+            visible.append("the exit door")
         if "maintenance_note" in objects and objects["maintenance_note"].get("visible"):
-            fragments.append("there's a folded note on the desk")
-        if not fragments:
-            return Agent._where_am_i(world) + " It's hard to make anything else out."
-        details = "; ".join(fragments)
-        light = ("The overhead lights are working." if world.get("lights_on")
-                 else "The overhead lights are still out.")
-        return Agent._where_am_i(world) + " I can make out a few things: " + details + ". " + light
+            visible.append("a folded note on the desk")
+        if visible:
+            if len(visible) == 1:
+                items = visible[0]
+            elif len(visible) == 2:
+                items = " and ".join(visible)
+            else:
+                items = ", ".join(visible[:-1]) + ", and " + visible[-1]
+            sentences.append("I can see " + items + ".")
+        sentences.append("The overhead lights are " +
+                         ("working." if world.get("lights_on") else "still out."))
+        return " ".join(sentences)
 
     @staticmethod
     def _correct_room_perspective(speech: str, world: dict[str, Any],
