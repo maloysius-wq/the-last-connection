@@ -156,7 +156,8 @@ func snapshot() -> Dictionary:
         objects[key] = {"visible": true, "reachable": true, "can_take": key == "flashlight",
             "description": description}
     return {"room": "maintenance_chamber", "inventory": inventory.duplicate(),
-        "lights_on": breaker_on, "door_unlocked": door_unlocked, "escaped": escaped,
+        "lights_on": breaker_on, "flashlight_on": flashlight_on,
+        "door_unlocked": door_unlocked, "escaped": escaped,
         "heard_knocks": knocks_heard, "objects": objects}
 
 func perform_action(action: String, target: String, argument: String = "") -> void:
@@ -176,8 +177,14 @@ func perform_action(action: String, target: String, argument: String = "") -> vo
         if target != "keypad" or argument.length() != 4 or not argument.is_valid_int():
             action_finished.emit(action, target, false, "Eli needs exactly four digits for the keypad.")
             return
+    if action == "use" and target == "flashlight" and argument not in ["", "on", "off"]:
+        action_finished.emit(action, target, false, "The flashlight can only be switched on or off.")
+        return
     busy = true
-    if target == "flashlight" and inventory.has("flashlight") and action in ["use", "inspect"]:
+    # Handling the flashlight in hand takes no walk to its old desk location.
+    # Turning it off while still on the desk also needs no movement.
+    if target == "flashlight" and ((inventory.has("flashlight") and action in ["use", "inspect", "take"])
+            or (action == "use" and argument == "off")):
         call_deferred("_finish_action", action, target, argument)
         return
     var destination: Vector3 = object_positions[target]
@@ -195,7 +202,9 @@ func _finish_action(action: String, target: String, argument: String) -> void:
         if target == "flashlight" and not inventory.has("flashlight"):
             inventory.append("flashlight")
             flashlight_mesh.visible = false
-            description = "Eli picked up the flashlight. It is now in inventory."
+            description = "Eli picked up the flashlight from the desk. It is now in inventory."
+        elif target == "flashlight":
+            description = "Eli is already holding the flashlight."
         else:
             success = false
             description = "This object cannot be taken."
@@ -230,10 +239,31 @@ func _finish_action(action: String, target: String, argument: String) -> void:
         elif target == "exit_door":
             success = false
             description = "The exit door is locked. A keypad is mounted beside it."
-        elif target == "flashlight" and inventory.has("flashlight"):
-            flashlight_on = not flashlight_on
-            handheld_light.visible = flashlight_on
-            description = "Eli switched " + ("on" if flashlight_on else "off") + " the handheld flashlight."
+        elif target == "flashlight":
+            if argument == "off" and not inventory.has("flashlight"):
+                description = "The flashlight is already off on the desk; Eli has not picked it up yet."
+            else:
+                var picked_up := false
+                if not inventory.has("flashlight"):
+                    inventory.append("flashlight")
+                    flashlight_mesh.visible = false
+                    picked_up = true
+                var desired_on := flashlight_on
+                if argument == "on":
+                    desired_on = true
+                elif argument == "off":
+                    desired_on = false
+                else:
+                    desired_on = not flashlight_on
+                var unchanged := flashlight_on == desired_on
+                flashlight_on = desired_on
+                handheld_light.visible = flashlight_on
+                if picked_up:
+                    description = "Eli picked up the flashlight from the desk and switched it " + ("on." if flashlight_on else "off.")
+                elif unchanged:
+                    description = "Eli is holding the flashlight. It is already " + ("on." if flashlight_on else "off.")
+                else:
+                    description = "Eli switched " + ("on" if flashlight_on else "off") + " the handheld flashlight."
         else:
             success = false
             description = "Nothing happened when Eli tried that."
