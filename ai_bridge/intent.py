@@ -66,7 +66,8 @@ def classify(text: str, focus: str = "") -> PlayerIntent:
 
     # Questions about what/why/how and requests for verbal explanations never
     # authorize motion just because they mention an object or a verb.
-    if QUESTION_PREFIX.search(lower):
+    if QUESTION_PREFIX.search(lower) and not re.match(
+            r"^have\s+(?:a\s+)?(?:closer\s+)?look\b", lower):
         return PlayerIntent()
 
     matches = sorted((m.start(), target)
