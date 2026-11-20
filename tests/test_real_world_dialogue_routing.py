@@ -166,6 +166,16 @@ class TestRealWindowsDialogueFailures(unittest.TestCase):
         self.assertNotIn("door", result.speech)
         self.assertNotIn("then open", result.speech)
 
+    def test_single_action_speech_cannot_promise_unqueued_survey(self):
+        result, _ = self.decide(
+            "Turn on the flashlight.",
+            proposed("action", [
+                step("use", "flashlight", "Turn on the flashlight", "on")
+            ], speech="I'll switch on the flashlight and then look around the room."))
+        self.assertEqual(result.action, "use")
+        self.assertNotIn("look around", result.speech)
+        self.assertEqual(len(result.actions), 1)
+
     def test_action_speech_must_match_engine_goal(self):
         result, _ = self.decide(
             "Turn on the flashlight.",
