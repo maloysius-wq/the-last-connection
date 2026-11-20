@@ -485,8 +485,9 @@ class Agent:
     def _spatial_question(message: str) -> bool:
         return bool(re.search(
             r"\b(?:where (?:are|r) you|where (?:are|were) you standing|"
-            r"what(?:'s| is) (?:right )?(?:in front of|near|beside|next to) you|"
-            r"what (?:are|r) you looking at|what (?:are|r) you standing (?:by|near))\b",
+            r"what(?:'s| is) (?:(?:right|directly) )?(?:in front of|near|beside|next to) you|"
+            r"what (?:are|r) you looking at|what (?:are|r) you standing (?:by|near)|"
+            r"what (?:can|do) you see(?: (?:in front of you|right here|now))?)\b",
             message.lower()))
 
     @staticmethod
@@ -517,11 +518,19 @@ class Agent:
             r"(?:moved|walked|went|headed|checked|inspected|picked up|"
             r"switched|opened|entered|reached)\b", speech, flags=re.I)
         if claim:
-            last = str(world.get("last_observation", ""))
-            if not last:
-                return Agent._describe_location(world) + " I haven't done anything new yet."
-            # Even with an event, do not falsely bind a model claim to it.
-            return "The last thing I actually did was: " + last[:300]
+            # "I went to school as a kid" is legitimate autobiographical talk.
+            # Restrict this safeguard to physical *room* objects/directions.
+            fragment = speech[claim.start():claim.end() + 85]
+            room_reference = re.search(
+                r"\b(?:breaker|keypad|panel|desk|flashlight|torch|switch|"
+                r"exit|door|note|paper|wall|here|there)\b", fragment, re.I)
+            if room_reference:
+                last = str(world.get("last_observation", ""))
+                if not last:
+                    return Agent._describe_location(world) + " I haven't done anything new yet."
+                # Even with a recent event, never bind a model's unsupported
+                # claim to an unrelated physical action.
+                return "The last thing I actually did was: " + last[:300]
         return speech
 
     @staticmethod
