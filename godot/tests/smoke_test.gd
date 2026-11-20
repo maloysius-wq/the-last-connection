@@ -25,6 +25,25 @@ func _run() -> void:
     if world == null:
         quit(1)
         return
+    var entry: LineEdit = app.get("input")
+    _expect(entry != null, "Terminal chat field exists")
+    if entry != null:
+        # Check editor focus without an AI bridge and verify that drafting is
+        # possible while a previous request is still pending.
+        entry.release_focus()
+        app.call("_send_pressed")
+        await process_frame
+        _expect(entry.has_focus(), "Clicking TRANSMIT returns focus to chat")
+        var payload := {"session_id": "smoke", "player_text": "Check", "world": world.snapshot()}
+        app.call("_request", "/api/decide", payload, "decide")
+        _expect(entry.editable, "Chat stays editable while Eli thinks")
+        entry.text = "next instruction"
+        app.get("http").cancel_request()
+        app.call("_idle")
+        await process_frame
+        _expect(entry.has_focus(), "Chat regains focus after request is done")
+        _expect(entry.text == "next instruction", "Draft survives between interactions")
+        entry.clear()
     _expect(not world.snapshot()["inventory"].has("flashlight"), "Flashlight begins on desk")
     world.perform_action("move_to", "breaker_box")
     var moved: Array = await world.action_finished
@@ -49,6 +68,18 @@ func _run() -> void:
     moved = await world.action_finished
     _expect(world.snapshot().get("actor_at") == "keypad",
         "A second destination changes actual position")
+    world.reset_state()
+    # The user can request "go to the pin pad and take a look": a single
+    # inspect action must actually WALK to the keypad, then examine its red
+    # indicator. It must not just say that Eli is walking.
+    world.perform_action("inspect", "keypad")
+    moved = await world.action_finished
+    _expect(moved[2] == true and "glows red" in str(moved[3]),
+        "Keypad inspection reports the real red indicator")
+    _expect(world.snapshot().get("actor_at") == "keypad",
+        "Inspect physically walks Eli from desk to keypad")
+    _expect(world.actor.position.distance_to(world.object_positions["keypad"]) < 0.12,
+        "Eli stands by keypad after inspecting it")
     world.reset_state()
     # Turning on an uncollected flashlight must physically pick it up first.
     world.perform_action("use", "flashlight", "on")
