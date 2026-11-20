@@ -12,7 +12,7 @@ import unittest
 
 from ai_bridge.agent import Agent, BackendUnavailable, LlamaCppBackend, OllamaBackend, SessionStore
 from ai_bridge.semantic import REVIEW_SCHEMA
-from tests.test_semantic_planner import world, proposed, step
+from test_semantic_planner import world, proposed, step
 
 PERSONA = Path(__file__).resolve().parents[1] / "data/characters/eli.json"
 SCREENSHOT = (
