@@ -573,7 +573,10 @@ class Agent:
             is_on = bool(world.get("flashlight_on", "It is on." in description))
             return "Got it. The flashlight is " + ("on." if is_on else "off.")
         if action == "move_to":
-            return "I'm here. What next?"
+            at = str(world.get("actor_at", ""))
+            if at == target:
+                return "I'm beside the " + target.replace("_", " ") + " now."
+            return "I haven't reached that spot yet."
         return "All right. I've checked it."
 
     def outcome(self, session_id: str, action: str, target: str, success: bool,
