@@ -214,6 +214,9 @@ func _run() -> void:
         "Eli physically reaches desk after routed command")
     _expect("picked up" in str(routed_outcome[3]),
         "Routed action emits an authoritative pickup observation")
+    # The preceding legacy single-action smoke intentionally skipped its
+    # bridge outcome callback. Clear that simulated in-flight request first.
+    app.call("_idle")
     # Full queued player order: take flashlight, switch it on, survey room.
     # Inject only one /api/decide response. Simulate the tiny /api/outcome
     # acknowledgments to avoid a real localhost bridge in headless CI.
