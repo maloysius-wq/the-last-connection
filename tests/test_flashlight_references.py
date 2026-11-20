@@ -89,7 +89,7 @@ class TestFlashlightReferences(unittest.TestCase):
             "I will grab the flashlight, but I don't know where to start."
         ])
         agent = self.agent(backend)
-        agent.decide("multi", "What can you see?", room())
+        agent.decide("multi", "What objects in the room worry you most?", room())
         self.assertEqual(self.store.load("multi")["referent"], "")
         result = agent.decide("multi", "Please pick that up and turn it on.", room())
         self.assertEqual(result.action, "wait")
