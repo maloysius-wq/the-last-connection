@@ -280,7 +280,7 @@ class Agent:
         speech = raw.get("speech", "")
         if not isinstance(speech, str) or not speech.strip():
             speech = "Could you say that again?"
-        speech = speech.strip()[:350]
+        speech = Agent._finish_spoken_reply(speech.strip(), detailed=True) or "Could you say that again?"
         action = raw.get("action", "wait")
         target = raw.get("target", "")
         argument = raw.get("argument", "")
