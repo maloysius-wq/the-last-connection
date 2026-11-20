@@ -128,3 +128,9 @@ The first updater-enabled build must be downloaded and extracted manually
 once. After that, GitHub Releases are permanent, publicly accessible update
 sources. The game does not silently download updates or move GGUF models.
 More detail: [portable/README.md](portable/README.md).
+
+## Eli conversation and intent improvements (playtest fix)
+
+Eli remains a local, single-inference-per-player-turn character, with no second model call after an action. His dialogue prompt now prioritizes answering the player's *actual question* and explaining uncertainty naturally rather than always selecting a physical action. A conservative intent guard checks that a proposed movement or interaction matches an unambiguous physical request in the **current** message. Questions, hypothetical discussions, and ambiguous requests cannot accidentally launch actions, even if the LLM proposes one. For direct physical commands, incorrect action/target proposals can be corrected to the requested visible object; Godot still decides whether any action succeeds.
+
+The flashlight interaction now supports `turn on/off` as explicit states. When Eli is asked to switch on a flashlight that is still on the desk, he picks it up as part of that authorized task and then switches it on. Repeat `on` requests do not inadvertently turn it off. In addition, the engine and fast acknowledgments report meaningful prerequisites and failures. Small recent-dialogue context remains compact, but previously saved assistant JSON turns are read back as natural speech. We raised the upper response budget so Qwen has enough room to answer thoughtful questions in one complete structured reply.

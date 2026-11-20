@@ -145,3 +145,12 @@ Primary repo: `maloysius-wq/the-last-connection` (public; created by user). Use 
 - Python tests and headless Godot smoke passed on PR and main. Actual interactive Windows in-place self-update (network download, Windows file replacement and restart) still needs end-user playtest.
 - For user: One manual download/extraction from GitHub Releases is necessary to get the updater-enabled build. Thereafter click CHECK FOR UPDATES inside game. Preserve config.json, user_data/, models/, logs/ on first manual upgrade; code handles later updates.
 - In-game update checks/installations require Internet *only when user clicks*; gameplay and LLM remain local. No schedule/background checks.
+
+## Playtest: conversation fidelity and wrong-action regression (2026-11-19)
+
+- User confirmed big inference-speed improvement, but Eli sometimes acted on unrelated objects, moved to inspect instead of obeying the request, failed to answer questions, and reported generic flashlight failures when it was still on the desk.
+- Root causes: original persona encouraged `one action per decision`, model proposals were validated only against visibility (not player intent), assistant JSON/action envelopes crowded context, 192 generated-token ceiling could truncate useful conversational JSON, and `use flashlight` assumed prior pickup and toggled blindly.
+- Added intent grounding in `ai_bridge/intent.py`: conversational/question turns are action-free; direct clear physical requests permit only the requested action and object, optionally pronoun-referenced to current conversational focus. Agent corrects a mis-targeted physical proposal to the user's explicit requested action when grounded in visible world state. World remains authoritative.
+- Updated persona to answer questions naturally and suggest ideas in words without unauthorized movement. Prior conversational assistant JSON records are compacted into just their spoken text. Increased response token ceiling to 320, still ONE LLM call per player utterance and ZERO on outcome.
+- Godot flashlight use can pick up from desk and switch on as one explicitly requested action; explicit on/off is idempotent, and status/acknowledgments explain prerequisites. Updated Godot smoke and Python behavior tests for real user reports.
+- Future direction: optional fast structured tool decoder or behavior evaluators with real GGUF, but don't trade away natural conversation or the no-second-inference performance fix. Request actual user feedback before further changes.
