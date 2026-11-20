@@ -134,3 +134,21 @@ More detail: [portable/README.md](portable/README.md).
 Eli remains a local, single-inference-per-player-turn character, with no second model call after an action. His dialogue prompt now prioritizes answering the player's *actual question* and explaining uncertainty naturally rather than always selecting a physical action. A conservative intent guard checks that a proposed movement or interaction matches an unambiguous physical request in the **current** message. Questions, hypothetical discussions, and ambiguous requests cannot accidentally launch actions, even if the LLM proposes one. For direct physical commands, incorrect action/target proposals can be corrected to the requested visible object; Godot still decides whether any action succeeds.
 
 The flashlight interaction now supports `turn on/off` as explicit states. When Eli is asked to switch on a flashlight that is still on the desk, he picks it up as part of that authorized task and then switches it on. Repeat `on` requests do not inadvertently turn it off. In addition, the engine and fast acknowledgments report meaningful prerequisites and failures. Small recent-dialogue context remains compact, but previously saved assistant JSON turns are read back as natural speech. We raised the upper response budget so Qwen has enough room to answer thoughtful questions in one complete structured reply.
+
+
+## Real location, truthful actions, and natural conversation
+
+The portable game distinguishes **what Eli intends to do** from what Godot
+confirms he did. Action instructions use future-tense speech until the world
+reports a successful move, pickup, inspection, keypad entry or switch. Eli's
+actual current location and the latest confirmed observation are stored in
+portable saves and included in model context. Spatial questions such as
+"Where are you?" and "What do you see?" read from real room state.
+
+For conversations, local llama.cpp and Ollama now produce **plain natural
+dialogue** instead of forcing every answer into an action-shaped JSON envelope.
+Physical instructions still use a constrained action proposal validated against
+the latest player's request. This change preserves the fast architecture:
+**no extra model pass after an action**, and only one model response per
+ordinary conversational request. Future work may enrich character reflection
+without blocking movement or sacrificing truthful outcomes.

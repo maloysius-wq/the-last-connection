@@ -26,6 +26,30 @@ func _run() -> void:
         quit(1)
         return
     _expect(not world.snapshot()["inventory"].has("flashlight"), "Flashlight begins on desk")
+    world.perform_action("move_to", "breaker_box")
+    var moved: Array = await world.action_finished
+    _expect(moved[2] == true, "Movement to the breaker box completed")
+    _expect(world.snapshot().get("actor_at") == "breaker_box",
+        "Snapshot reports actual breaker position")
+    _expect(world.actor.position.distance_to(world.object_positions["breaker_box"]) < 0.12,
+        "Eli physically reached the breaker box")
+    _expect("breaker" in str(world.snapshot().get("last_observation", "")),
+        "Snapshot carries actual recent observation")
+    world.perform_action("move_to", "breaker_box")
+    moved = await world.action_finished
+    _expect(moved[2] == true and "already" in str(moved[3]),
+        "Repeated move correctly reports Eli already standing there")
+    var saved_position: Dictionary = world.export_state()
+    world.reset_state()
+    world.restore_state(saved_position)
+    _expect(world.snapshot().get("actor_at") == "breaker_box",
+        "Current position persists after save and restore")
+    world.reset_state()
+    world.perform_action("move_to", "keypad")
+    moved = await world.action_finished
+    _expect(world.snapshot().get("actor_at") == "keypad",
+        "A second destination changes actual position")
+    world.reset_state()
     # Turning on an uncollected flashlight must physically pick it up first.
     world.perform_action("use", "flashlight", "on")
     var flashlight_action: Array = await world.action_finished

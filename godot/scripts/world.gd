@@ -17,6 +17,8 @@ var keypad_indicator: MeshInstance3D
 var overhead_light: OmniLight3D
 var handheld_light: OmniLight3D
 var flashlight_on := false
+var actor_at := "room_center"
+var last_observation := ""
 var object_positions: Dictionary = {
     "flashlight": Vector3(-1.7, 0.0, -1.4),
     "breaker_box": Vector3(0.0, 0.0, -1.8),
@@ -158,7 +160,8 @@ func snapshot() -> Dictionary:
     return {"room": "maintenance_chamber", "inventory": inventory.duplicate(),
         "lights_on": breaker_on, "flashlight_on": flashlight_on,
         "door_unlocked": door_unlocked, "escaped": escaped,
-        "heard_knocks": knocks_heard, "objects": objects}
+        "heard_knocks": knocks_heard, "actor_at": actor_at,
+        "last_observation": last_observation.left(500), "objects": objects}
 
 func perform_action(action: String, target: String, argument: String = "") -> void:
     if busy:
@@ -181,6 +184,10 @@ func perform_action(action: String, target: String, argument: String = "") -> vo
         action_finished.emit(action, target, false, "The flashlight can only be switched on or off.")
         return
     busy = true
+    # A repeated travel request should not claim new movement when he is already there.
+    if action == "move_to" and actor.position.distance_to(object_positions[target]) < 0.12:
+        call_deferred("_finish_action", action, target, argument)
+        return
     # Handling the flashlight in hand takes no walk to its old desk location.
     # Turning it off while still on the desk also needs no movement.
     if target == "flashlight" and ((inventory.has("flashlight") and action in ["use", "inspect", "take"])
@@ -195,8 +202,16 @@ func perform_action(action: String, target: String, argument: String = "") -> vo
 func _finish_action(action: String, target: String, argument: String) -> void:
     busy = false
     var success := true
-    var description := "Eli moved to " + target + "."
-    if action == "inspect":
+    var description := "Eli moved to " + target.replace("_", " ") + "."
+    if action == "move_to":
+        if actor.position.distance_to(object_positions[target]) > 0.12:
+            success = false
+            description = "Eli has not reached the " + target.replace("_", " ") + " yet."
+        elif actor_at == target:
+            description = "Eli is already standing by the " + target.replace("_", " ") + "."
+        else:
+            description = "Eli walked to the " + target.replace("_", " ") + " and is standing beside it."
+    elif action == "inspect":
         description = str(descriptions.get(target, "Nothing unusual is visible."))
     elif action == "take":
         if target == "flashlight" and not inventory.has("flashlight"):
@@ -267,13 +282,17 @@ func _finish_action(action: String, target: String, argument: String) -> void:
         else:
             success = false
             description = "Nothing happened when Eli tried that."
+    if success and actor.position.distance_to(object_positions[target]) < 0.12:
+        actor_at = target
+    last_observation = description
     action_finished.emit(action, target, success, description)
 
 func export_state() -> Dictionary:
     return {"inventory": inventory.duplicate(), "breaker_on": breaker_on,
         "flashlight_on": flashlight_on, "door_unlocked": door_unlocked,
         "knocks_heard": knocks_heard, "escaped": escaped,
-        "actor_x": actor.position.x, "actor_z": actor.position.z}
+        "actor_x": actor.position.x, "actor_z": actor.position.z,
+        "actor_at": actor_at, "last_observation": last_observation}
 
 func restore_state(data: Dictionary) -> void:
     inventory.clear()
@@ -295,6 +314,14 @@ func restore_state(data: Dictionary) -> void:
     indicator_material.albedo_color = Color("4eaf81") if door_unlocked else Color("b93232")
     keypad_indicator.material_override = indicator_material
     actor.position = Vector3(float(data.get("actor_x", 0)), 0, float(data.get("actor_z", 0)))
+    actor_at = str(data.get("actor_at", "room_center"))
+    if not data.has("actor_at") or not object_positions.has(actor_at):
+        actor_at = "room_center"
+        for target in object_positions.keys():
+            if actor.position.distance_to(object_positions[target]) < 0.12:
+                actor_at = target
+                break
+    last_observation = str(data.get("last_observation", "")).left(500)
 
 func reset_state() -> void:
     restore_state({})

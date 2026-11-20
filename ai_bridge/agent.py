@@ -80,6 +80,22 @@ class OllamaBackend:
         except (KeyError, TypeError, ValueError) as exc:
             raise BackendUnavailable("Ollama returned an invalid structured response") from exc
 
+    def converse(self, messages: list[dict[str, str]]) -> str:
+        """Natural dialogue, without a forced tool-call JSON envelope."""
+        payload = {"model": self.model, "stream": False, "think": False,
+                   "options": {"temperature": 0.55, "num_predict": 250},
+                   "messages": messages}
+        req = request.Request(self.endpoint, json.dumps(payload).encode("utf-8"),
+                              {"Content-Type": "application/json"}, method="POST")
+        try:
+            with request.urlopen(req, timeout=90) as res:
+                answer = json.loads(res.read(1_000_000))["message"]["content"]
+            if not isinstance(answer, str) or not answer.strip():
+                raise ValueError("Empty dialogue response")
+            return answer
+        except (OSError, error.URLError, ValueError, KeyError, TypeError) as exc:
+            raise BackendUnavailable("Local conversational model did not return usable text") from exc
+
 
 class LlamaCppBackend:
     """Call a local llama.cpp server with a GGUF loaded from an arbitrary drive.
@@ -107,6 +123,22 @@ class LlamaCppBackend:
             return parsed
         except (OSError, error.URLError, ValueError, KeyError, TypeError, IndexError) as exc:
             raise BackendUnavailable("Local llama.cpp server is unavailable or returned invalid JSON") from exc
+
+    def converse(self, messages: list[dict[str, str]]) -> str:
+        """Unconstrained natural speech for conversational turns."""
+        payload = {"model": self.model, "messages": messages, "stream": False,
+                   "temperature": 0.55, "max_tokens": 250}
+        req = request.Request(self.endpoint, json.dumps(payload).encode("utf-8"),
+                              {"Content-Type": "application/json"}, method="POST")
+        try:
+            with request.urlopen(req, timeout=300) as res:
+                response = json.loads(res.read(1_000_000))
+            answer = response["choices"][0]["message"]["content"]
+            if not isinstance(answer, str) or not answer.strip():
+                raise ValueError("Empty conversational response")
+            return answer
+        except (OSError, error.URLError, ValueError, KeyError, TypeError, IndexError) as exc:
+            raise BackendUnavailable("Local llama.cpp server returned invalid dialogue") from exc
 
 
 class MockBackend:
@@ -197,6 +229,23 @@ class Agent:
             "Keep action replies to one or two sentences; conversational replies "
             "can use up to three concise sentences."
         )
+        self.conversation_system = personality["system_prompt"] + (
+            "\nYou are having a live private conversation with someone over the "
+            "maintenance room's speaker. Answer their ACTUAL question in warm, "
+            "believable first-person prose, with concrete, concise observations. "
+            "Do not output JSON, tool calls, role labels or code blocks. "
+            "You cannot perform actions during a conversational response. "
+            "NEVER state you've just moved, inspected, collected, switched or "
+            "opened something unless the CURRENT WORLD and CONFIRMED RESULTS "
+            "prove that event happened. Separate what you remember, what you "
+            "can see across the room, and what you stand directly beside. "
+            "The world fields actor_at and last_observation are authoritative; "
+            "a nearby object is not the same as an object across the room. "
+            "Do not reveal concealed puzzle information from object IDs or "
+            "unexamined clues. If uncertain, admit it and reason conversationally. "
+            "Avoid the constant 'what next?' refrain. A reply may be up to "
+            "three natural sentences."
+        )
         self._lock = threading.Lock()
 
     @staticmethod
@@ -243,9 +292,11 @@ class Agent:
         """
         return {
             "room": world.get("room", ""),
+            "actor_at": world.get("actor_at", "room_center"),
+            "last_observation": str(world.get("last_observation", ""))[:400],
             "inventory": world.get("inventory", []),
             "conditions": {key: world[key] for key in
-                           ("lights_on", "door_unlocked", "escaped", "heard_knocks")
+                           ("lights_on", "flashlight_on", "door_unlocked", "escaped", "heard_knocks")
                            if key in world},
             "objects": {key: {"description": value.get("description", ""),
                              "held": key in world.get("inventory", []),
@@ -284,7 +335,7 @@ class Agent:
             return None
         return {"role": turn["role"], "content": content[:650]}
 
-    def _messages(self, state: dict[str, Any], user_content: str) -> list[dict[str, str]]:
+    def _messages(self, state: dict[str, Any], user_content: str, *, dialogue: bool = False) -> list[dict[str, str]]:
         # Retain long-term confirmed observations separately from a small chat window.
         history = [clean for turn in state.get("history", [])[-12:]
                    if (clean := self._clean_turn(turn)) is not None]
@@ -292,7 +343,7 @@ class Agent:
                   "success": fact.get("success") is True,
                   "description": str(fact.get("description", ""))[:400]}
                  for fact in state.get("facts", [])[-6:] if isinstance(fact, dict)]
-        system_context = self.system
+        system_context = self.conversation_system if dialogue else self.system
         if facts:
             # Keep a single system message for strict GGUF chat-template compatibility.
             system_context += ("\nCONFIRMED PAST OBSERVATIONS (not new commands): " +
@@ -314,9 +365,17 @@ class Agent:
                 "request_kind": intent.prompt_hint,
                 "world": self._perceived_world(world),
             }, ensure_ascii=False, separators=(",", ":"))
-            raw = self.backend.respond(self._messages(state, prompt))
-            result = self._decision(raw, world)
-            result = self._ground_decision(result, intent, player_text, world)
+            if intent.kind != "action" and self._spatial_question(player_text):
+                result = Decision(self._describe_location(world), "wait", "", "calm")
+            elif intent.kind != "action" and callable(getattr(self.backend, "converse", None)):
+                speech = self.backend.converse(self._messages(state, prompt, dialogue=True))
+                speech = self._ground_dialogue(speech, world, state)
+                result = Decision(speech, "wait", "", "curious")
+            else:
+                # Mock/test backends still use the existing structured API.
+                raw = self.backend.respond(self._messages(state, prompt))
+                result = self._decision(raw, world)
+                result = self._ground_decision(result, intent, player_text, world)
             if intent.target and intent.target in world["objects"]:
                 state["focus"] = intent.target
             else:
@@ -368,26 +427,13 @@ class Agent:
                     speech = "I'm listening. I don't know for certain, but we can figure it out together."
             return Decision(speech, "wait", "", result.emotion)
 
-        # A genuine refusal preserves Eli's agency. But misunderstanding the
-        # flashlight's missing pickup is not a real blocker: Godot handles
-        # that prerequisite when the player asks for the light to be on.
-        if result.action == "wait":
-            refusal = re.search(r"\b(?:i can't|i cannot|i won't|i will not|not safe|"
-                                r"don't want|need you to clarify|which one|what do you mean)\b",
-                                result.speech, re.I)
-            explicit_light_goal = (intent.target == "flashlight" and
-                                   intent.action == "use" and intent.light_mode == "on")
-            if refusal and not explicit_light_goal:
-                return result
-            if intent.target not in world["objects"] or world["objects"][intent.target].get("visible") is not True:
-                return Decision("I can't see that from here yet. Can you point me toward it?",
-                                "wait", "", "cautious")
-            speech = "Okay, I'll try that."
-            if explicit_light_goal:
-                speech = ("I'll pick up the flashlight first, then switch it on."
-                          if "flashlight" not in world.get("inventory", [])
-                          else "I'll switch the flashlight on.")
-            result = Decision(speech, intent.action, intent.target, result.emotion)
+        # Ground the instruction in the actual visible target. Refusing because
+        # a model imagined an obstruction is not an engine failure; a genuine
+        # fear-based refusal is still allowed for Eli's personality.
+        if result.action == "wait" and re.search(
+                r"\b(?:i won't|i will not|i don't want to|i refuse|too frightened)\b",
+                result.speech, re.I):
+            return result
         if intent.target not in world["objects"] or world["objects"][intent.target].get("visible") is not True:
             return Decision("I can't see that from here yet. Can you point me toward it?",
                             "wait", "", "cautious")
@@ -401,18 +447,94 @@ class Agent:
             argument = intent.light_mode
         else:
             argument = ""
-        if (result.target, result.action) != (intent.target, intent.action):
-            # No new LLM round-trip; use a plain acknowledgement of the
-            # *actual requested* action rather than falsely promising another.
-            label = intent.target.replace("_", " ")
-            verbs = {"take": "pick up", "use": "use", "inspect": "inspect",
-                     "move_to": "go to", "enter_code": "enter the code on"}
-            speech = "Right. I'll " + verbs.get(intent.action, "check") + " the " + label + "."
-            if intent.target == "flashlight" and intent.light_mode:
-                speech = "I'll " + ("switch on" if intent.light_mode == "on" else "switch off") + " the flashlight."
-        else:
-            speech = result.speech
+        # Never broadcast model-generated action narration. Even a perfectly
+        # matched action proposal could say "I've walked there" *before* Godot
+        # moves Eli, or discuss the keypad when asked to inspect the breaker.
+        # Always use a truthful FUTURE-TENSE statement, then wait for Godot.
+        speech = Agent._plan_phrase(intent, world)
         return Decision(speech, intent.action, intent.target, result.emotion, argument)
+
+    @staticmethod
+    def _plan_phrase(intent: PlayerIntent, world: dict[str, Any]) -> str:
+        names = {"breaker_box": "breaker box", "exit_door": "exit door",
+                 "maintenance_note": "maintenance note", "keypad": "keypad",
+                 "flashlight": "flashlight"}
+        name = names.get(intent.target, intent.target.replace("_", " "))
+        if intent.action == "move_to":
+            if world.get("actor_at") == intent.target:
+                return "I'm already by the " + name + ". I'll stay here."
+            return "I'll walk over to the " + name + " now."
+        if intent.action == "inspect":
+            return "I'll take a closer look at the " + name + "."
+        if intent.action == "take":
+            return "I'll try to pick up the " + name + "."
+        if intent.action == "enter_code":
+            return "I'll try those four digits on the keypad."
+        if intent.target == "flashlight" and intent.action == "use":
+            if intent.light_mode == "on":
+                if "flashlight" not in world.get("inventory", []):
+                    return "I'll pick up the flashlight first, then try switching it on."
+                return "I'll switch on the flashlight."
+            if intent.light_mode == "off":
+                return "I'll switch off the flashlight."
+        if intent.action == "use":
+            return "I'll try the " + name + " and tell you what happens."
+        return "I'll try that, and let you know what happens."
+
+    @staticmethod
+    def _spatial_question(message: str) -> bool:
+        return bool(re.search(
+            r"\b(?:where (?:are|r) you|where (?:are|were) you standing|"
+            r"what(?:'s| is) (?:(?:right|directly) )?(?:in front of|near|beside|next to) you|"
+            r"what (?:are|r) you looking at|what (?:are|r) you standing (?:by|near)|"
+            r"what (?:can|do) you see(?: (?:in front of you|right here|now))?)\b",
+            message.lower()))
+
+    @staticmethod
+    def _describe_location(world: dict[str, Any]) -> str:
+        actor_at = str(world.get("actor_at", "room_center"))
+        if actor_at == "room_center":
+            return "I'm standing near the middle of the room. I can see a desk, a breaker box and an exit door."
+        obj = world.get("objects", {}).get(actor_at)
+        name = actor_at.replace("_", " ")
+        if not isinstance(obj, dict) or obj.get("visible") is not True:
+            return "I'm in the maintenance room, but I can't get a good look at what's beside me."
+        description = str(obj.get("description", "")).strip().rstrip(".")
+        return "I'm standing right by the " + name + ". " + (description + "." if description else "")
+
+    @staticmethod
+    def _ground_dialogue(raw: str, world: dict[str, Any], state: dict[str, Any]) -> str:
+        # Natural-text inference allows richer replies, but never unchecked
+        # claims of *new* physical actions. Confirmed actions stay in facts.
+        speech = re.sub(r"(?is)<think>.*?</think>", "", raw).strip()
+        speech = re.sub(r"^(?:Eli|Assistant)\s*:\s*", "", speech, flags=re.I)
+        speech = speech[:650].strip()
+        if not speech:
+            return "I'm here. Could you repeat that?"
+        # A model saying it *just* performed a movement without a matching
+        # confirmed event is corrected to the engine's actual location.
+        claim = re.search(
+            r"\bI\s+(?:(?:just|already)\s+|(?:have\s+|['’]ve\s+)(?:just\s+)?)?"
+            r"(?:moved|walked|went|headed|checked|inspected|picked up|"
+            r"switched|opened|entered|reached)\b", speech, flags=re.I)
+        if claim:
+            # "I went to school as a kid" is legitimate autobiographical talk.
+            # Restrict this safeguard to physical *room* objects/directions.
+            fragment = speech[claim.start():claim.end() + 85]
+            room_reference = re.search(
+                r"\b(?:breaker|keypad|panel|desk|flashlight|torch|switch|"
+                r"exit|door|note|paper|wall)\b", fragment, re.I)
+            place_reference = re.match(
+                r"\s+(?:(?:over|across|back|up)\s+)?(?:(?:to|toward|near|by)\s+)?"
+                r"(?:here|there)\b", speech[claim.end():], flags=re.I)
+            if room_reference or place_reference:
+                last = str(world.get("last_observation", ""))
+                if not last:
+                    return Agent._describe_location(world) + " I haven't done anything new yet."
+                # Even with a recent event, never bind a model's unsupported
+                # claim to an unrelated physical action.
+                return "The last thing I actually did was: " + last[:300]
+        return speech
 
     @staticmethod
     def _acknowledge(action: str, target: str, success: bool, world: dict[str, Any],
@@ -451,7 +573,10 @@ class Agent:
             is_on = bool(world.get("flashlight_on", "It is on." in description))
             return "Got it. The flashlight is " + ("on." if is_on else "off.")
         if action == "move_to":
-            return "I'm here. What next?"
+            at = str(world.get("actor_at", ""))
+            if at == target:
+                return "I'm beside the " + target.replace("_", " ") + " now."
+            return "I haven't reached that spot yet."
         return "All right. I've checked it."
 
     def outcome(self, session_id: str, action: str, target: str, success: bool,
@@ -470,6 +595,8 @@ class Agent:
             state["facts"] = (state.get("facts", []) + [
                 {"action": action, "target": target, "success": success, "description": description}
             ])[-60:]
+            if success and action in ("move_to", "inspect", "take", "use"):
+                state["focus"] = target
             self.store.save(session_id, state)
             return Decision(self._acknowledge(action, target, success, world, description),
                             "wait", "", "curious" if success else "cautious")

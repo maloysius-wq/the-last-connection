@@ -22,7 +22,7 @@ VERBS = (
     ("take", r"\b(?:pick up|pickup|grab|take|collect|retrieve|pick|fetch)\b"),
     ("use", r"\b(?:turn|switch|flip|toggle|activate|use|open|unlock|power up|switch on|switch off)\b"),
     ("inspect", r"\b(?:look at|examine|inspect|read|check(?: out)?|study|search|investigate)\b"),
-    ("move_to", r"\b(?:go to|walk to|head to|move to|approach|step over to)\b"),
+    ("move_to", r"\b(?:go(?:\s+over)?\s+to|walk(?:\s+over)?\s+to|head(?:\s+over)?\s+to|move(?:\s+over)?\s+to|move\s+toward(?:s)?|walk\s+toward(?:s)?|approach|step\s+over\s+to|stand\s+(?:by|near|in front of|beside|at)|come\s+(?:over\s+)?to)\b"),
 )
 QUESTION_PREFIX = re.compile(
     r"^\s*(?:what|why|how|where|when|who|which|whose|is|are|was|were|do|does|did|have|has|"
@@ -80,7 +80,7 @@ def classify(text: str, focus: str = "") -> PlayerIntent:
     # "Can you see the note?" is an information question.
     if lower.endswith("?") and not POLITE_REQUEST.search(lower):
         # Imperatives such as "Please read the note?" remain actionable.
-        if not lower.startswith(("please ", "go ", "read ", "inspect ", "take ", "grab ", "pick ", "turn ", "switch ", "open ", "check ")):
+        if not lower.startswith(("please ", "go ", "read ", "inspect ", "take ", "grab ", "pick ", "turn ", "switch ", "open ", "check ", "walk ", "head ", "move ", "stand ")):
             return PlayerIntent()
 
     # A request covering multiple named objects should be understood by the
