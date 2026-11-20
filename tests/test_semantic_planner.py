@@ -159,6 +159,26 @@ class SemanticPlannerTests(unittest.TestCase):
         self.assertEqual((result.action, result.target, result.argument),
                          ("enter_code", "keypad", "4317"))
 
+    def test_explicit_flashlight_on_stays_on_even_if_model_omits_mode(self):
+        result = self.decide("Switch on the flashlight.", proposed(
+            "action", [step("use", "flashlight", "Switch on the flashlight")]))
+        self.assertEqual(result.argument, "on")
+
+    def test_flashlight_mode_cannot_contradict_player(self):
+        result = self.decide("Switch off the flashlight.", proposed(
+            "action", [step("use", "flashlight", "Switch off the flashlight", "on")]))
+        self.assertEqual(result.action, "wait")
+
+    def test_stop_by_is_not_a_negated_movement(self):
+        result = self.decide("Stop by the keypad.", proposed(
+            "action", [step("move_to", "keypad", "Stop by the keypad")]))
+        self.assertEqual(result.target, "keypad")
+
+    def test_ambiguous_light_is_not_assumed_to_be_flashlight(self):
+        result = self.decide("Turn on the light.", proposed(
+            "action", [step("use", "flashlight", "Turn on the light", "on")]))
+        self.assertEqual(result.action, "wait")
+
     def test_negated_command_not_executable_even_if_model_misunderstands(self):
         result = self.decide("Don't touch the breaker.", proposed(
             "action", [step("use", "breaker_box", "touch the breaker")]))
