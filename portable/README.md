@@ -57,3 +57,29 @@ Download the GitHub Actions ZIP, unpack it to a writable folder on that PC (for 
 If that computer has no GGUF model, the game explicitly asks whether it should download a reviewed Qwen3 4B Q4_K_M model to the game's `models/` directory. It remains offline after setup. The file comes from the independent quantization repository `bartowski/Qwen_Qwen3-4B-Instruct-2507-GGUF` on Hugging Face; original Qwen weights are Apache-2.0 licensed. If you prefer not to download, transfer your existing `.gguf` file onto that PC and select it instead.
 
 For migrating existing progress, copy `user_data/`. The `config.json` file may reference a model path that does not exist on the new machine; the launcher now lets you select/download a replacement. Never copy one computer's `config.json` blindly without checking the model path.
+
+
+## Updating from inside the game
+
+After installing this updater-enabled Windows version once, click
+**CHECK FOR UPDATES** inside the surveillance terminal. The game checks
+GitHub's latest published portable release only when you click. It displays
+the release size and asks permission to install. Choosing Install ends the
+game session, downloads the official ZIP and SHA-256 checksum, verifies its
+contents, and relaunches the updated game automatically.
+
+Updates require Internet only for the check and explicitly approved download.
+AI conversations and model inference remain local and do not use the network.
+No GitHub account is needed.
+
+The updater preserves config.json (GPU and model settings), user_data/
+(Eli's memories and saves), models/ (GGUF files), and logs/. It moves
+model files in-place rather than copying or redownloading them. A separate
+Windows updater executable sits briefly beside the installation directory
+because Windows won't permit replacing a running program. An update failure
+should leave or restore the old installation.
+
+**Initial setup:** You must download the first version with an updater
+once from GitHub Releases or an Actions build. Later releases can be
+installed through the game. GitHub Actions artifacts eventually expire;
+the new release-download channel is permanent.
