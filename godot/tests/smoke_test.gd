@@ -71,7 +71,7 @@ func _run() -> void:
             "Release check immediately changes the button label")
         _expect(str(app.get("status").text) == "Checking GitHub releases...",
             "Release check immediately shows feedback beside the conversation")
-        _expect("Checking GitHub for a newer Windows game release" in str(app.get("log_view").text),
+        _expect("Checking GitHub for a newer Windows game release" in str(app.get("log_view").get_parsed_text()),
             "Release check leaves a visible SYSTEM status in the chat log")
         app.get("update_http").cancel_request()
         app.call("_update_idle")
