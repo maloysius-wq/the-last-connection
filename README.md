@@ -152,3 +152,21 @@ the latest player's request. This change preserves the fast architecture:
 **no extra model pass after an action**, and only one model response per
 ordinary conversational request. Future work may enrich character reflection
 without blocking movement or sacrificing truthful outcomes.
+
+
+## Keypad movement and uninterrupted typing
+
+Eli now recognizes casual keypad descriptions such as **pin pad**, **PIN pad**,
+**pinpad** and **red glowing screen**. An instruction such as *"Go over to the
+pin pad and take a look at the red glowing screen"* is grounded to
+`inspect keypad`, so Godot **walks him to the keypad** and reports its actual
+red indicator. Simple *"Go to the pin pad"* still means move only, while
+*"take a look"* no longer means trying to pick an object up. Questions about
+objects do not trigger unintended actions.
+
+The message field stays editable during Eli's responses, allowing you to
+prepare the next message, and automatically retakes keyboard focus after
+transmission, completion, resets and returning to the window. Confirming a
+GitHub update still takes focus while its dialog is open. A draft typed while
+Eli is busy is never sent until you explicitly press Transmit or Enter once
+he's ready.
