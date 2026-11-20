@@ -554,8 +554,8 @@ class Agent:
                 "there's a flashlight on the desk here",
                 speech, flags=re.I)
             speech = re.sub(
-                r"\b(?:can|could|would|will)\s+you\s+(?:grab|pick\s+up|take)"
-                r"\s+(?:that|it|the\s+flashlight)\b",
+                r"\b(?:can|could|would|will)\s+you\s+(?:(?:grab|take|pick\s+up)"
+                r"\s+(?:that|it|the\s+flashlight)|pick\s+(?:it|that)\s+up)\b",
                 "should I pick it up",
                 speech, flags=re.I)
         # A fresh room or a session with no attempted door interaction does
