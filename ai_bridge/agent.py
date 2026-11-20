@@ -488,11 +488,12 @@ class Agent:
             else:
                 intent = classify(player_text, referent)
                 plan = plan_actions(player_text, referent, strict=True)
-            prompt = "PLAYER REQUEST:\n" + json.dumps({
-                "player_text": player_text,
-                "request_kind": intent.prompt_hint,
-                "world": self._perceived_world(world),
-            }, ensure_ascii=False, separators=(",", ":"))
+            if not semantic_mode:
+                prompt = "PLAYER REQUEST:\n" + json.dumps({
+                    "player_text": player_text,
+                    "request_kind": intent.prompt_hint,
+                    "world": self._perceived_world(world),
+                }, ensure_ascii=False, separators=(",", ":"))
             if semantic_mode:
                 pass  # Result already validated; no regex fallback is allowed.
             elif plan is None:
@@ -733,6 +734,8 @@ class Agent:
                  "maintenance_note": "maintenance note", "keypad": "keypad",
                  "flashlight": "flashlight"}
         name = names.get(intent.target, intent.target.replace("_", " "))
+        if intent.action == "survey":
+            return "I'll take a look around and tell you what I can actually see."
         if intent.action == "move_to":
             if world.get("actor_at") == intent.target:
                 return "I'm already by the " + name + ". I'll stay here."
