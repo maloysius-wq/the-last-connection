@@ -263,3 +263,10 @@ Primary repo: `maloysius-wq/the-last-connection` (public; created by user). Use 
 - Root cause (4): world.object_positions flashlight (-1.7, -1.4) / note (-1.3,-1.4) overlap desk footprint z=-1.85..-0.95. Move interaction points to camera-side z=-0.40, route via aisle when coming from back-wall objects; relocate legacy saves with actors inside table on restore.
 - Added screenshot-specific Python suite and Godot smoke assertions for desk clearance, safe movement, legacy saves and existing complete physical action flow. Update old tests expecting repetitive speech.
 - Keep engine authoritative, natural character prose, zero second-inference post-action call and full CI validation.
+
+## 2026-11-20 verified release: natural conversation and desk position
+
+- PR #14 merged to main as `084ea611f83815739f548f950979d3f7310f065f`; CI main validation and Windows package passed. Python suite **133/133 passed**, including new screenshot natural-dialogue regressions, with real headless Godot gameplay, desk access, legacy save and physically routed action smoke passing.
+- Main Windows release job `44782202845` succeeded and published permanent GitHub Release `portable-084ea611f83815739f548f950979d3f7310f065f` containing `TheLastConnection-Windows-Portable.zip` and `SHA256SUMS.txt`.
+- Downloaded and inspected Actions artifact `14652613305` as `TheLastConnection-Natural-Dialogue-Desk-Fix-Windows.zip`: 1,097 ZIP entries, CRC check clean, build-info tag and commit exactly match released version; launcher, game and updater executables present, no bundled GGUF weights.
+- Remaining user-side verification: use **CHECK FOR UPDATES**, repeat first greeting and room question after flashlight pickup, confirm Eli does not say technical inventory descriptions or a canned no-action disclaimer, and inspect the desk standing location visually on Windows. CI does not prove local GGUF naturalness.
