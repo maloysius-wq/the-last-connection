@@ -428,10 +428,20 @@ class Agent:
                 "world": self._perceived_world(world),
             }, ensure_ascii=False, separators=(",", ":"))
             if len(plan) > 1:
-                unavailable = [step.target for step in plan
-                               if step.target != "room" and (
-                                   step.target not in world["objects"] or
-                                   world["objects"][step.target].get("visible") is not True)]
+                unavailable = []
+                for index, step in enumerate(plan):
+                    if step.target == "room":
+                        continue
+                    visible = world["objects"].get(step.target, {}).get("visible") is True
+                    # Breaker power can reveal the folded maintenance note;
+                    # Godot rechecks visibility when that queued step runs.
+                    revealed_later = (
+                        step.target == "maintenance_note" and
+                        any(previous.action == "use" and previous.target == "breaker_box"
+                            for previous in plan[:index])
+                    )
+                    if not visible and not revealed_later:
+                        unavailable.append(step.target)
                 if unavailable:
                     result = Decision("I can't see everything you're asking me to use yet. "
                                       "Could you help me find it first?", "wait")
