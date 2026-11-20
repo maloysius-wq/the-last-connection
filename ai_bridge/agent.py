@@ -655,6 +655,10 @@ class Agent:
                                 i + 1 < len(sequence) and
                                 sequence[i + 1] == ("use", "flashlight", "on"))]
             return tuple(sequence)
+        raw_a = tuple((s["action"], s["target"], s["argument"]) for s in first)
+        raw_b = tuple((s["action"], s["target"], s["argument"]) for s in second)
+        if raw_a == raw_b[:len(raw_a)] or raw_b == raw_a[:len(raw_b)]:
+            return True
         a, b = compact(first), compact(second)
         if a == b[:len(a)] or b == a[:len(b)]:
             return True
