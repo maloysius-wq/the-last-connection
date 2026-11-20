@@ -107,3 +107,9 @@ See [portable/README.md](portable/README.md). The portable build is CPU-only in 
 The CPU-only portable build now generates **one** LLM response per player instruction rather than generating another response after every physical action. Godot validates the action, reports its observed result immediately, and the bridge saves it as a confirmed memory without a second inference. The next conversation uses that memory. Short in-character acknowledgments after actions are deterministic; the initial dialogue and decisions are still produced by the real local LLM.
 
 Recent dialogue and authoritative observations are compacted before sending them to llama.cpp, including for older saved sessions. The response token budget is reduced from 400 to 192 (with a fallback if a model cannot fit its JSON within the budget). These changes reduce redundant work but cannot guarantee a specific response time on a given CPU.
+
+## Windows GPU acceleration and multi-PC setup
+
+The `TheLastConnection-Windows-GPU-Portable` artifact bundles **Vulkan and CPU llama.cpp builds**. It tries full Vulkan GPU offload, partial offload, then CPU automatically. The selected backend is written to `logs/runtime-status.json`. Vulkan acceleration is supported on many NVIDIA, AMD and Intel GPU drivers; actual improvement depends on hardware and VRAM. On a computer without a compatible GPU it still runs on CPU.
+
+For another computer, extract the complete portable ZIP to a writable folder. Existing GGUF files can be selected without copying to the system drive. When no model exists, the first-run launcher offers a **user-approved one-time** Qwen3-4B-Instruct-2507 Q4_K_M download (~2.5 GB) into the game's `models/` directory. Local inference stays offline afterward. The game itself needs no installed Ollama, LocalForge, Python or Godot. See `portable/README.md` for migration instructions.

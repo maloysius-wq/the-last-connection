@@ -1,4 +1,4 @@
-name: Portable Windows build (no model bundled)
+name: Portable Windows build (Vulkan GPU + CPU fallback)
 
 on:
   workflow_dispatch:
@@ -72,35 +72,45 @@ jobs:
           $game = Get-Item -LiteralPath $target -ErrorAction Stop
           if ($game.PSIsContainer -or $game.Length -lt 1000000) { throw "Missing/invalid Godot exe: $($game.Length) bytes" }
           Write-Host "Godot Windows executable exported: $($game.Length) bytes"
-      - name: Download upstream CPU-only llama.cpp server
+      - name: Download pinned CPU and Vulkan llama.cpp Windows runtimes
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           $headers = @{ 'User-Agent' = 'TLC-portable'; Authorization = "Bearer $env:GH_TOKEN" }
-          # Pin a verified upstream build. The /releases/latest endpoint can refer to
-          # a tag without Windows CPU assets, so do not use it here.
+          # Pin both architectures to the same upstream build for predictable packaging.
           $release = Invoke-RestMethod -Uri 'https://api.github.com/repos/ggml-org/llama.cpp/releases/tags/b12551' -Headers $headers
-          $asset = $release.assets | Where-Object { $_.name -match '^llama-b[0-9]+-bin-win-cpu-x64\.zip$' } | Select-Object -First 1
-          if (!$asset) { throw 'No upstream Windows x64 CPU llama.cpp release ZIP found' }
-          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile "$env:RUNNER_TEMP\llama-cpu.zip"
-          New-Item -ItemType Directory -Force -Path 'dist/TheLastConnection/runtime/llama' | Out-Null
-          Expand-Archive "$env:RUNNER_TEMP\llama-cpu.zip" -DestinationPath 'dist/TheLastConnection/runtime/llama' -Force
-          $bin = Get-ChildItem 'dist/TheLastConnection/runtime/llama' -Recurse -Filter 'llama-server.exe' | Select-Object -First 1
-          if (!$bin) { throw 'llama-server.exe missing from upstream release' }
-          if ($bin.Directory.FullName -ne (Resolve-Path 'dist/TheLastConnection/runtime/llama').Path) {
-            Copy-Item "$($bin.Directory.FullName)\*" 'dist/TheLastConnection/runtime/llama' -Recurse -Force
+          foreach ($backend in @('cpu', 'vulkan')) {
+            $name = "llama-b12551-bin-win-$backend-x64.zip"
+            $asset = $release.assets | Where-Object { $_.name -eq $name } | Select-Object -First 1
+            if (!$asset) { throw "Missing pinned upstream runtime: $name" }
+            $download = Join-Path $env:RUNNER_TEMP $name
+            Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $download
+            $target = "dist/TheLastConnection/runtime/llama/$backend"
+            New-Item -ItemType Directory -Force -Path $target | Out-Null
+            Expand-Archive $download -DestinationPath $target -Force
+            $bin = Get-ChildItem $target -Recurse -Filter 'llama-server.exe' | Select-Object -First 1
+            if (!$bin) { throw "No llama-server.exe in $name" }
+            if ($bin.Directory.FullName -ne (Resolve-Path $target).Path) {
+              Copy-Item "$($bin.Directory.FullName)/*" $target -Recurse -Force
+            }
+            $server = Join-Path $target 'llama-server.exe'
+            if (!(Test-Path $server -PathType Leaf)) { throw "Missing $backend model server" }
+            if ((Get-Item $server).Length -lt 1000000) { throw "Invalid $backend model server" }
+            Write-Host "$backend llama.cpp server packaged ($((Get-Item $server).Length) bytes)"
           }
       - name: Include portable build guide
         shell: pwsh
         run: |
           Copy-Item 'portable/README.md' 'dist/TheLastConnection/READ_ME_FIRST.md'
-          Set-Content -Encoding ascii -Path 'dist/TheLastConnection/portable-build.txt' -Value "No AI model bundled; select existing .gguf from D: on first launch. All game, runtime, logs, and saves live beside this file."
+          Set-Content -Encoding ascii -Path 'dist/TheLastConnection/portable-build.txt' -Value "No AI model bundled. First launch selects an existing GGUF or downloads Qwen3 Q4_K_M (~2.5GB) into models/ with approval. GPU Vulkan is tried first, CPU fallback included."
           New-Item -ItemType Directory -Force -Path 'dist/TheLastConnection/LICENSES' | Out-Null
           Invoke-WebRequest 'https://raw.githubusercontent.com/ggml-org/llama.cpp/master/LICENSE' -OutFile 'dist/TheLastConnection/LICENSES/llama.cpp-MIT.txt'
           Invoke-WebRequest 'https://raw.githubusercontent.com/godotengine/godot/master/LICENSE.txt' -OutFile 'dist/TheLastConnection/LICENSES/Godot-MIT.txt'
           if (!(Test-Path 'dist/TheLastConnection/TheLastConnection.exe')) { throw 'Missing launcher' }
-          if (!(Test-Path 'dist/TheLastConnection/runtime/llama/llama-server.exe')) { throw 'Missing model runtime' }
+          foreach ($backend in @('cpu','vulkan')) {
+            if (!(Test-Path "dist/TheLastConnection/runtime/llama/$backend/llama-server.exe")) { throw "Missing $backend model runtime" }
+          }
           $game = Get-Item -LiteralPath 'dist/TheLastConnection/TheLastConnectionGame.exe' -Force -ErrorAction Stop
           if ($game.PSIsContainer -or $game.Length -lt 1000000) { throw "Exported game exe is missing or invalid: $($game.Length) bytes" }
           # Windows export template can retain the Hidden file attribute; ensure
@@ -110,7 +120,7 @@ jobs:
           if (!(Test-Path -PathType Leaf 'dist/TheLastConnection/TheLastConnectionGame.exe')) { throw 'Game exe disappeared before upload' }
       - uses: actions/upload-artifact@v4
         with:
-          name: TheLastConnection-Windows-Portable-NoModel
+          name: TheLastConnection-Windows-GPU-Portable
           path: dist/TheLastConnection
           retention-days: 90
           if-no-files-found: error
