@@ -179,6 +179,31 @@ func _run() -> void:
     _expect(world.snapshot()["escaped"] == false, "Room reset works")
     world.restore_state(saved)
     _expect(world.snapshot()["escaped"] == true, "Escape save restores correctly")
+    # Exercise the ACTUAL terminal decision -> world-action handoff, not just
+    # direct world.perform_action tests. A response with action=use must move
+    # Eli and change authoritative inventory/flashlight state.
+    world.reset_state()
+    app.set("request_stage", "decide")
+    var bridge_decision := {
+        "speech": "I'll pick up the flashlight and switch it on.",
+        "action": "use", "target": "flashlight", "argument": "on",
+        "emotion": "curious",
+    }
+    app.call("_on_http_completed", HTTPRequest.RESULT_SUCCESS, 200,
+        PackedStringArray(), JSON.stringify(bridge_decision).to_utf8_buffer())
+    _expect(str(app.get("request_stage")) == "action",
+        "Game terminal dispatches a returned physical action")
+    _expect(world.busy, "Engine starts moving after HTTP decision")
+    var routed_outcome: Array = await world.action_finished
+    _expect(routed_outcome[2] == true, "Routed flashlight action succeeds")
+    _expect(world.snapshot()["inventory"].has("flashlight"),
+        "Routed command actually picks flashlight up")
+    _expect(world.snapshot()["flashlight_on"] == true,
+        "Routed command actually switches flashlight on")
+    _expect(world.snapshot()["actor_at"] == "flashlight",
+        "Eli physically reaches desk after routed command")
+    _expect("picked up" in str(routed_outcome[3]),
+        "Routed action emits an authoritative pickup observation")
     if failures.is_empty():
         print("GODOT SMOKE PASS: scene, flashlight, breaker, code puzzle, escape and persistence")
         quit(0)
