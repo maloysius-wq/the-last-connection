@@ -513,7 +513,7 @@ class Agent:
         # A model saying it *just* performed a movement without a matching
         # confirmed event is corrected to the engine's actual location.
         claim = re.search(
-            r"\bI\s+(?:just\s+|have\s+just\s+|['’]ve\s+just\s+)"
+            r"\bI\s+(?:(?:just|already)\s+|(?:have\s+|['’]ve\s+)(?:just\s+)?)?"
             r"(?:moved|walked|went|headed|checked|inspected|picked up|"
             r"switched|opened|entered|reached)\b", speech, flags=re.I)
         if claim:
