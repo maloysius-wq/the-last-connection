@@ -236,3 +236,12 @@ Primary repo: `maloysius-wq/the-last-connection` (public; created by user). Use 
 - Update click now immediately sets button text to `CHECKING GITHUB...`, changes status to `Checking GitHub releases...`, and writes a SYSTEM log entry. Successful no-update checks and failed HTTP requests show durable visible status, not silent resets; dialog confirmation unchanged.
 - Expanded headless Godot smoke to verify signal wiring, button focus modes, removal of intrusive blur callback, immediate status/log text, and reset after canceling a pending update check. Existing separate bridge and update-service HTTP tests still cover requests and explicit confirmation.
 - Validate Python + Godot engine + Windows packaging CI before publishing; user should see immediate CHECKING GITHUB on click. If not, they may be running an older executable. Actual graphical Windows click test is still required.
+
+## 2026-11-20 root-cause audit: multi-object context vs physical command
+
+- User screenshots before and after latest update: Eli claimed to hold and turn on an untouched desk flashlight with no actual movement or OBSERVATION. Later message describes a flashlight, keypad, door, and breaker, then clearly commands flashlight pickup and activation.
+- Confirmed source root cause: intent.py scans target names across the *entire* player message; any more than one target makes classify() return conversation. This routed a clear flashlight instruction to free-text model output, no Godot action. Existing single-object unit tests missed the complete utterance.
+- Second failure: conversational action-claim guard missed forms such as curly apostrophes in 'I've got' / 'I'll turn', present-progressive 'I'm right there picking up', and 'light's on now'. Free conversation could present invented actions as actual.
+- Fix: clause-by-clause command parsing to separate room-description context from one authorized physical instruction; per-clause negation and question filtering. Multi-target commands remain ambiguous. Expanded conversational physical-claim filter; no LLM narration is authoritative about physical acts.
+- Regression tests use full user screenshots. Real Godot engine smoke now simulates decision HTTP completion and checks command dispatch through the game UI, actor travel, inventory pickup, switched-on light, and real outcome, in addition to previous direct world action tests.
+- Maintain one model call per conversational player turn and zero post-action generation. Test actual local GGUF visually after release; CI cannot verify live model semantics.

@@ -63,59 +63,90 @@ def mentioned_targets(text: str) -> set[str]:
     """
     return {target for target, pattern in TARGETS if re.search(pattern, text, re.I)}
 
-def classify(text: str, focus: str = "") -> PlayerIntent:
+def _classify_clause(text: str, focus: str = "") -> PlayerIntent:
+    """Classify one conversational clause, never a whole mixed-context paragraph."""
     lower = text.strip().lower()
     if not lower or NEGATED.search(lower):
         return PlayerIntent()
-    # Describing an idea or past event is not a command to physically act.
-    if re.match(r"^(?:i (?:think|thought|wonder|was|remember|saw)|maybe|perhaps|imagine|"
-                r"suppose|if\b|you (?:said|were|already)|it (?:looks|seems)|"
-                r"would it|should we)\b", lower):
+    if re.match(r"^(?:i (?:think|thought|wonder|was|remember|saw|see|saw|noticed)|"
+                r"maybe|perhaps|imagine|suppose|if\b|you (?:said|were|already)|"
+                r"it (?:looks|seems)|would it|should we)\b", lower):
         return PlayerIntent()
 
-    # Questions about what/why/how and requests for verbal explanations never
-    # authorize motion just because they mention an object or a verb.
+    # A question about an action is not an instruction to perform that action.
     if QUESTION_PREFIX.search(lower) and not re.match(
             r"^have\s+(?:a\s+)?(?:closer\s+)?look\b", lower):
         return PlayerIntent()
 
-    matches = sorted((m.start(), target)
-                     for target, pattern in TARGETS
+    matches = sorted((m.start(), target) for target, pattern in TARGETS
                      if (m := re.search(pattern, lower)))
     mentioned = [target for _, target in matches]
     if not mentioned and focus and PRONOUN.search(lower):
         mentioned = [focus]
-
     verb = next((name for name, pattern in VERBS if re.search(pattern, lower)), "")
-    if not verb or not mentioned:
+    if not verb or not mentioned or len(mentioned) != 1:
         return PlayerIntent()
 
-    # "Can you look at the note?" is a polite action request, but
-    # "Can you see the note?" is an information question.
     if lower.endswith("?") and not POLITE_REQUEST.search(lower):
-        # Imperatives such as "Please read the note?" remain actionable.
-        if not lower.startswith(("please ", "go ", "read ", "inspect ", "take ", "grab ", "pick ", "turn ", "switch ", "open ", "check ", "walk ", "head ", "move ", "stand ")):
+        if not lower.startswith(("please ", "go ", "read ", "inspect ", "take ",
+                                 "grab ", "pick ", "turn ", "switch ", "open ",
+                                 "check ", "walk ", "head ", "move ", "stand ",
+                                 "have a look", "have a closer look")):
             return PlayerIntent()
 
-    # A request covering multiple named objects should be understood by the
-    # LLM before action, rather than allowing an unrelated arbitrary target.
-    if len(mentioned) > 1:
-        return PlayerIntent()
-
     target = mentioned[0]
-    # A "use flashlight" includes grabbing it from the desk if necessary.
-    # Likewise "pick up the flashlight and turn it on" is one desired operation.
     light_mode = ""
     if target == "flashlight":
-        if re.search(r"\b(?:turn|switch)\b.{0,35}\boff\b|\boff\b.{0,15}\b(?:flashlight|torch)\b", lower):
+        if re.search(r"\b(?:turn|switch)\b.{0,45}\boff\b|"
+                     r"\boff\b.{0,15}\b(?:flashlight|torch)\b", lower):
             light_mode = "off"
-        elif re.search(r"\b(?:turn|switch)\b.{0,35}\bon\b|\bon\b.{0,15}\b(?:flashlight|torch)\b", lower):
+        elif re.search(r"\b(?:turn|switch)\b.{0,45}\bon\b|"
+                       r"\bon\b.{0,15}\b(?:flashlight|torch)\b", lower):
             light_mode = "on"
         if light_mode:
             verb = "use"
-    if target == "keypad" and verb == "enter_code":
-        return PlayerIntent("action", verb, target)
     if verb == "enter_code" and target != "keypad":
         return PlayerIntent()
-    # "switch on power" is an act, not a request to walk to the panel.
     return PlayerIntent("action", verb, target, light_mode)
+
+
+# Context often includes an inventory description before an actual instruction.
+# Example: "I see a keypad, door, and breaker. Go ahead and pick up the
+# flashlight and turn it on." Only the LAST sentence grants permission.
+# A comma separating a polite new instruction is another useful boundary.
+_COMMAND_SPLIT = re.compile(
+    r"(?<=[.!?])\s+|[;\n]+|,\s*(?=(?:please\b|go ahead\b|"
+    r"(?:can|could|would|will)\s+you\b|(?:i want|i need)\s+you\s+to\b))",
+    re.I,
+)
+
+
+def classify(text: str, focus: str = "") -> PlayerIntent:
+    """Return only a clear, currently authorized action.
+
+    Object references from *other* sentences must never make a later clear
+    instruction ambiguous. Conversely, two different physical targets in the
+    actual instructions aren't silently collapsed to a single action.
+    """
+    if not isinstance(text, str):
+        return PlayerIntent()
+    requests: list[PlayerIntent] = []
+    current_focus = focus
+    for segment in _COMMAND_SPLIT.split(text.strip()):
+        intent = _classify_clause(segment, current_focus)
+        if intent.kind == "action":
+            requests.append(intent)
+            current_focus = intent.target
+    if not requests:
+        return PlayerIntent()
+    if len({item.target for item in requests}) != 1:
+        return PlayerIntent()
+    # Consecutive commands on the SAME prop can be combined when a later use
+    # has an explicit desired state (e.g. "Pick up flashlight. Turn it on.").
+    if len(requests) > 1:
+        if requests[-1].target == "flashlight" and requests[-1].light_mode:
+            return requests[-1]
+        if all(item.action == requests[0].action for item in requests):
+            return requests[-1]
+        return PlayerIntent()
+    return requests[0]
