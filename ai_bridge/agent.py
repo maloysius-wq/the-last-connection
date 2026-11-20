@@ -11,7 +11,8 @@ from typing import Any, Protocol
 
 from .intent import PlayerIntent, classify, mentioned_targets, plan_actions
 from .semantic import (SCHEMA as SEMANTIC_SCHEMA, INSTRUCTIONS as SEMANTIC_INSTRUCTIONS,
-                       REVIEW_SCHEMA, PlanRejected, review_messages, validated_steps)
+                       REVIEW_SCHEMA, PlanRejected, review_messages, validated_steps,
+                       is_reflective_question, needs_action_review)
 from urllib import request, error
 
 MODEL = os.environ.get("TLC_MODEL", "qwen3:4b-instruct")
@@ -335,7 +336,11 @@ class Agent:
             "in what you say and ask, not a long theatrical monologue. "
             "Only describe real observations as facts; do not invent keypad "
             "pulse counts, numeric sequences, timings or past key presses. "
-            "Say when an interpretation is only a guess. Finish your sentences."
+            "Say when an interpretation is only a guess. Finish your sentences. "
+            "When the operator is frustrated that you misunderstood a command "
+            "or asks why you hesitated, respond to their FEELINGS and question. "
+            "Briefly acknowledge the misunderstanding and show you're listening; "
+            "do not blame them or make up a physical reason for your hesitation."
         )
         # The production GGUF now decides whether language is chat or an
         # explicitly authorized action plan. Legacy deterministic parsing is
@@ -517,25 +522,37 @@ class Agent:
             # Scripted mock and older test fakes preserve deterministic legacy
             # behavior, with no new implicit physical permissions.
             if semantic_mode:
-                raw = self.backend.interpret(
-                    self._messages(state, player_text, semantic=True, world=world))
-                if isinstance(raw, dict) and raw.get("kind") == "action" and callable(
-                        getattr(self.backend, "review", None)):
-                    # Physical requests get a second, focused completeness
-                    # check. A valid first step is NOT proof that all requested
-                    # steps were retained. A review failure executes nothing.
-                    try:
-                        audit = self.backend.review(
-                            review_messages(player_text, raw.get("steps", []),
-                                            world, referent))
-                    except BackendUnavailable:
-                        audit = {"kind": "clarify", "steps": [],
-                                 "reason": "The plan could not be reviewed"}
-                    result = self._reviewed_semantic_decision(
-                        raw, audit, player_text, world, state, referent)
+                if is_reflective_question(player_text) and callable(
+                        getattr(self.backend, "converse", None)):
+                    # A direct question about Eli is conversation, not a
+                    # request for a physical plan. The constrained action
+                    # JSON response caused such questions to degenerate into
+                    # "Which actions do you mean?" instead of real dialogue.
+                    speech = self.backend.converse(
+                        self._messages(state, player_text, dialogue=True, world=world))
+                    speech = self._ground_dialogue(speech, world, state, player_text)
+                    result = Decision(speech, "wait", "", "cautious")
                 else:
-                    result = self._semantic_decision(
-                        raw, player_text, world, state, referent)
+                    raw = self.backend.interpret(
+                        self._messages(state, player_text, semantic=True, world=world))
+                    if (isinstance(raw, dict) and raw.get("kind") == "action" and
+                            needs_action_review(player_text, raw.get("steps", [])) and
+                            callable(getattr(self.backend, "review", None))):
+                        # Review compound plans for *missing steps*, but do
+                        # not let a second small-model inference contradict a
+                        # grounded one-step command such as "Turn it on!".
+                        try:
+                            audit = self.backend.review(
+                                review_messages(player_text, raw.get("steps", []),
+                                                world, referent))
+                        except BackendUnavailable:
+                            audit = {"kind": "clarify", "steps": [],
+                                     "reason": "The plan could not be reviewed"}
+                        result = self._reviewed_semantic_decision(
+                            raw, audit, player_text, world, state, referent)
+                    else:
+                        result = self._semantic_decision(
+                            raw, player_text, world, state, referent)
                 plan = ()
             else:
                 intent = classify(player_text, referent)
