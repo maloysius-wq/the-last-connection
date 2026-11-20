@@ -399,7 +399,7 @@ class Agent:
                 # 'focus' field, which often held an unrelated prior location.
                 recent_reply = next(
                     (clean["content"] for turn in reversed(state.get("history", []))
-                     if turn.get("role") == "assistant"
+                     if isinstance(turn, dict) and turn.get("role") == "assistant"
                      if (clean := self._clean_turn(turn)) is not None),
                     "")
                 cited = {item for item in mentioned_targets(recent_reply)
