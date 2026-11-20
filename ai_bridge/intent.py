@@ -43,6 +43,7 @@ class PlayerIntent:
     action: str = ""
     target: str = ""
     light_mode: str = ""
+    argument: str = ""
     # Exposed to the model only as high-level guidance, not an execution permit.
     @property
     def prompt_hint(self) -> dict[str, str]:
