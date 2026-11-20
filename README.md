@@ -201,3 +201,7 @@ visible in the chat rather than seeming like a dead button.
 
 No scheduled checking, automatic downloads or new model dependencies were
 introduced. Updating remains explicitly initiated by the player.
+
+## Physical actions grounded in the full player message
+
+The game distinguishes descriptions of the room from an explicit instruction. For instance, 'I see a flashlight, keypad, door and breaker. Go ahead and pick up that flashlight and turn it on' authorizes only a flashlight pickup-and-switch-on. Eli must physically reach the desk and collect the object before the game confirms success. Free conversation is checked for invented pickups, switch presses, and claims that a light has turned on, including contractions and progressive-stage narration.
