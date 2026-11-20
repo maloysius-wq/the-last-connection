@@ -174,8 +174,8 @@ _PLAN_VERB = (
 )
 # Only joiners introducing a SECOND imperative delimit steps; e.g.
 # "a keypad and a breaker" is never split.
-_PLAN_JOIN = re.compile(r",\s*(?:and\s+)?(?=" + _PLAN_VERB +
-                        r"\b)|\s+and\s+(?=" + _PLAN_VERB + r"\b)", re.I)
+_PLAN_JOIN = re.compile(r",\s*(?:and\s+)?|\s+and\s+(?=" +
+                        _PLAN_VERB + r"\b)", re.I)
 _PLAN_IMPERATIVE = re.compile(
     r"^(?:" + _PLAN_VERB + r")\b", re.I)
 _PLAN_SURVEY = re.compile(
