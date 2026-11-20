@@ -114,18 +114,21 @@ func _build_ui() -> void:
     input = LineEdit.new()
     input.placeholder_text = "Talk to Eli..."
     input.text_submitted.connect(_submit)
-    input.focus_exited.connect(_on_input_focus_exited)
+    # Retain keyboard focus without stealing mouse clicks on other controls.
     right.add_child(input)
     send_button = Button.new()
     send_button.text = "TRANSMIT"
+    send_button.focus_mode = Control.FOCUS_NONE
     send_button.pressed.connect(_send_pressed)
     right.add_child(send_button)
     update_button = Button.new()
     update_button.text = "CHECK FOR UPDATES"
+    update_button.focus_mode = Control.FOCUS_NONE
     update_button.pressed.connect(_check_for_updates)
     right.add_child(update_button)
     var new_game := Button.new()
     new_game.text = "NEW SESSION / RESET ROOM"
+    new_game.focus_mode = Control.FOCUS_NONE
     new_game.pressed.connect(_new_game)
     right.add_child(new_game)
 
@@ -203,13 +206,6 @@ func _idle() -> void:
     call_deferred("_restore_input_focus")
 
 
-func _on_input_focus_exited() -> void:
-    # The chat is the only primary text editor in this terminal. A click on
-    # TRANSMIT, the camera feed or empty interface must not strand typing focus.
-    # Defer until the mouse event completes, leaving modal dialogs alone.
-    call_deferred("_restore_input_focus")
-
-
 func _notification(what: int) -> void:
     if what == NOTIFICATION_WM_WINDOW_FOCUS_IN:
         call_deferred("_restore_input_focus")
@@ -231,9 +227,12 @@ func _check_for_updates() -> void:
     update_button.disabled = true
     update_button.text = "CHECKING GITHUB..."
     update_stage = "check"
+    status.text = "Checking GitHub releases..."
+    _message("SYSTEM", "Checking GitHub for a newer Windows game release...")
     var result := update_http.request(BRIDGE_URL + "/api/update/check")
     if result != OK:
         _message("SYSTEM", "Couldn't start update check (error " + str(result) + ").")
+        status.text = "Update check failed"
         _update_idle()
 
 
@@ -248,6 +247,7 @@ func _install_update() -> void:
     update_stage = "install"
     update_button.disabled = true
     update_button.text = "PREPARING UPDATE..."
+    status.text = "Preparing update..."
     var payload := JSON.stringify({"tag": available_update_tag, "confirm": true})
     var headers := PackedStringArray(["Content-Type: application/json", "X-TLC-Update: 1"])
     var result := update_http.request(BRIDGE_URL + "/api/update/request", headers,
@@ -264,12 +264,14 @@ func _on_update_response(result: int, response_code: int, _headers: PackedString
         var detail := str(reply.get("error", "") if typeof(reply) == TYPE_DICTIONARY else "")
         if detail.is_empty():
             detail = "Couldn't contact the local updater. Check your internet connection."
-        _message("SYSTEM", "Update: " + detail.left(250))
+        _message("SYSTEM", "Update check failed: " + detail.left(250))
+        status.text = "GitHub check failed. See the SYSTEM message."
         _update_idle()
         return
     if update_stage == "check":
         if not bool(reply.get("available", false)):
             _message("SYSTEM", "You're on the newest published game version.")
+            status.text = "Already up to date"
             _update_idle()
             return
         available_update_tag = str(reply.get("latest", ""))
@@ -280,11 +282,14 @@ func _on_update_response(result: int, response_code: int, _headers: PackedString
             "\n\nInstalling will close the game, download and verify the update, preserve saves and model files, then restart." +
             "\n\nInstall this update now?"
         )
+        _message("SYSTEM", "A new release is available: " + available_update_tag)
+        status.text = "New update available"
         _update_idle()
         update_dialog.popup_centered()
     elif update_stage == "install":
         if bool(reply.get("ok", false)):
             _message("SYSTEM", "Closing the game to install the verified update...")
+            status.text = "Installing update"
             _save()
             get_tree().quit()
         else:
