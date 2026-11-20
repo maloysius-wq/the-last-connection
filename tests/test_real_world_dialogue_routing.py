@@ -136,6 +136,45 @@ class TestRealWindowsDialogueFailures(unittest.TestCase):
         self.assertEqual(len(backend.interprets), 1)
         self.assertEqual(len(backend.conversations), 0)
 
+    def test_eli_can_answer_simple_action_in_his_own_frightened_voice(self):
+        result, _ = self.decide(
+            "Turn on the flashlight.",
+            proposed("action", [
+                step("use", "flashlight", "Turn on the flashlight", "on")
+            ], speech="Okay. I'll turn it on. I don't like how quiet it is."))
+        self.assertEqual(result.action, "use")
+        self.assertIn("don't like how quiet", result.speech)
+        self.assertIn("I'll turn it on", result.speech)
+
+    def test_premature_model_success_claim_is_never_spoken(self):
+        result, _ = self.decide(
+            "Turn on the flashlight.",
+            proposed("action", [
+                step("use", "flashlight", "Turn on the flashlight", "on")
+            ], speech="I'll switch it on. I already turned on the flashlight."))
+        self.assertEqual(result.action, "use")
+        self.assertNotIn("already turned", result.speech)
+        self.assertEqual(result.speech, "I'll pick up the flashlight first, then try switching it on.")
+
+    def test_model_cannot_promise_extra_action_on_unrequested_target(self):
+        result, _ = self.decide(
+            "Turn on the flashlight.",
+            proposed("action", [
+                step("use", "flashlight", "Turn on the flashlight", "on")
+            ], speech="I'll switch on the flashlight and then open the door."))
+        self.assertEqual(result.action, "use")
+        self.assertNotIn("door", result.speech)
+        self.assertNotIn("then open", result.speech)
+
+    def test_action_speech_must_match_engine_goal(self):
+        result, _ = self.decide(
+            "Turn on the flashlight.",
+            proposed("action", [
+                step("use", "flashlight", "Turn on the flashlight", "on")
+            ], speech="I'll pick it up and wait."))
+        self.assertEqual(result.action, "use")
+        self.assertIn("switching it on", result.speech)
+
     def test_hypothetical_why_is_conversation_and_suggestion_is_not(self):
         self.assertTrue(is_reflective_question("Why did you hesitate?"))
         self.assertTrue(is_reflective_question("What if you opened the door?"))
