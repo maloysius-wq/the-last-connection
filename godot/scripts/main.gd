@@ -29,6 +29,11 @@ var available_update_tag := ""
 var session_id: String
 var request_stage := "idle"
 var action_context := {"action": "", "target": ""}
+# Actions after the current one. A failed step cancels the rest.
+# The bridge derives these from the player's words; the world revalidates each.
+var queued_actions: Array[Dictionary] = []
+var queue_total := 0
+var queue_completed := 0
 
 func _ready() -> void:
     _build_ui()
@@ -184,23 +189,80 @@ func _on_http_completed(result: int, response_code: int, _headers: PackedStringA
         var target: String = str(response.get("target", ""))
         var argument: String = str(response.get("argument", ""))
         if action != "wait":
-            request_stage = "action"
-            status.text = "Eli is moving..."
-            action_context = {"action": action, "target": target, "argument": argument}
-            world.perform_action(action, target, argument)
+            queued_actions.clear()
+            var proposed_queue = response.get("queue", [])
+            if typeof(proposed_queue) != TYPE_ARRAY or proposed_queue.size() > 5:
+                _message("SYSTEM", "Invalid action sequence returned by bridge; no steps executed.")
+                _idle()
+                return
+            for item in proposed_queue:
+                if typeof(item) != TYPE_DICTIONARY:
+                    _message("SYSTEM", "Invalid action sequence; no steps executed.")
+                    _idle()
+                    return
+                var step_action: String = str(item.get("action", ""))
+                var step_target: String = str(item.get("target", ""))
+                var step_argument: String = str(item.get("argument", ""))
+                if not _valid_queued_step(step_action, step_target, step_argument):
+                    _message("SYSTEM", "Invalid queued step; no steps executed.")
+                    _idle()
+                    return
+                queued_actions.append({"action": step_action, "target": step_target,
+                    "argument": step_argument})
+            queue_total = queued_actions.size() + 1
+            queue_completed = 0
+            _start_action(action, target, argument)
             return
+    elif request_stage == "outcome" and not queued_actions.is_empty():
+        # The preceding result was recorded by the bridge. Now, and only now,
+        # may the next independently validated world action begin.
+        var next_step: Dictionary = queued_actions.pop_front()
+        queue_completed += 1
+        _start_action(str(next_step["action"]), str(next_step["target"]),
+            str(next_step["argument"]))
+        return
     _idle()
+
+func _valid_queued_step(action: String, target: String, argument: String) -> bool:
+    if action not in ["move_to", "inspect", "take", "use", "enter_code"]:
+        return false
+    if not world.object_positions.has(target):
+        return false
+    if action == "enter_code":
+        return target == "keypad" and argument.length() == 4 and argument.is_valid_int()
+    if action == "use" and target == "flashlight":
+        return argument in ["", "on", "off"]
+    return argument.is_empty()
+
+func _start_action(action: String, target: String, argument: String) -> void:
+    request_stage = "action"
+    if queue_total > 1:
+        status.text = "Eli is working... step " + str(queue_completed + 1) + " of " + str(queue_total)
+    else:
+        status.text = "Eli is moving..."
+    action_context = {"action": action, "target": target, "argument": argument}
+    world.perform_action(action, target, argument)
 
 func _on_world_action_finished(action: String, target: String, success: bool, description: String) -> void:
     _message("OBSERVATION", description)
     if success:
         _save()
+    elif queue_total > 1:
+        var skipped := queued_actions.size()
+        queued_actions.clear()
+        _message("SYSTEM", "Sequence stopped at step " + str(queue_completed + 1) +
+            " of " + str(queue_total) + " because it failed. " +
+            str(skipped) + " remaining step(s) were not attempted.")
     var body := {"session_id": session_id, "action": action, "target": target,
         "success": success, "description": description, "world": world.snapshot()}
     _request("/api/outcome", body, "outcome")
 
 func _idle() -> void:
     request_stage = "idle"
+    queued_actions.clear()
+    queue_total = 0
+    queue_completed = 0
+    action_context = {"action": "", "target": ""}
     status.text = "Ready"
     send_button.disabled = false
     call_deferred("_restore_input_focus")
