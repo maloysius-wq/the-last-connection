@@ -705,6 +705,23 @@ class Agent:
         return tuple(result)
 
     @staticmethod
+    def _comparable_goals(steps: tuple[dict[str, str], ...]) -> tuple[tuple[str, str, str], ...]:
+        """Include engine-implied approaches only for reconciling two readings.
+
+        A tiny model may propose just 'walk to the flashlight' while a second
+        proposes 'pick it up, turn it on, look around'. Godot performs the
+        approach automatically before taking or using the object.
+        """
+        goals: list[tuple[str, str, str]] = []
+        for action, target, argument in Agent._plan_goals(steps):
+            walk = ("move_to", target, "")
+            if (target != "room" and action in ("take", "use", "inspect", "enter_code")
+                    and walk not in goals):
+                goals.append(walk)
+            goals.append((action, target, argument))
+        return tuple(goals)
+
+    @staticmethod
     def _ordered_subset(shorter: tuple[tuple[str, str, str], ...],
                         longer: tuple[tuple[str, str, str], ...]) -> bool:
         """Independent authorized steps may be omitted, but never reordered."""
@@ -717,7 +734,7 @@ class Agent:
     @staticmethod
     def _plans_match_or_extend(first: tuple[dict[str, str], ...],
                                second: tuple[dict[str, str], ...]) -> bool:
-        a, b = Agent._plan_goals(first), Agent._plan_goals(second)
+        a, b = Agent._comparable_goals(first), Agent._comparable_goals(second)
         return Agent._ordered_subset(a, b) or Agent._ordered_subset(b, a)
 
     def _reviewed_semantic_decision(self, first: Any, audit: Any,
@@ -751,8 +768,14 @@ class Agent:
             return original if len(a) >= 2 else fallback
         if not a:
             return reviewed
-        if not (self._ordered_subset(a, b) or self._ordered_subset(b, a)):
-            return fallback
+        comparison_a = self._comparable_goals(original.actions)
+        comparison_b = self._comparable_goals(reviewed.actions)
+        if not (self._ordered_subset(comparison_a, comparison_b) or
+                self._ordered_subset(comparison_b, comparison_a)):
+            # A fully validated three-goal plan should not be vetoed by a
+            # reviewer that proposes contradictory extra actions. Only the
+            # original authorized steps are retained, never the extras.
+            return original if len(a) >= 3 else fallback
         if len(b) > len(a):
             return reviewed
         # Equal goals or the review dropped a goal: keep the original. The
