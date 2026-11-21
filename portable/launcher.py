@@ -17,6 +17,7 @@ from urllib import request, error
 
 from ai_bridge.agent import Agent, LlamaCppBackend, SessionStore
 from ai_bridge.server import create_handler
+from ai_bridge.voice import LocalVoiceService
 from portable.runtime import (RuntimeSetupError, download_default_model, runtime_candidates,
                               start_model_server, MODEL_FILENAME)
 from portable.update_service import UpdateService, TAG_RE
@@ -279,7 +280,8 @@ def main() -> int:
         agent = Agent(LlamaCppBackend(), SessionStore(saves / "sessions"),
                       resource_directory() / "data" / "characters" / "eli.json")
         bridge = ThreadingHTTPServer(("127.0.0.1", 8765),
-                                     create_handler(agent, "llama.cpp", updater=UpdateService(base)))
+                                     create_handler(agent, "llama.cpp", updater=UpdateService(base),
+                                                    voice=LocalVoiceService(base)))
         bridge_thread = threading.Thread(target=bridge.serve_forever, daemon=True)
         bridge_thread.start()
         with (logs / "game.log").open("a", encoding="utf-8") as game_log:
