@@ -72,6 +72,19 @@ def is_reflective_question(message: str) -> bool:
     return not any(DIRECT_COMMAND.match(clause) for clause in clauses[:-1])
 
 
+def contains_explicit_action_request(message: str) -> bool:
+    """Whether to TRY a second semantic inference on a misclassified turn.
+
+    This does not authorize any physical action. Each reviewed operation still
+    needs independent evidence and validation before reaching Godot.
+    """
+    if not isinstance(message, str) or not mentioned_targets(message):
+        return False
+    clauses = [part.strip() for part in re.split(r"[.!?;]+", message)
+               if part.strip()]
+    return any(DIRECT_COMMAND.match(part) for part in clauses)
+
+
 def needs_action_review(message: str, steps: Any) -> bool:
     """Audit potentially compound commands, not obvious one-step directives.
 
@@ -379,5 +392,9 @@ def validated_steps(raw: Any, message: str, world: dict[str, Any],
                             (holding_context or (not referent and explicit_mode))):
                         raise PlanRejected("Unresolved pronoun")
             previous_target = target
-        result.append({"action": action, "target": target, "argument": argument})
+        # The report of what Eli sees comes from one successful survey.
+        # Model-generated duplicate surveys should not make him survey twice.
+        if not (action == "survey" and result and
+                result[-1]["action"] == "survey" and result[-1]["target"] == "room"):
+            result.append({"action": action, "target": target, "argument": argument})
     return tuple(result)
