@@ -251,8 +251,8 @@ def _find_span(message: str, evidence: str, cursor: int) -> tuple[int, int]:
     if start < 0:
         # Preserve the actual quoted WORDS but tolerate different formatting
         # of whitespace and harmless surrounding quotation marks.
-        quote = quote.strip(" \\"'“”‘’")
-        pattern = r"\\s+".join(re.escape(part) for part in quote.split())
+        quote = quote.strip(' "“”‘’')
+        pattern = r"\s+".join(re.escape(part) for part in quote.split())
         found = re.search(pattern, message[cursor:], re.I) if pattern else None
         if found:
             start, end = cursor + found.start(), cursor + found.end()
