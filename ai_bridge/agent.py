@@ -12,7 +12,8 @@ from typing import Any, Protocol
 from .intent import PlayerIntent, classify, mentioned_targets, plan_actions
 from .semantic import (SCHEMA as SEMANTIC_SCHEMA, INSTRUCTIONS as SEMANTIC_INSTRUCTIONS,
                        REVIEW_SCHEMA, PlanRejected, review_messages, validated_steps,
-                       is_reflective_question, needs_action_review)
+                       is_reflective_question, needs_action_review,
+                       contains_explicit_action_request)
 from urllib import request, error
 
 MODEL = os.environ.get("TLC_MODEL", "qwen3:4b-instruct")
@@ -548,12 +549,20 @@ class Agent:
                 else:
                     raw = self.backend.interpret(
                         self._messages(state, player_text, semantic=True, world=world))
-                    if (isinstance(raw, dict) and raw.get("kind") == "action" and
-                            needs_action_review(player_text, raw.get("steps", [])) and
-                            callable(getattr(self.backend, "review", None))):
-                        # Review compound plans for *missing steps*, but do
-                        # not let a second small-model inference contradict a
-                        # grounded one-step command such as "Turn it on!".
+                    can_review = callable(getattr(self.backend, "review", None))
+                    review_required = (
+                        isinstance(raw, dict) and can_review and (
+                            (raw.get("kind") == "action" and
+                             needs_action_review(player_text, raw.get("steps", []))) or
+                            (raw.get("kind") in ("clarify", "conversation") and
+                             contains_explicit_action_request(player_text))
+                        )
+                    )
+                    if review_required:
+                        # In addition to detecting missing steps, this can
+                        # recover an explicit action request misclassified as
+                        # conversation or clarify by the first small-model
+                        # pass. Both paths still require full world validation.
                         try:
                             audit = self.backend.review(
                                 review_messages(player_text, raw.get("steps", []),
@@ -671,74 +680,107 @@ class Agent:
             return result
 
     @staticmethod
+    def _plan_goals(steps: tuple[dict[str, str], ...]) -> tuple[tuple[str, str, str], ...]:
+        """Normalize equivalent engine outcomes for comparing model plans.
+
+        - Switching ON the flashlight also picks it up in Godot.
+        - Approaching an object is automatic when inspecting/taking/using it.
+        - One survey already includes the spoken report of visible changes.
+        This only compares plans; it never authorizes a new physical action.
+        """
+        result: list[tuple[str, str, str]] = []
+        for i, step in enumerate(steps):
+            act, target, arg = step["action"], step["target"], step["argument"]
+            if (act == "move_to" and i + 1 < len(steps) and
+                    steps[i + 1]["target"] == target and
+                    steps[i + 1]["action"] in ("inspect", "take", "use", "enter_code")):
+                continue
+            if act == "use" and target == "flashlight" and arg == "on":
+                if not result or result[-1] != ("take", "flashlight", ""):
+                    result.append(("take", "flashlight", ""))
+            goal = (act, target, arg)
+            if act == "survey" and result and result[-1] == goal:
+                continue
+            result.append(goal)
+        return tuple(result)
+
+    @staticmethod
+    def _comparable_goals(steps: tuple[dict[str, str], ...]) -> tuple[tuple[str, str, str], ...]:
+        """Include engine-implied approaches only for reconciling two readings.
+
+        A tiny model may propose just 'walk to the flashlight' while a second
+        proposes 'pick it up, turn it on, look around'. Godot performs the
+        approach automatically before taking or using the object.
+        """
+        goals: list[tuple[str, str, str]] = []
+        for action, target, argument in Agent._plan_goals(steps):
+            walk = ("move_to", target, "")
+            if (target != "room" and action in ("take", "use", "inspect", "enter_code")
+                    and walk not in goals):
+                goals.append(walk)
+            goals.append((action, target, argument))
+        return tuple(goals)
+
+    @staticmethod
+    def _ordered_subset(shorter: tuple[tuple[str, str, str], ...],
+                        longer: tuple[tuple[str, str, str], ...]) -> bool:
+        """Independent authorized steps may be omitted, but never reordered."""
+        pos = 0
+        for goal in longer:
+            if pos < len(shorter) and shorter[pos] == goal:
+                pos += 1
+        return pos == len(shorter)
+
+    @staticmethod
     def _plans_match_or_extend(first: tuple[dict[str, str], ...],
                                second: tuple[dict[str, str], ...]) -> bool:
-        """Both plans are compatible when one is an ordered prefix of another.
-
-        Flashlight ON already includes its pickup in the engine. A compact
-        use/on and an explicit take+use/on describe equivalent end goals.
-        """
-        def compact(steps: tuple[dict[str, str], ...]) -> tuple[tuple[str, str, str], ...]:
-            sequence = [(s["action"], s["target"], s["argument"]) for s in steps]
-            sequence = [s for i, s in enumerate(sequence)
-                        if not (s == ("take", "flashlight", "") and
-                                i + 1 < len(sequence) and
-                                sequence[i + 1] == ("use", "flashlight", "on"))]
-            return tuple(sequence)
-        raw_a = tuple((s["action"], s["target"], s["argument"]) for s in first)
-        raw_b = tuple((s["action"], s["target"], s["argument"]) for s in second)
-        if raw_a == raw_b[:len(raw_a)] or raw_b == raw_a[:len(raw_b)]:
-            return True
-        a, b = compact(first), compact(second)
-        if a == b[:len(a)] or b == a[:len(b)]:
-            return True
-        # A pickup-only draft may be corrected by an audited flashlight-ON
-        # action; Godot will pick it up as an engine prerequisite.
-        return bool(
-            (a == (("take", "flashlight", ""),) and
-             b == (("use", "flashlight", "on"),)) or
-            (b == (("take", "flashlight", ""),) and
-             a == (("use", "flashlight", "on"),))
-        )
+        a, b = Agent._comparable_goals(first), Agent._comparable_goals(second)
+        return Agent._ordered_subset(a, b) or Agent._ordered_subset(b, a)
 
     def _reviewed_semantic_decision(self, first: Any, audit: Any,
                                     player_text: str, world: dict[str, Any],
                                     state: dict[str, Any], referent: str) -> Decision:
-        """Use the second reading to prevent valid-but-incomplete action plans.
+        """Reconcile independently validated goals, without an arbitrary veto.
 
-        Neither reading can authorize an unsupported act. Prefer the more
-        complete mutually compatible verified sequence; contradictions stop
-        before any movement, rather than silently doing only step one.
+        The small model's second pass may omit a valid step, quote a whole
+        sentence or incorrectly ask to clarify. When the *original* contains
+        several independently grounded goals, an unusable secondary opinion
+        must not cancel all of them. A lone potentially incomplete action still
+        fails closed if its completeness review cannot finish.
         """
         fallback = Decision(
-            "Wait. I don't want to miss part of what you're asking. "
-            "Can you repeat those steps?", "wait", "", "cautious")
+            "I heard part of that, but couldn't confirm the full sequence. "
+            "Could you say which steps you want first?", "wait", "", "cautious")
+        original = self._semantic_decision(
+            first, player_text, world, state, referent)
+        a = self._plan_goals(original.actions) if original.action != "wait" else ()
         if (not isinstance(audit, dict) or audit.get("kind") != "action" or
                 not isinstance(audit.get("steps"), list)):
-            return fallback
+            return original if len(a) >= 2 else fallback
 
         reviewed = self._semantic_decision(
             {**first, "kind": "action", "steps": audit["steps"]},
             player_text, world, state, referent)
-        if reviewed.action == "wait":
+        b = self._plan_goals(reviewed.actions) if reviewed.action != "wait" else ()
+        if not b:
+            # The independent GGUF reviewer is advisory, not a source of
+            # authority. Keep a genuinely multi-goal validated proposal.
+            return original if len(a) >= 2 else fallback
+        if not a:
             return reviewed
-        original = self._semantic_decision(
-            first, player_text, world, state, referent)
-        if original.action == "wait":
-            # First draft was inaccurate; the independently audited plan is
-            # still subject to all current-user and world constraints.
+        comparison_a = self._comparable_goals(original.actions)
+        comparison_b = self._comparable_goals(reviewed.actions)
+        if not (self._ordered_subset(comparison_a, comparison_b) or
+                self._ordered_subset(comparison_b, comparison_a)):
+            # A fully validated three-goal plan should not be vetoed by a
+            # reviewer that proposes contradictory extra actions. Only the
+            # original authorized steps are retained, never the extras.
+            return original if len(a) >= 3 else fallback
+        if len(b) > len(a):
             return reviewed
-        a, b = original.actions, reviewed.actions
-        if not self._plans_match_or_extend(a, b):
-            return fallback
-        if len(a) > len(b):
-            return original
-        if len(a) == len(b):
-            if a[0]["action"] == "use" and a[0]["target"] == "flashlight" and a[0]["argument"] == "on":
-                return original
-            if b[0]["action"] == "use" and b[0]["target"] == "flashlight" and b[0]["argument"] == "on":
-                return reviewed
-        return reviewed
+        # Equal goals or the review dropped a goal: keep the original. The
+        # model's reviewing pass must never remove a valid requested step.
+        return original
 
     @staticmethod
     def _safe_live_action_acknowledgment(raw_speech: Any,
