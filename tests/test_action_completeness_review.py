@@ -129,7 +129,7 @@ class TestActionCompleteness(unittest.TestCase):
             audited([step("move_to", "keypad", "go to the keypad")]))
         self.assertEqual(result.action, "wait")
         self.assertEqual(result.actions, ())
-        self.assertIn("don't want to miss", result.speech)
+        self.assertIn("full sequence", result.speech)
 
     def test_hypothetical_followup_cannot_make_simple_instruction_incomplete(self):
         text = "Pick up the flashlight. What if you opened the door?"
@@ -174,7 +174,7 @@ class TestActionCompleteness(unittest.TestCase):
                 step("take", "flashlight", "picking up the flashlight on the table there")]),
             audited([], kind="clarify", reason="Not sure what to do"))
         self.assertEqual(result.action, "wait")
-        self.assertIn("repeat", result.speech)
+        self.assertIn("which steps", result.speech)
 
     def test_conversation_remains_one_inference_and_no_physical_actions(self):
         result = self.decide(
