@@ -1,5 +1,5 @@
 extends Control
-## Prototype terminal: typed messages and authoritative in-world actions.
+## Surveillance terminal: typed/voice messages, local Eli speech, authoritative world actions.
 
 const BRIDGE_URL := "http://127.0.0.1:8765"
 const SAVE_PATH := "user://tlc_save.cfg"
@@ -33,9 +33,39 @@ var queued_actions: Array[Dictionary] = []
 var queue_index := 0
 var last_step_succeeded := false
 
+# Offline voice uses separate HTTP requests; it NEVER bypasses _submit(), the
+# existing semantic plan review, or Godot's authoritative action queue.
+var voice_status_http: HTTPRequest
+var voice_stt_http: HTTPRequest
+var voice_tts_http: HTTPRequest
+var mic_player: AudioStreamPlayer
+var mic_recorder: AudioEffectRecord
+var eli_voice_player: AudioStreamPlayer
+var microphone_button: Button
+var voice_mute_button: CheckButton
+var voice_text_only_button: CheckButton
+var voice_skip_button: Button
+var sensitivity_slider: HSlider
+var volume_slider: HSlider
+var audio_link_status: Label
+var stt_ready := false
+var tts_ready := false
+var microphone_recording := false
+var transcribing := false
+var voice_speaking_queue: Array[String] = []
+var tts_pending := false
+var voice_muted := false
+var text_only := false
+var microphone_sensitivity := 0.35
+var voice_volume := 0.80
+var microphone_started_ms := 0
+const MAX_RECORD_MS := 15000
+const MIC_BUS := "TLC_MicrophoneCapture"
+
 func _ready() -> void:
     _build_ui()
     _load_save()
+    _setup_voice()
     http = HTTPRequest.new()
     http.timeout = 310.0
     add_child(http)
@@ -50,8 +80,8 @@ func _ready() -> void:
     update_dialog.canceled.connect(_on_update_dialog_dismissed)
     add_child(update_dialog)
     world.action_finished.connect(_on_world_action_finished)
-    _message("SYSTEM", "Connected to CAM 01. Type an instruction to talk to Eli.")
-    _message("SYSTEM", "Run the Python bridge on localhost:8765 first. Voice is scheduled for Phase 3.")
+    _message("SYSTEM", "Connected to CAM 01. Type to talk, or hold V / HOLD TO TALK for local voice.")
+    _message("SYSTEM", "Eli's speech and microphone transcription run offline. Subtitles remain available.")
     call_deferred("_restore_input_focus")
     call_deferred("_refocus_on_next_frame")
 
@@ -91,10 +121,10 @@ func _build_ui() -> void:
     world = WorldScript.new()
     viewport.add_child(world)
 
-    var cam_status := Label.new()
-    cam_status.text = "AUDIO LINK: STANDBY       ◦       VIDEO FEED: ACTIVE"
-    cam_status.add_theme_color_override("font_color", Color("7e9ba9"))
-    left.add_child(cam_status)
+    audio_link_status = Label.new()
+    audio_link_status.text = "AUDIO LINK: CONNECTING       ◦       VIDEO FEED: ACTIVE"
+    audio_link_status.add_theme_color_override("font_color", Color("7e9ba9"))
+    left.add_child(audio_link_status)
 
     var right := VBoxContainer.new()
     right.custom_minimum_size.x = 300
@@ -125,6 +155,57 @@ func _build_ui() -> void:
     send_button.focus_mode = Control.FOCUS_NONE
     send_button.pressed.connect(_send_pressed)
     right.add_child(send_button)
+    var voice_row := HBoxContainer.new()
+    voice_row.add_theme_constant_override("separation", 5)
+    right.add_child(voice_row)
+    microphone_button = Button.new()
+    microphone_button.text = "HOLD TO TALK (V)"
+    microphone_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    microphone_button.focus_mode = Control.FOCUS_NONE
+    microphone_button.disabled = true
+    microphone_button.button_down.connect(_start_microphone_recording)
+    microphone_button.button_up.connect(_stop_microphone_recording)
+    voice_row.add_child(microphone_button)
+    voice_mute_button = CheckButton.new()
+    voice_mute_button.text = "MUTE"
+    voice_mute_button.focus_mode = Control.FOCUS_NONE
+    voice_mute_button.toggled.connect(_on_voice_muted)
+    voice_row.add_child(voice_mute_button)
+    voice_text_only_button = CheckButton.new()
+    voice_text_only_button.text = "TEXT ONLY"
+    voice_text_only_button.focus_mode = Control.FOCUS_NONE
+    voice_text_only_button.toggled.connect(_on_text_only)
+    voice_row.add_child(voice_text_only_button)
+    var setting_row := HBoxContainer.new()
+    setting_row.add_theme_constant_override("separation", 6)
+    right.add_child(setting_row)
+    var sensitivity_label := Label.new()
+    sensitivity_label.text = "MIC"
+    setting_row.add_child(sensitivity_label)
+    sensitivity_slider = HSlider.new()
+    sensitivity_slider.custom_minimum_size.x = 58
+    sensitivity_slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    sensitivity_slider.min_value = 0.0
+    sensitivity_slider.max_value = 1.0
+    sensitivity_slider.step = 0.05
+    sensitivity_slider.value_changed.connect(_on_sensitivity_changed)
+    setting_row.add_child(sensitivity_slider)
+    var volume_label := Label.new()
+    volume_label.text = "VOICE"
+    setting_row.add_child(volume_label)
+    volume_slider = HSlider.new()
+    volume_slider.custom_minimum_size.x = 58
+    volume_slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    volume_slider.min_value = 0.0
+    volume_slider.max_value = 1.0
+    volume_slider.step = 0.05
+    volume_slider.value_changed.connect(_on_voice_volume_changed)
+    setting_row.add_child(volume_slider)
+    voice_skip_button = Button.new()
+    voice_skip_button.text = "SKIP"
+    voice_skip_button.focus_mode = Control.FOCUS_NONE
+    voice_skip_button.pressed.connect(_skip_eli_voice)
+    setting_row.add_child(voice_skip_button)
     update_button = Button.new()
     update_button.text = "CHECK FOR UPDATES"
     update_button.focus_mode = Control.FOCUS_NONE
@@ -138,6 +219,8 @@ func _build_ui() -> void:
 
 func _message(speaker: String, text: String) -> void:
     log_view.append_text("[" + speaker + "] " + text + "\n\n")
+    if speaker == "ELI":
+        _queue_eli_speech(text)
 
 func _send_pressed() -> void:
     _submit(input.text)
@@ -147,7 +230,7 @@ func _send_pressed() -> void:
 
 func _submit(message: String) -> void:
     var trimmed := message.strip_edges()
-    if trimmed.is_empty() or request_stage != "idle" or world.busy:
+    if trimmed.is_empty() or request_stage != "idle" or world.busy or transcribing:
         return
     if trimmed.length() > 600:
         _message("SYSTEM", "Message is too long (maximum 600 characters).")
@@ -312,6 +395,24 @@ func _idle() -> void:
 func _notification(what: int) -> void:
     if what == NOTIFICATION_WM_WINDOW_FOCUS_IN:
         call_deferred("_restore_input_focus")
+    elif what == NOTIFICATION_WM_WINDOW_FOCUS_OUT and microphone_recording:
+        _stop_microphone_recording()
+
+func _input(event: InputEvent) -> void:
+    if event is InputEventKey:
+        var key: InputEventKey = event
+        if key.keycode != KEY_V or key.echo or key.ctrl_pressed or key.alt_pressed or key.meta_pressed:
+            return
+        # Preserve normal V typing when a written message is being composed.
+        if key.pressed and not microphone_recording:
+            if is_instance_valid(input) and not input.text.is_empty():
+                return
+            if _can_record_microphone():
+                _start_microphone_recording()
+                get_viewport().set_input_as_handled()
+        elif not key.pressed and microphone_recording:
+            _stop_microphone_recording()
+            get_viewport().set_input_as_handled()
 
 
 func _restore_input_focus() -> void:
@@ -441,6 +542,7 @@ func _new_game() -> void:
     world.reset_state()
     log_view.clear()
     _save()
+    _stop_all_voice()
     _message("SYSTEM", "New session. Eli's room and conversation have been reset.")
     call_deferred("_restore_input_focus")
 
@@ -450,6 +552,14 @@ func _load_save() -> void:
         session_id = str(cfg.get_value("session", "id", ""))
         var saved_world: Dictionary = cfg.get_value("world", "state", {})
         world.restore_state(saved_world)
+        voice_muted = bool(cfg.get_value("voice", "muted", false))
+        text_only = bool(cfg.get_value("voice", "text_only", false))
+        microphone_sensitivity = clampf(float(cfg.get_value("voice", "sensitivity", 0.35)), 0.0, 1.0)
+        voice_volume = clampf(float(cfg.get_value("voice", "volume", 0.80)), 0.0, 1.0)
+        voice_mute_button.set_pressed_no_signal(voice_muted)
+        voice_text_only_button.set_pressed_no_signal(text_only)
+        sensitivity_slider.set_value_no_signal(microphone_sensitivity)
+        volume_slider.set_value_no_signal(voice_volume)
     if session_id.is_empty() or session_id.contains("."):
         session_id = "eli_" + str(int(Time.get_unix_time_from_system())) + "_" + str(randi_range(1000,9999))
         _save()
@@ -458,6 +568,256 @@ func _save() -> void:
     var cfg := ConfigFile.new()
     cfg.set_value("session", "id", session_id)
     cfg.set_value("world", "state", world.export_state())
+    cfg.set_value("voice", "muted", voice_muted)
+    cfg.set_value("voice", "text_only", text_only)
+    cfg.set_value("voice", "sensitivity", microphone_sensitivity)
+    cfg.set_value("voice", "volume", voice_volume)
     var error := cfg.save(_save_path())
     if error != OK:
         push_warning("Couldn't write save game: " + str(error))
+
+
+# Voice is optional. There is no cloud fallback and no second input/action path.
+# The same transcript is always passed into _submit just like a typed message.
+func _setup_voice() -> void:
+    voice_status_http = HTTPRequest.new()
+    voice_status_http.timeout = 6.0
+    add_child(voice_status_http)
+    voice_status_http.request_completed.connect(_on_voice_status)
+    voice_stt_http = HTTPRequest.new()
+    voice_stt_http.timeout = 105.0
+    add_child(voice_stt_http)
+    voice_stt_http.request_completed.connect(_on_voice_transcription)
+    voice_tts_http = HTTPRequest.new()
+    voice_tts_http.timeout = 105.0
+    add_child(voice_tts_http)
+    voice_tts_http.request_completed.connect(_on_eli_wav)
+    eli_voice_player = AudioStreamPlayer.new()
+    add_child(eli_voice_player)
+    eli_voice_player.finished.connect(_play_next_eli_chunk)
+    _set_voice_volume()
+    var bus_index := AudioServer.get_bus_index(MIC_BUS)
+    if bus_index < 0:
+        AudioServer.add_bus()
+        bus_index = AudioServer.bus_count - 1
+        AudioServer.set_bus_name(bus_index, MIC_BUS)
+    # Never loop the player's microphone through the speakers.
+    AudioServer.set_bus_mute(bus_index, true)
+    mic_recorder = AudioEffectRecord.new()
+    mic_recorder.format = AudioStreamWAV.FORMAT_16_BITS
+    AudioServer.add_bus_effect(bus_index, mic_recorder)
+    mic_player = AudioStreamPlayer.new()
+    mic_player.stream = AudioStreamMicrophone.new()
+    mic_player.bus = MIC_BUS
+    add_child(mic_player)
+    if text_only:
+        audio_link_status.text = "AUDIO LINK: TEXT ONLY       ◦       VIDEO FEED: ACTIVE"
+    if voice_status_http.request(BRIDGE_URL + "/api/voice/status") != OK:
+        _message("SYSTEM", "Voice engine unavailable. Typing still works.")
+
+func _on_voice_status(result: int, code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:
+    if result == HTTPRequest.RESULT_SUCCESS and code == 200:
+        var data = JSON.parse_string(body.get_string_from_utf8())
+        if typeof(data) == TYPE_DICTIONARY:
+            stt_ready = bool(data.get("stt_ready", false))
+            tts_ready = bool(data.get("tts_ready", false))
+    microphone_button.disabled = not stt_ready or text_only
+    if not text_only:
+        audio_link_status.text = ("AUDIO LINK: PUSH TO TALK (V)" if stt_ready
+                                 else "AUDIO LINK: TEXT ONLY / MIC UNAVAILABLE") + "       ◦       VIDEO FEED: ACTIVE"
+    if stt_ready and tts_ready:
+        _message("SYSTEM", "Microphone and Eli's local voice ready. Hold V, release to transmit.")
+    elif not stt_ready or not tts_ready:
+        _message("SYSTEM", "Some offline voice components are unavailable. Text conversation still works.")
+
+func _can_record_microphone() -> bool:
+    return (stt_ready and not text_only and not microphone_recording and not transcribing
+            and request_stage == "idle" and not world.busy and update_stage.is_empty()
+            and not update_dialog.visible)
+
+func _start_microphone_recording() -> void:
+    if not _can_record_microphone():
+        return
+    _skip_eli_voice()
+    microphone_recording = true
+    microphone_started_ms = Time.get_ticks_msec()
+    mic_player.play()
+    mic_recorder.set_recording_active(true)
+    microphone_button.text = "RECORDING... RELEASE"
+    status.text = "Listening to your microphone..."
+    audio_link_status.text = "AUDIO LINK: RECORDING       ◦       VIDEO FEED: ACTIVE"
+
+func _process(_delta: float) -> void:
+    if microphone_recording and Time.get_ticks_msec() - microphone_started_ms >= MAX_RECORD_MS:
+        _stop_microphone_recording()
+
+func _stop_microphone_recording() -> void:
+    if not microphone_recording:
+        return
+    microphone_recording = false
+    var duration_ms := Time.get_ticks_msec() - microphone_started_ms
+    var recorded: AudioStreamWAV = mic_recorder.get_recording()
+    mic_recorder.set_recording_active(false)
+    mic_player.stop()
+    microphone_button.text = "HOLD TO TALK (V)"
+    audio_link_status.text = "AUDIO LINK: PROCESSING       ◦       VIDEO FEED: ACTIVE"
+    if duration_ms < 350 or recorded == null:
+        _message("SYSTEM", "Hold V while speaking, then release.")
+        _voice_ready()
+        return
+    var wav_path := _save_path().get_base_dir().path_join(".tlc-mic-temp.wav")
+    if recorded.save_to_wav(wav_path) != OK:
+        _message("SYSTEM", "Couldn't capture microphone audio. Try typing instead.")
+        _voice_ready()
+        return
+    var samples: PackedByteArray = FileAccess.get_file_as_bytes(wav_path)
+    DirAccess.remove_absolute(wav_path)
+    if samples.size() < 50 or samples.size() > 6000000:
+        _message("SYSTEM", "Microphone recording was empty or too large.")
+        _voice_ready()
+        return
+    transcribing = true
+    send_button.disabled = true
+    status.text = "Transcribing your voice locally..."
+    var payload := JSON.stringify({
+        "wav_b64": Marshalls.raw_to_base64(samples),
+        "sensitivity": microphone_sensitivity
+    })
+    var result := voice_stt_http.request(
+        BRIDGE_URL + "/api/voice/transcribe",
+        PackedStringArray(["Content-Type: application/json"]),
+        HTTPClient.METHOD_POST, payload)
+    if result != OK:
+        transcribing = false
+        _message("SYSTEM", "Couldn't send the microphone recording to local speech recognition.")
+        _voice_ready()
+
+func _on_voice_transcription(result: int, response_code: int, _headers: PackedStringArray,
+        body: PackedByteArray) -> void:
+    transcribing = false
+    if result != HTTPRequest.RESULT_SUCCESS or response_code != 200:
+        var reply = JSON.parse_string(body.get_string_from_utf8())
+        var detail := str(reply.get("error", "No clear words were recognized.") if
+            typeof(reply) == TYPE_DICTIONARY else "Microphone transcription failed.")
+        _message("SYSTEM", detail.left(240))
+        _voice_ready()
+        return
+    var decoded = JSON.parse_string(body.get_string_from_utf8())
+    if typeof(decoded) != TYPE_DICTIONARY:
+        _message("SYSTEM", "Local speech transcription returned invalid data.")
+        _voice_ready()
+        return
+    var words := str(decoded.get("transcript", "")).strip_edges()
+    if words.is_empty():
+        _message("SYSTEM", "Couldn't hear clear words. Please try again.")
+        _voice_ready()
+        return
+    _voice_ready()
+    # One authoritative input path: transcripts are text, not a new engine API.
+    _submit(words)
+
+func _voice_ready() -> void:
+    if request_stage == "idle" and not world.busy:
+        status.text = "Ready"
+        send_button.disabled = false
+    microphone_button.disabled = text_only or not stt_ready
+    audio_link_status.text = ("AUDIO LINK: TEXT ONLY" if text_only else
+        "AUDIO LINK: PUSH TO TALK (V)" if stt_ready else
+        "AUDIO LINK: MIC UNAVAILABLE") + "       ◦       VIDEO FEED: ACTIVE"
+    call_deferred("_restore_input_focus")
+
+func _queue_eli_speech(speech: String) -> void:
+    if text_only or voice_muted or not tts_ready or not is_instance_valid(voice_tts_http):
+        return
+    # Preserve the complete subtitle. Long lines are spoken in sequential
+    # chunks; speech is never truncated mid-sentence by a character limit.
+    var chunks := speech.split(" ", false)
+    var current := ""
+    for word in chunks:
+        if word.length() > 1100:
+            continue
+        if not current.is_empty() and current.length() + word.length() + 1 > 420:
+            voice_speaking_queue.append(current)
+            current = ""
+        current += ("" if current.is_empty() else " ") + word
+    if not current.is_empty():
+        voice_speaking_queue.append(current)
+    _play_next_eli_chunk()
+
+func _play_next_eli_chunk() -> void:
+    if text_only or voice_muted or tts_pending or eli_voice_player.playing:
+        return
+    if voice_speaking_queue.is_empty():
+        return
+    var segment: String = voice_speaking_queue.pop_front()
+    tts_pending = true
+    var result := voice_tts_http.request(BRIDGE_URL + "/api/voice/speak",
+        PackedStringArray(["Content-Type: application/json"]),
+        HTTPClient.METHOD_POST, JSON.stringify({"text": segment}))
+    if result != OK:
+        tts_pending = false
+        _message("SYSTEM", "Eli's local speech engine is unavailable. Subtitles still work.")
+
+func _on_eli_wav(result: int, response_code: int, _headers: PackedStringArray,
+        body: PackedByteArray) -> void:
+    tts_pending = false
+    if text_only or voice_muted:
+        return
+    if result != HTTPRequest.RESULT_SUCCESS or response_code != 200:
+        tts_ready = false
+        voice_speaking_queue.clear()
+        _message("SYSTEM", "Eli's voice couldn't be generated. His subtitles still work.")
+        return
+    var stream: AudioStreamWAV = AudioStreamWAV.load_from_buffer(body)
+    if stream == null:
+        _message("SYSTEM", "Eli's voice returned invalid audio. Subtitles still work.")
+        _play_next_eli_chunk()
+        return
+    eli_voice_player.stream = stream
+    _set_voice_volume()
+    eli_voice_player.play()
+
+func _skip_eli_voice() -> void:
+    voice_speaking_queue.clear()
+    if is_instance_valid(eli_voice_player):
+        eli_voice_player.stop()
+    if is_instance_valid(voice_tts_http) and tts_pending:
+        voice_tts_http.cancel_request()
+        tts_pending = false
+
+func _stop_all_voice() -> void:
+    _skip_eli_voice()
+    if microphone_recording:
+        microphone_recording = false
+        mic_recorder.set_recording_active(false)
+        mic_player.stop()
+    if transcribing:
+        voice_stt_http.cancel_request()
+        transcribing = false
+    _voice_ready()
+
+func _on_voice_muted(enabled: bool) -> void:
+    voice_muted = enabled
+    if enabled:
+        _skip_eli_voice()
+    _save()
+
+func _on_text_only(enabled: bool) -> void:
+    text_only = enabled
+    if enabled:
+        _stop_all_voice()
+    _voice_ready()
+    _save()
+
+func _on_sensitivity_changed(value: float) -> void:
+    microphone_sensitivity = value
+    _save()
+
+func _on_voice_volume_changed(value: float) -> void:
+    voice_volume = value
+    _set_voice_volume()
+    _save()
+
+func _set_voice_volume() -> void:
+    if is_instance_valid(eli_voice_player):
+        eli_voice_player.volume_db = linear_to_db(maxf(0.001, voice_volume))
