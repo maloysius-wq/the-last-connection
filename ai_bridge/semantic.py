@@ -29,6 +29,10 @@ NEGATION = re.compile(r"\b(?:do\s+not|don't|dont|never|not\s+to|"
                       r"shouldn't|should\s+not|stop\s+(?:touching|using|"
                       r"opening|pressing|turning|picking|grabbing|trying))\b", re.I)
 PRONOUN = re.compile(r"\b(?:it|that|this|one|there|them)\b", re.I)
+# Seeing or describing a prop never itself authorizes touching it.
+OBSERVATION_PREFIX = re.compile(
+    r"^\s*(?:i\s+(?:can\s+)?see|i\s+(?:am|'m)\s+looking\s+at|"
+    r"there\s+(?:is|are|'s|'re)|you\s+(?:can\s+)?see)\b", re.I)
 # Colloquial suggestions can be real directives; these are exceptions to the
 # generic question/negation safeguard, not a command-phrase dictionary.
 SUGGESTION_REQUEST = re.compile(
@@ -290,7 +294,7 @@ def _non_command_context(message: str, start: int, evidence: str) -> bool:
     if suggested_directive:
         # "Why don't you try..." is a positive request, not a prohibition.
         local = SUGGESTION_REQUEST.sub("", local, count=1)
-    return bool(NEGATION.search(local))
+    return bool(NEGATION.search(local) or OBSERVATION_PREFIX.search(local))
 
 
 def validated_steps(raw: Any, message: str, world: dict[str, Any],
