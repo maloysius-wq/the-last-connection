@@ -83,7 +83,7 @@ def clean_transcript(text: str) -> str:
         return ""
     lines = []
     for line in text.splitlines():
-        line = re.sub(r"^\[[0-9:. -]+-->\s*[0-9:. -]+\]\s*", "", line).strip()
+        line = re.sub(r"^\[\s*\d{2}:\d{2}:\d{2}\.\d+\s*-->\s*\d{2}:\d{2}:\d{2}\.\d+\s*\]\s*", "", line).strip()
         if not line or re.fullmatch(r"\[(?:BLANK_AUDIO|Music|Silence|Noise)\]", line, re.I):
             continue
         lines.append(line)
