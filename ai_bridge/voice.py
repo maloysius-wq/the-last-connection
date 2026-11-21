@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import audioop
 import io
+import struct
 from pathlib import Path
 import re
 import subprocess
@@ -56,7 +57,7 @@ def normalize_wav(wav_data: bytes, sensitivity: float = 0.20) -> bytes:
             if not MIN_AUDIO_SECONDS <= duration <= MAX_AUDIO_SECONDS:
                 raise VoiceError("Hold V while speaking (between 0.3 and 16 seconds).")
             data = stream.readframes(count)
-    except (EOFError, wave.Error, struct_error(), OSError) as exc:
+    except (EOFError, wave.Error, struct.error, OSError) as exc:
         raise VoiceError("The microphone recording is not a valid WAV file.") from exc
     if channels == 2:
         data = audioop.tomono(data, 2, 0.5, 0.5)
@@ -74,12 +75,6 @@ def normalize_wav(wav_data: bytes, sensitivity: float = 0.20) -> bytes:
         dst.setframerate(16000)
         dst.writeframes(data)
     return sink.getvalue()
-
-
-def struct_error():
-    # wave may raise struct.error for damaged headers.
-    import struct
-    return struct.error
 
 
 def clean_transcript(text: str) -> str:
