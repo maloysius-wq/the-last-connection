@@ -154,6 +154,25 @@ jobs:
           if ((Get-Item "$voiceRoot/piper/en_US-joe-medium.onnx.json").Length -lt 200) { throw 'Piper synthesis metadata missing' }
           Write-Host 'Offline voice executables and two voice models packaged.'
 
+      - name: Smoke-test native Piper WAV output on Windows
+        shell: pwsh
+        run: |
+          $voiceRoot = Join-Path (Get-Location).Path 'dist/TheLastConnection/runtime/voice'
+          $exe = Join-Path $voiceRoot 'piper/piper.exe'
+          $model = Join-Path $voiceRoot 'piper/en_US-joe-medium.onnx'
+          $output = Join-Path $env:RUNNER_TEMP 'tlc-eli-smoke.wav'
+          'Eli here. Can you hear me?' | & $exe --model $model --output_file $output
+          if ($LASTEXITCODE -ne 0) { throw "Piper failed with code $LASTEXITCODE" }
+          if (!(Test-Path $output)) { throw "Piper produced no WAV" }
+          $audio = [System.IO.File]::ReadAllBytes($output)
+          if ($audio.Length -lt 2048 -or
+              [Text.Encoding]::ASCII.GetString($audio, 0, 4) -ne 'RIFF' -or
+              [Text.Encoding]::ASCII.GetString($audio, 8, 4) -ne 'WAVE') {
+            throw 'Piper produced an invalid or empty WAV'
+          }
+          Remove-Item $output -Force
+          Write-Host 'Piper actually spoke into a valid offline WAV on Windows.'
+
       - name: Include portable guide and exact version metadata
         shell: pwsh
         run: |
