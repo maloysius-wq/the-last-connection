@@ -182,6 +182,14 @@ class TestScreenshotPlanRecovery(unittest.TestCase):
         self.assertEqual(decision.actions, ())
         self.assertEqual(decision.action, "wait")
 
+    def test_observing_a_door_is_not_a_command_to_walk_to_it(self):
+        text = "I see the exit door. Go pick up that flashlight."
+        with self.assertRaises(PlanRejected):
+            validated_steps([
+                step("move_to", "exit_door", "I see the exit door"),
+                step("take", "flashlight", "pick up that flashlight"),
+            ], text, world())
+
     def test_no_hypothetical_side_effects(self):
         text = "What if you picked up the flashlight and opened the door?"
         plan = [
