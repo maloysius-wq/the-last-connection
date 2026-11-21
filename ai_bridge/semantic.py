@@ -138,7 +138,12 @@ INSTRUCTIONS = (
     "CONTIGUOUS quotation from the CURRENT user message authorizing that "
     "particular act (verbatim words, in original order). Never quote previous "
     "turns or world descriptions as evidence. Use one different evidence span "
-    "per step. An ambiguous reference, mixed-up targets, missing code, or "
+    "per step. Quote just the action words, not the entire multi-step "
+    "sentence; for example, 'grab that flashlight, turn it on, and look "
+    "around' uses evidence 'grab that flashlight', 'turn it on', and "
+    "'look around'. If asked to report what you see after looking around, "
+    "one room survey already includes the report. "
+    "An ambiguous reference, mixed-up targets, missing code, or "
     "uncertain instruction requires kind=clarify, steps=[] and a natural "
     "question. A clearly requested action uses kind=action. For flashlight "
     "use argument=on/off when specified, else empty. Enter_code needs the "
@@ -187,7 +192,11 @@ REVIEW_INSTRUCTIONS = (
     "Return kind=action with the COMPLETE, ORDERED list of 1-5 requested "
     "steps. Each step includes action, target, argument and a separate "
     "evidence quote taken EXACTLY AND CONTIGUOUSLY from this current user "
-    "message, in sequence. Only actions: move_to, inspect, take, use, "
+    "message, in sequence. Quote the smallest distinct action fragments, "
+    "not the whole player sentence for every step. An instruction like "
+    "'grab that flashlight, turn it on and look around' has evidence "
+    "'grab that flashlight', 'turn it on', 'look around'. "
+    "Only actions: move_to, inspect, take, use, "
     "enter_code, survey. Valid targets: flashlight, breaker_box, keypad, "
     "exit_door, maintenance_note, room (survey only). "
     "Flashlight switch ON requires argument=on; switch OFF uses argument=off. "
@@ -227,12 +236,29 @@ class PlanRejected(Exception):
 
 
 def _find_span(message: str, evidence: str, cursor: int) -> tuple[int, int]:
+    """Find exact quoted player words, allowing whitespace or broad quotes.
+
+    The GGUF sometimes quotes an entire joined instruction for its first
+    step, then cites a later phrase inside that quote. Require distinct,
+    ascending *starts*, rather than non-overlapping spans. A second action
+    cannot reuse the same quote/start to gain additional permission.
+    """
     if not isinstance(evidence, str) or not 3 <= len(evidence) <= 180:
         raise PlanRejected("Missing a short exact quotation for an action")
-    start = message.casefold().find(evidence.casefold(), cursor)
+    quote = evidence.strip()
+    start = message.casefold().find(quote.casefold(), cursor)
+    end = start + len(quote)
+    if start < 0:
+        # Preserve the actual quoted WORDS but tolerate different formatting
+        # of whitespace and harmless surrounding quotation marks.
+        quote = quote.strip(" \\"'“”‘’")
+        pattern = r"\\s+".join(re.escape(part) for part in quote.split())
+        found = re.search(pattern, message[cursor:], re.I) if pattern else None
+        if found:
+            start, end = cursor + found.start(), cursor + found.end()
     if start < 0:
         raise PlanRejected("Model action is not quoted from this player turn")
-    return start, start + len(evidence)
+    return start, end
 
 
 def _non_command_context(message: str, start: int, evidence: str) -> bool:
@@ -272,9 +298,13 @@ def validated_steps(raw: Any, message: str, world: dict[str, Any],
                 not isinstance(target, str) or not isinstance(argument, str)):
             raise PlanRejected("Unknown action, object, or argument")
         start, end = _find_span(message, quote, cursor)
-        cursor = end  # No reused, overlapping or out-of-order evidence.
+        cursor = start + 1  # distinct ordered starts; nested broad quotes okay.
         if _non_command_context(message, start, quote):
             raise PlanRejected("A hypothetical or negated request cannot authorize action")
+        # Inspecting the whole room is the engine's survey operation.
+        # This is an action synonym, not another player-phrase dictionary.
+        if action == "inspect" and target == "room":
+            action = "survey"
         if action == "survey":
             if target != "room" or argument:
                 raise PlanRejected("Survey is only valid for the visible room")
