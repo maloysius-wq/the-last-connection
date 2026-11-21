@@ -549,12 +549,20 @@ class Agent:
                 else:
                     raw = self.backend.interpret(
                         self._messages(state, player_text, semantic=True, world=world))
-                    if (isinstance(raw, dict) and raw.get("kind") == "action" and
-                            needs_action_review(player_text, raw.get("steps", [])) and
-                            callable(getattr(self.backend, "review", None))):
-                        # Review compound plans for *missing steps*, but do
-                        # not let a second small-model inference contradict a
-                        # grounded one-step command such as "Turn it on!".
+                    can_review = callable(getattr(self.backend, "review", None))
+                    review_required = (
+                        isinstance(raw, dict) and can_review and (
+                            (raw.get("kind") == "action" and
+                             needs_action_review(player_text, raw.get("steps", []))) or
+                            (raw.get("kind") in ("clarify", "conversation") and
+                             contains_explicit_action_request(player_text))
+                        )
+                    )
+                    if review_required:
+                        # In addition to detecting missing steps, this can
+                        # recover an explicit action request misclassified as
+                        # conversation or clarify by the first small-model
+                        # pass. Both paths still require full world validation.
                         try:
                             audit = self.backend.review(
                                 review_messages(player_text, raw.get("steps", []),
