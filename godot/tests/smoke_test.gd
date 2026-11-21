@@ -72,6 +72,28 @@ func _run() -> void:
             "Terminal preserves full responses beyond the old 650-character cutoff")
         _expect(entry.has_focus(), "Chat focus is restored immediately when READY is shown")
         entry.clear()
+    # Phase 3 voice is opt-in and must not replace keyboard, subtitles or
+    # the saved action queue when no microphone/AI engine exists in CI.
+    var mic_control: Button = app.get("microphone_button")
+    var mute_control: CheckButton = app.get("voice_mute_button")
+    var text_mode: CheckButton = app.get("voice_text_only_button")
+    _expect(mic_control != null and mute_control != null and text_mode != null,
+        "Voice push-to-talk, mute and text-only controls exist")
+    _expect(app.get("mic_recorder") != null and app.get("eli_voice_player") != null,
+        "Godot initializes capture and synthesized speech playback")
+    _expect(app.get("voice_stt_http") != null and app.get("voice_tts_http") != null,
+        "Mic and speech have separate HTTP clients from the action queue")
+    if mic_control != null and text_mode != null:
+        _expect(mic_control.focus_mode == Control.FOCUS_NONE,
+            "Holding the microphone button does not steal chat keyboard focus")
+        app.call("_on_text_only", true)
+        app.call("_start_microphone_recording")
+        _expect(not bool(app.get("microphone_recording")),
+            "Text-only mode physically disables microphone capture")
+        app.call("_message", "ELI", "This reply stays visible without voice hardware.")
+        _expect("This reply stays visible" in str(app.get("log_view").get_parsed_text()),
+            "Eli's subtitles remain when speech output is disabled")
+        app.call("_on_text_only", false)
     # A prior focus-exited callback forced the input to grab focus while the
     # player was clicking CHECK FOR UPDATES, potentially canceling its press.
     var update_btn: Button = app.get("update_button")

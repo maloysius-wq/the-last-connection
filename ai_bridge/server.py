@@ -2,18 +2,22 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 from dataclasses import asdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
 
 from .agent import Agent, AgentError, BackendUnavailable, InvalidRequest, MockBackend, OllamaBackend, SessionStore, MODEL
+from .voice import LocalVoiceService, VoiceError, VoiceUnavailable, MAX_WAV_BYTES
 
 ROOT = Path(__file__).resolve().parent.parent
 MAX_BODY = 16_384
 
 
-def create_handler(agent: Agent, mode: str, updater=None):
+def create_handler(agent: Agent, mode: str, updater=None,
+                   voice: LocalVoiceService | None = None):
     class Handler(BaseHTTPRequestHandler):
         def _send(self, code: int, payload: dict):
             body = json.dumps(payload).encode("utf-8")
@@ -23,6 +27,25 @@ def create_handler(agent: Agent, mode: str, updater=None):
             self.end_headers()
             self.wfile.write(body)
 
+        def _send_wav(self, pcm_wav: bytes):
+            self.send_response(200)
+            self.send_header("Content-Type", "audio/wav")
+            self.send_header("Content-Length", str(len(pcm_wav)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(pcm_wav)
+
+        def _read_voice_json(self, maximum: int) -> dict:
+            if self.headers.get("Content-Type", "").split(";")[0].strip().lower() != "application/json":
+                raise InvalidRequest("Voice requests require application/json.")
+            length = int(self.headers.get("Content-Length", "0"))
+            if not 0 < length <= maximum:
+                raise InvalidRequest("Voice request is empty or too large.")
+            payload = json.loads(self.rfile.read(length))
+            if not isinstance(payload, dict):
+                raise InvalidRequest("Voice request must contain a JSON object.")
+            return payload
+
         def do_GET(self):
             if self.path == "/api/update/check" and updater is not None:
                 try:
@@ -30,11 +53,46 @@ def create_handler(agent: Agent, mode: str, updater=None):
                 except Exception as exc:
                     # Update checks never interrupt AI gameplay.
                     return self._send(503, {"error": str(exc)[:300]})
+            if self.path == "/api/voice/status":
+                return self._send(200, voice.status() if voice is not None else {
+                    "stt_ready": False, "tts_ready": False, "offline": True,
+                    "push_to_talk": "hold_v",
+                })
             if self.path == "/api/health":
-                return self._send(200, {"ok": True, "backend": mode, "model": MODEL if mode == "ollama" else "mock", "voice_ready": False})
+                ready = voice.status() if voice is not None else {}
+                return self._send(200, {"ok": True, "backend": mode,
+                    "model": MODEL if mode == "ollama" else "mock",
+                    "voice_ready": bool(ready.get("stt_ready") and ready.get("tts_ready"))})
             return self._send(404, {"error": "Not found"})
 
         def do_POST(self):
+            if self.path in ("/api/voice/transcribe", "/api/voice/speak"):
+                if voice is None:
+                    return self._send(503, {"error": "Optional voice runtime is not installed. Text mode still works."})
+                try:
+                    if self.path == "/api/voice/transcribe":
+                        data = self._read_voice_json(8_100_000)
+                        encoded = data.get("wav_b64", "")
+                        if not isinstance(encoded, str) or len(encoded) > 8_000_000:
+                            raise VoiceError("Microphone recording is too large.")
+                        try:
+                            wav = base64.b64decode(encoded, validate=True)
+                        except (ValueError, binascii.Error) as exc:
+                            raise VoiceError("Invalid microphone audio encoding.") from exc
+                        if len(wav) > MAX_WAV_BYTES:
+                            raise VoiceError("Microphone recording is too large.")
+                        transcript = voice.transcribe(wav, data.get("sensitivity", 0.20))
+                        return self._send(200, {"transcript": transcript})
+                    data = self._read_voice_json(2_000)
+                    audio = voice.synthesize(data.get("text", ""))
+                    return self._send_wav(audio)
+                except VoiceUnavailable as exc:
+                    return self._send(503, {"error": str(exc)})
+                except (VoiceError, InvalidRequest, ValueError, TypeError, json.JSONDecodeError) as exc:
+                    return self._send(400, {"error": str(exc)})
+                except Exception:
+                    # Do not spill paths or microphone buffers through HTTP.
+                    return self._send(503, {"error": "Local voice processing failed. Text mode is available."})
             if self.path == "/api/update/request":
                 if updater is None:
                     return self._send(404, {"error": "Updater is only available in the portable game."})
