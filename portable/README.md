@@ -43,7 +43,7 @@ copied, deleted or moved automatically.
 - The operating system and drivers can still create some small temporary/cache files
   in user profile folders on C:. We avoid **large AI model duplication** on C:.
 - This build attempts **Vulkan GPU inference** first (NVIDIA/AMD/Intel with working Vulkan drivers), then partial GPU offload, and falls back to CPU automatically. Set `\"acceleration\": \"cpu\"` in `config.json` to force CPU mode.\n- After launching, inspect `logs/runtime-status.json` for `gpu_active` and `acceleration`. GPU support and performance depend on driver, VRAM, and model.
-- **Voice and typing share the same AI/action logic.** Hold **V** (when the text box is empty) or the **HOLD TO TALK** button, speak, and release. The recorded audio is transcribed by bundled local whisper.cpp, then the transcript is sent as a normal message to Eli. The release sends no voice data to the cloud.
+- **Voice and typing share the same AI/action logic.** Hold **Alt+V** while the text box is focused, **V** after clicking outside the text editor, or the **HOLD TO TALK** button, speak, and release. The recorded audio is transcribed by bundled local whisper.cpp, then the transcript is sent as a normal message to Eli. The release sends no voice data to the cloud.
 - Eli's dialogue and verified action reactions are spoken using bundled Piper, while the full text continues to appear in the terminal. **MUTE**, **TEXT ONLY**, the **SKIP** button, and **MIC/VOICE** sliders are available below TRANSMIT.
 - Voice input is push-to-talk, never always-listening. Recognition requires an enabled Windows microphone device and Windows microphone permission. Keep your audio driver input enabled. Each recording is capped at 15 seconds; the temporary WAV is deleted after processing.
 - The Windows package includes the offline whisper.cpp runtime, a small English speech-recognition model, Piper, and the en_US-joe-medium voice model (pinned historical version for the packaged Piper executable). The first launch needs no additional speech-model download. If a voice asset or microphone is unavailable, typed conversation and subtitles still work.
@@ -90,7 +90,7 @@ the new release-download channel is permanent.
 
 ## Voice troubleshooting and privacy
 
-**Hold V** with an empty input box, or hold the on-screen button. Release after speaking. If the microphone is unavailable, check Windows **Settings > Privacy & security > Microphone**, your input device, and audio input permissions for desktop apps. The **MIC** slider adjusts the silence/noise threshold, not your operating system's device gain.
+**Hold Alt+V** from the focused text editor, **V** outside it, or hold the on-screen button. Release after speaking. If the microphone is unavailable, check Windows **Settings > Privacy & security > Microphone**, your input device, and audio input permissions for desktop apps. The **MIC** slider adjusts the silence/noise threshold, not your operating system's device gain.
 
 If recognition is inaccurate, use a quiet microphone and short, clear statements or type normally. Eli's captions always remain visible, even if synthesis fails or is muted. Press **SKIP** to cut off his current voice output without deleting the transcript. **TEXT ONLY** disables both incoming microphone capture and outgoing synthesis.
 
