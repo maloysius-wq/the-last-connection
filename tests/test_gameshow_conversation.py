@@ -124,7 +124,8 @@ class TestCameraAndConversationRelevance(unittest.TestCase):
     def test_does_not_discard_verified_observations(self):
         answer, _ = self.speak(
             "What do you see in there?",
-            "I can see a keypad and a locked door. The overhead lights are out.")
+            "I can see a keypad and a locked door. The overhead lights are out.",
+            semantic=True)
         self.assertIn("keypad and a locked door", answer)
         self.assertIn("overhead lights are out", answer)
 
