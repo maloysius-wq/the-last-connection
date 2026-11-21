@@ -159,7 +159,7 @@ func _build_ui() -> void:
     voice_row.add_theme_constant_override("separation", 5)
     right.add_child(voice_row)
     microphone_button = Button.new()
-    microphone_button.text = "HOLD TO TALK (V)"
+    microphone_button.text = "HOLD TO TALK"
     microphone_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
     microphone_button.focus_mode = Control.FOCUS_NONE
     microphone_button.disabled = true
@@ -401,11 +401,15 @@ func _notification(what: int) -> void:
 func _input(event: InputEvent) -> void:
     if event is InputEventKey:
         var key: InputEventKey = event
-        if key.keycode != KEY_V or key.echo or key.ctrl_pressed or key.alt_pressed or key.meta_pressed:
+        if key.keycode != KEY_V or key.echo or key.ctrl_pressed or key.meta_pressed:
             return
-        # Preserve normal V typing when a written message is being composed.
+        # Plain V is push-to-talk while the user is NOT editing a message.
+        # Alt+V works even with chat focused. Never steal the first V from a
+        # message like "Very...", and never shadow Ctrl+V clipboard paste.
         if key.pressed and not microphone_recording:
-            if is_instance_valid(input) and not input.text.is_empty():
+            if not key.alt_pressed and is_instance_valid(input) and input.has_focus():
+                return
+            if not key.alt_pressed and is_instance_valid(input) and not input.text.is_empty():
                 return
             if _can_record_microphone():
                 _start_microphone_recording()
