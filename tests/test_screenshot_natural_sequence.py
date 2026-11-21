@@ -111,6 +111,29 @@ class TestScreenshotPlanRecovery(unittest.TestCase):
             SCREENSHOT, proposed("action", FULL_PLAN), audited(reviewed))
         self.assert_complete(result)
 
+    def test_first_pass_only_walked_but_reviewer_completed_request(self):
+        first = [step("move_to", "flashlight", "Go pick up that flashlight")]
+        result, _ = self.decide(
+            SCREENSHOT, proposed("action", first), audited(FULL_PLAN))
+        self.assert_complete(result)
+
+    def test_review_adds_unrelated_extra_action_but_original_is_complete(self):
+        player = (
+            "I see the exit door. Go pick up that flashlight, turn it on, "
+            "and then look around the room."
+        )
+        original = [
+            step("take", "flashlight", "pick up that flashlight"),
+            step("use", "flashlight", "turn it on", "on"),
+            step("survey", "room", "look around the room")
+        ]
+        reviewed = [
+            step("move_to", "exit_door", "I see the exit door"),
+            *original
+        ]
+        result, _ = self.decide(player, proposed("action", original), audited(reviewed))
+        self.assert_complete(result)
+
     def test_review_combines_pickup_and_switch_as_one_engine_action(self):
         reviewed = [
             step("use", "flashlight", "turn it on", "on"),
