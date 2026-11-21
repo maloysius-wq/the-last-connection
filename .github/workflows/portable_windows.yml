@@ -111,6 +111,49 @@ jobs:
             }
             Write-Host "$backend llama.cpp server packaged ($((Get-Item $server).Length) bytes)"
           }
+      - name: Bundle fully offline microphone and Eli voice engines
+        shell: pwsh
+        run: |
+          # Whisper and Piper are pinned; no microphone bytes, dialogue or
+          # speech synthesis leave this machine after installation.
+          $voiceRoot = 'dist/TheLastConnection/runtime/voice'
+          New-Item -ItemType Directory -Force -Path "$voiceRoot/whisper","$voiceRoot/piper" | Out-Null
+          $whisperArchive = Join-Path $env:RUNNER_TEMP 'whisper-bin-x64-v1.8.3.zip'
+          Invoke-WebRequest 'https://github.com/ggml-org/whisper.cpp/releases/download/v1.8.3/whisper-bin-x64.zip' -OutFile $whisperArchive
+          $whisperExtract = Join-Path $env:RUNNER_TEMP 'tlc-whisper'
+          Expand-Archive $whisperArchive -DestinationPath $whisperExtract -Force
+          $whisperExe = Get-ChildItem $whisperExtract -Filter whisper-cli.exe -Recurse | Select-Object -First 1
+          if (!$whisperExe) { throw 'Pinned whisper.cpp archive did not contain whisper-cli.exe' }
+          Copy-Item "$($whisperExe.Directory.FullName)/*" "$voiceRoot/whisper/" -Recurse -Force
+          $piperArchive = Join-Path $env:RUNNER_TEMP 'piper_windows_amd64.zip'
+          Invoke-WebRequest 'https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_windows_amd64.zip' -OutFile $piperArchive
+          $piperExtract = Join-Path $env:RUNNER_TEMP 'tlc-piper'
+          Expand-Archive $piperArchive -DestinationPath $piperExtract -Force
+          $piperExe = Get-ChildItem $piperExtract -Filter piper.exe -Recurse | Select-Object -First 1
+          if (!$piperExe) { throw 'Pinned Piper archive did not contain piper.exe' }
+          Copy-Item "$($piperExe.Directory.FullName)/*" "$voiceRoot/piper/" -Recurse -Force
+          # This pinned historic voice is compatible with Piper 2023.11.14.
+          # Its MODEL_CARD identifies Joe as CC0; do not substitute the newer
+          # 1.5+-format weights without upgrading the synthesizer first.
+          $joeBase = 'https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/joe/medium'
+          Invoke-WebRequest "$joeBase/en_US-joe-medium.onnx" -OutFile "$voiceRoot/piper/en_US-joe-medium.onnx"
+          Invoke-WebRequest "$joeBase/en_US-joe-medium.onnx.json" -OutFile "$voiceRoot/piper/en_US-joe-medium.onnx.json"
+          Invoke-WebRequest "$joeBase/MODEL_CARD" -OutFile "$voiceRoot/piper/JOE_MODEL_CARD.txt"
+          Invoke-WebRequest 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en-q5_1.bin' -OutFile "$voiceRoot/whisper/ggml-tiny.en-q5_1.bin"
+          Invoke-WebRequest 'https://raw.githubusercontent.com/ggml-org/whisper.cpp/v1.8.3/LICENSE' -OutFile "$voiceRoot/whisper/WHISPER_LICENSE.txt"
+          Invoke-WebRequest 'https://raw.githubusercontent.com/rhasspy/piper/2023.11.14-2/LICENSE.md' -OutFile "$voiceRoot/piper/PIPER_LICENSE.txt"
+          foreach ($name in @("$voiceRoot/whisper/whisper-cli.exe", "$voiceRoot/piper/piper.exe")) {
+            if (!(Test-Path $name -PathType Leaf)) { throw "Missing voice executable: $name" }
+            $bin = [System.IO.File]::ReadAllBytes((Resolve-Path $name))
+            if ($bin.Length -lt 512 -or $bin[0] -ne 77 -or $bin[1] -ne 90) {
+              throw "Invalid PE voice executable: $name"
+            }
+          }
+          if ((Get-Item "$voiceRoot/whisper/ggml-tiny.en-q5_1.bin").Length -lt 20000000) { throw 'Missing tiny.en speech recognizer model' }
+          if ((Get-Item "$voiceRoot/piper/en_US-joe-medium.onnx").Length -lt 20000000) { throw 'Missing Joe synthesis model' }
+          if ((Get-Item "$voiceRoot/piper/en_US-joe-medium.onnx.json").Length -lt 200) { throw 'Piper synthesis metadata missing' }
+          Write-Host 'Offline voice executables and two voice models packaged.'
+
       - name: Include portable guide and exact version metadata
         shell: pwsh
         run: |
