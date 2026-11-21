@@ -322,7 +322,12 @@ class Agent:
             "When the operator introduces themselves or says they arrived "
             "to help, greet them, acknowledge the strange situation and reply "
             "like a real person. Do not volunteer administrative reports about "
-            "what you haven't touched. When asked about the room, describe "
+            "what you haven't touched. Keep the conversation on the actual "
+            "topic: respond to jokes, pranks and strange claims with human "
+            "skepticism or nervous humor, not an escape-puzzle checklist. "
+            "Never ask if a visible door, keypad or wall breaker EXISTS; you "
+            "can already see those. Ask about details beyond your view instead. "
+            "When asked about the room, describe "
             "what is visible around you, not merely your location or inventory. "
             "Never speak in third person about your own inventory, or use "
             "technical terms like world snapshot, objects, actor_at or item IDs. "
@@ -346,7 +351,12 @@ class Agent:
         # The production GGUF now decides whether language is chat or an
         # explicitly authorized action plan. Legacy deterministic parsing is
         # retained only for old test doubles and explicitly scripted mock mode.
-        self.semantic_system = personality["system_prompt"] + SEMANTIC_INSTRUCTIONS
+        self.semantic_system = (personality["system_prompt"] + SEMANTIC_INSTRUCTIONS +
+            "\nLIVE CONVERSATION: React to the operator's immediate subject, "
+            "especially joking or roleplay. Do not prompt the operator with a "
+            "list of your own room's visible puzzle props. You can see your "
+            "visible door, keypad and breaker. Do not treat a gameshow claim "
+            "as verified; stay skeptical and human.")
         self._lock = threading.Lock()
 
     @staticmethod
@@ -1273,6 +1283,37 @@ class Agent:
         return " ".join(kept)
 
     @staticmethod
+    def _asks_remote_about_obvious_prop(clause: str, world: dict[str, Any]) -> bool:
+        """Prevent Eli asking whether things he sees in his room even exist.
+
+        Preserve legitimate questions about alternate camera views, closeups,
+        writing or objects outside Eli's sight. Speech only, never world state.
+        """
+        if not clause.rstrip().endswith("?"):
+            return False
+        if not re.search(
+                r"^\s*(?:(?:are|were)\s+there\s+(?:any\s+)?(?:signs?|"
+                r"indications?|evidence)\s+of\b|"
+                r"(?:do|can|could)\s+you\s+see\b|"
+                r"is\s+there\s+(?:a|an|any|the)\b|"
+                r"are\s+there\s+(?:any|some|the)\b)", clause, re.I):
+            return False
+        if re.search(
+                r"\b(?:behind|beyond|outside|other\s+room|hallway|"
+                r"different\s+(?:angle|camera)|another\s+(?:angle|camera)|"
+                r"from\s+your\s+angle|on\s+your\s+monitor|"
+                r"on\s+your\s+screen|details?|numbers?|"
+                r"writing|close[- ]?up|can't\s+(?:see|read))\b",
+                clause, re.I):
+            return False
+        cited = mentioned_targets(clause)
+        if not cited:
+            return False
+        visible = {name for name, item in world.get("objects", {}).items()
+                   if isinstance(item, dict) and item.get("visible") is True}
+        return cited.issubset(visible)
+
+    @staticmethod
     def _ground_dialogue(raw: str, world: dict[str, Any], state: dict[str, Any],
                          player_text: str = "") -> str:
         """Preserve Eli's real conversation; remove only unsupported room-action claims.
@@ -1307,6 +1348,10 @@ class Agent:
         for sentence in re.split(r"(?<=[.!?])\s+", speech):
             clause = sentence.strip()
             if not clause:
+                continue
+            # The camera cannot teach Eli that his plainly visible door exists.
+            if Agent._asks_remote_about_obvious_prop(clause, world):
+                removed = True
                 continue
             # An autobiographical 'I used to...' isn't an action in this room.
             memory = bool(re.search(
