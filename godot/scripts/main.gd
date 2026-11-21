@@ -80,7 +80,7 @@ func _ready() -> void:
     update_dialog.canceled.connect(_on_update_dialog_dismissed)
     add_child(update_dialog)
     world.action_finished.connect(_on_world_action_finished)
-    _message("SYSTEM", "Connected to CAM 01. Type to talk, or hold V / HOLD TO TALK for local voice.")
+    _message("SYSTEM", "Connected to CAM 01. Type to talk, hold ALT+V (or V outside the editor), or use HOLD TO TALK.")
     _message("SYSTEM", "Eli's speech and microphone transcription run offline. Subtitles remain available.")
     call_deferred("_restore_input_focus")
     call_deferred("_refocus_on_next_frame")
@@ -666,7 +666,7 @@ func _stop_microphone_recording() -> void:
     microphone_button.text = "HOLD TO TALK (V)"
     audio_link_status.text = "AUDIO LINK: PROCESSING       ◦       VIDEO FEED: ACTIVE"
     if duration_ms < 350 or recorded == null:
-        _message("SYSTEM", "Hold V while speaking, then release.")
+        _message("SYSTEM", "Hold Alt+V or the microphone button while speaking, then release.")
         _voice_ready()
         return
     var wav_path := _save_path().get_base_dir().path_join(".tlc-mic-temp.wav")
