@@ -170,8 +170,21 @@ jobs:
               [Text.Encoding]::ASCII.GetString($audio, 8, 4) -ne 'WAVE') {
             throw 'Piper produced an invalid or empty WAV'
           }
-          Remove-Item $output -Force
-          Write-Host 'Piper actually spoke into a valid offline WAV on Windows.'
+          # Feed the generated speech into the shipped Whisper model to
+          # verify both portable native executables and model formats, not
+          # merely their downloaded file sizes.
+          $whisperExe = Join-Path $voiceRoot 'whisper/whisper-cli.exe'
+          $whisperModel = Join-Path $voiceRoot 'whisper/ggml-tiny.en-q5_1.bin'
+          $resampled = Join-Path $env:RUNNER_TEMP 'tlc-whisper-sample.wav'
+          $transcript = Join-Path $env:RUNNER_TEMP 'tlc-whisper-check'
+          $py = 'import wave,audioop,sys; r=wave.open(sys.argv[1],"rb"); f=r.readframes(r.getnframes()); b,_=audioop.ratecv(f,2,r.getnchannels(),r.getframerate(),16000,None); w=wave.open(sys.argv[2],"wb"); w.setnchannels(r.getnchannels()); w.setsampwidth(2); w.setframerate(16000); w.writeframes(b); w.close()'
+          & python -c $py $output $resampled
+          if ($LASTEXITCODE -ne 0) { throw 'Could not convert Piper audio for Whisper verification' }
+          & $whisperExe -m $whisperModel -f $resampled -l en -nt -np -otxt -of $transcript
+          if ($LASTEXITCODE -ne 0) { throw "whisper-cli failed with exit code $LASTEXITCODE" }
+          if (!(Test-Path "$transcript.txt")) { throw 'Whisper did not produce a transcript file' }
+          Remove-Item $output,$resampled,"$transcript.txt" -Force
+          Write-Host 'Piper spoke and whisper.cpp transcribed completely offline on Windows.'
 
       - name: Include portable guide and exact version metadata
         shell: pwsh
