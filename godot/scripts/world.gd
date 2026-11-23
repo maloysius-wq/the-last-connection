@@ -270,9 +270,11 @@ func _finish_action(action: String, target: String, argument: String) -> void:
             description = str(item.get("description",
                 descriptions.get(target, "Nothing unusual is visible.")))
         if target == "breaker_box":
-            description = ("The breaker lever is up. The overhead lights are on, "
-                + "and a folded note is visible on the desk.") if breaker_on else (
-                "The breaker lever is down. The overhead lights are out.")
+            description = ("Eli inspected the breaker. Its lever is up; "
+                + "the overhead lights are on, and a folded note is visible "
+                + "on the desk.") if breaker_on else (
+                "Eli inspected the breaker. Its lever is down and the overhead "
+                + "lights are out. He has not flipped the switch.")
     elif action == "take":
         if target == "flashlight" and not inventory.has("flashlight"):
             inventory.append("flashlight")
