@@ -11,7 +11,7 @@ import re
 
 TARGETS = (
     ("flashlight", r"\b(?:flashlight|flash light|torch|handheld light)\b"),
-    ("breaker_box", r"\b(?:breaker(?: box)?|fuse box|electrical panel|power panel|power switch|main power|room lights?|ceiling lights?|overhead lights?)\b"),
+    ("breaker_box", r"\b(?:breaker(?: box)?|fuse box|electrical panel|power panel|power switch|main power|the power|room power|room lights?|ceiling lights?|overhead lights?)\b"),
     ("maintenance_note", r"\b(?:maintenance note|note|paper|memo|letter|written clue)\b"),
     ("keypad", r"\b(?:key\s*pad|pin\s*pad|pin[- ]?code\s*pad|number\s*pad|code\s*panel|"
                r"combination\s*lock|red\s+(?:(?:glowing|lit)\s+)?(?:screen|indicator|light)|"
