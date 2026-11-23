@@ -23,6 +23,13 @@ OBJECTS = frozenset({
 USABLE = frozenset({"flashlight", "breaker_box", "exit_door"})
 TAKEABLE = frozenset({"flashlight"})
 LIGHT_MODES = frozenset({"", "on", "off"})
+# The physical engine only needs an action, target, and sometimes one true
+# operation parameter. For these parameterless actions, any model-produced
+# argument is descriptive context, NOT a command or a reason to cancel a
+# correctly identified goal. Canonicalize it away before queuing to Godot.
+# Parameter-bearing capabilities (flashlight mode, keypad digits, experiment
+# gesture) keep separate, strict value validation below.
+PARAMETERLESS_ACTIONS = frozenset({"move_to", "inspect", "take", "survey"})
 
 GOAL_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -57,6 +64,11 @@ GOAL_INSTRUCTIONS = (
     "you to accomplish, not a movement script and not an incomplete prefix. "
     "Each goal has action, target, argument. DO NOT copy quotes or justify "
     "steps using word fragments. NEVER invent a goal that wasn't requested. "
+    "ARGUMENT IS AN EXECUTION PARAMETER, not the location or your reasoning. "
+    "For take, inspect, move_to and survey set argument='' because the target "
+    "already identifies what and where. For flashlight USE the argument is "
+    "'on' or 'off'; for keypad entry it is the code or 'known'; for experiment "
+    "it describes the physical gesture. "
     "A question about what could happen, a hypothetical, an explanation "
     "request, and a negated or merely observed action are conversation, "
     "NOT permission to act. Polite requests like 'Could you open the door?' "
@@ -159,7 +171,7 @@ def validate_goals(raw: Any, world: dict[str, Any],
             raise GoalRejected("Goal is not a supported room capability")
         argument = argument.strip()
         if action == "survey":
-            if target != "room" or argument:
+            if target != "room":
                 raise GoalRejected("Survey only applies to the room")
         elif action == "experiment" and target == "room":
             if not 2 <= len(argument) <= 120 or any(c in argument for c in "\r\n\x00"):
@@ -214,8 +226,11 @@ def validate_goals(raw: Any, world: dict[str, Any],
                     if argument.lower() not in ("", "open", "try_open", "push", "pull"):
                         raise GoalRejected("The door supports an opening attempt")
                     argument = ""
-            elif action not in ("experiment",) and argument:
-                raise GoalRejected("Unexpected engine action argument")
+        # An action without an engine parameter has nothing to interpret
+        # in the model's descriptive argument. Silently drop that free text
+        # instead of making the entire authorized goal sequence disappear.
+        if action in PARAMETERLESS_ACTIONS:
+            argument = ""
         result.append({"action": action, "target": target, "argument": argument})
 
     # A model should not generate robotic approach steps before a goal.

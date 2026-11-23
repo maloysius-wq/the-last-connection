@@ -81,6 +81,69 @@ class GoalPipeline(unittest.TestCase):
             goal("use", "breaker_box")))
         self.assertEqual(answer.status, "")
 
+    def test_uploaded_live_gguf_take_and_turn_on_survives_descriptive_argument(self):
+        # Exact structured proposal from exported user session
+        # eli_1795460530_4249. No second model call was needed and neither
+        # the user's phrasing nor the model's location wording is parsed.
+        decision = self.decide(
+            "Eli, can you grab that flashlight on the table and turn it on for me champ?",
+            [goal("take", "flashlight", "on the desk"),
+             goal("use", "flashlight", "on")],
+            speech="Got it. I'll grab the flashlight and turn it on.")
+        self.assertEqual(decision.actions, (
+            goal("take", "flashlight"),
+            goal("use", "flashlight", "on"),
+        ))
+        self.assertEqual(decision.status, "")
+
+    def test_all_parameterless_capabilities_discard_extraneous_model_text(self):
+        # Systemic contract, not a table of user-language synonyms:
+        # the engine has no parameter for any of these four operations.
+        variations = [
+            ("take", "flashlight", "beside the desk"),
+            ("inspect", "breaker_box", "the lever near the wall"),
+            ("move_to", "keypad", "the keypad beside the door"),
+            ("survey", "room", "everything I can see around here"),
+        ]
+        for action, target, descriptive in variations:
+            with self.subTest(action=action, target=target):
+                result = validate_goals([goal(action, target, descriptive)],
+                                        world(), "Please try that", [])
+                self.assertEqual(result, (goal(action, target),))
+
+    def test_context_is_dropped_without_becoming_an_extra_action(self):
+        result = validate_goals([
+            goal("take", "flashlight", "and unlock the door"),
+            goal("use", "flashlight", "on"),
+        ], world(), "Pick up the flashlight and switch it on", [])
+        self.assertEqual(result, (goal("take", "flashlight"),
+                                  goal("use", "flashlight", "on")))
+        self.assertNotIn(goal("use", "exit_door"), result)
+
+    def test_parameter_bearing_goals_still_validate_exact_engine_semantics(self):
+        # Ignoring an unused location is safe. Ignoring a required mode,
+        # keypad digit or physical experiment parameter is NOT.
+        with self.assertRaises(GoalRejected):
+            validate_goals([goal("use", "flashlight", "near the desk")],
+                           world(), "Turn on the flashlight", [])
+        with self.assertRaises(GoalRejected):
+            validate_goals([goal("enter_code", "keypad", "random digits")],
+                           world(), "Enter the code", [])
+        scene = world()
+        scene["objects"]["wall"] = {"visible": True}
+        with self.assertRaises(GoalRejected):
+            validate_goals([goal("experiment", "wall", "")],
+                           scene, "Knock on the wall", [])
+        self.assertEqual(validate_goals(
+            [goal("experiment", "wall", "knock three times")],
+            scene, "Knock on the wall", []),
+            (goal("experiment", "wall", "knock three times"),))
+
+    def test_wrong_target_still_fails_despite_irrelevant_arguments(self):
+        with self.assertRaises(GoalRejected):
+            validate_goals([goal("take", "breaker_box", "beside the desk")],
+                           world(), "Pick it up", [])
+
     def test_short_goal_lets_engine_approach_the_door(self):
         decision = self.decide("Could you try opening the door now?",
                                [goal("use", "exit_door", "open")])
