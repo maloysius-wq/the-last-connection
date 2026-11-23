@@ -82,11 +82,16 @@ def contains_explicit_action_request(message: str) -> bool:
     This does not authorize any physical action. Each reviewed operation still
     needs independent evidence and validation before reaching Godot.
     """
-    if not isinstance(message, str) or not mentioned_targets(message):
+    if not isinstance(message, str):
         return False
     clauses = [part.strip() for part in re.split(r"[.!?;]+", message)
                if part.strip()]
-    return any(DIRECT_COMMAND.match(part) for part in clauses)
+    # For creative requests with no named prop, only invite a second MODEL
+    # interpretation. This gate is never itself permission to act.
+    invitations = ("please try ", "try to ", "do a ", "go ahead and ",
+                   "let's try ", "could you try ")
+    return any((bool(mentioned_targets(part)) and DIRECT_COMMAND.match(part))
+               or part.lower().startswith(invitations) for part in clauses)
 
 
 def needs_action_review(message: str, steps: Any) -> bool:
