@@ -274,7 +274,9 @@ func _on_http_completed(result: int, response_code: int, _headers: PackedStringA
         # The engine has finished and the local bridge recorded this exact
         # outcome. Do not continue a failed or unrecorded step.
         if not last_step_succeeded:
-            _message("ELI", str(response.get("speech", "That didn't work.")))
+            var failed_reply := str(response.get("speech", "")).strip_edges()
+            if not failed_reply.is_empty():
+                _message("ELI", failed_reply)
             if queued_actions.size() > 1:
                 _message("SYSTEM", "Sequence stopped at step " + str(queue_index + 1) +
                     " of " + str(queued_actions.size()) +
@@ -285,14 +287,20 @@ func _on_http_completed(result: int, response_code: int, _headers: PackedStringA
             queue_index += 1
             _start_queued_action()
             return
-        _message("ELI", str(response.get("speech", "That's done.")))
+        var final_reply := str(response.get("speech", "")).strip_edges()
+        if not final_reply.is_empty():
+            _message("ELI", final_reply)
         if queued_actions.size() > 1:
             _message("SYSTEM", "Sequence complete: " + str(queued_actions.size()) +
                 " of " + str(queued_actions.size()) + " steps confirmed.")
         _idle()
         return
 
-    _message("ELI", str(response.get("speech", "...")))
+    # No synthetic spoken placeholder when the local model couldn't
+    # ground a reply. The authoritative OBSERVATION still remains visible.
+    var eli_reply := str(response.get("speech", "")).strip_edges()
+    if not eli_reply.is_empty():
+        _message("ELI", eli_reply)
     if request_stage == "decide":
         var plan_value: Variant = response.get("actions", [])
         if typeof(plan_value) == TYPE_ARRAY and not plan_value.is_empty():
@@ -375,8 +383,13 @@ func _on_world_action_finished(action: String, target: String, success: bool, de
     _message("OBSERVATION", description)
     if success:
         _save()
+    # Intermediate steps only record truth. Eli speaks naturally after the
+    # last successful step or immediately after a failure, avoiding repeated
+    # slow GGUF calls and canned replies for each queued movement.
+    var should_speak := not success or queue_index + 1 >= queued_actions.size()
     var body := {"session_id": session_id, "action": action, "target": target,
-        "success": success, "description": description, "world": world.snapshot()}
+        "success": success, "description": description, "world": world.snapshot(),
+        "speak": should_speak}
     _request("/api/outcome", body, "outcome")
 
 func _idle() -> void:
