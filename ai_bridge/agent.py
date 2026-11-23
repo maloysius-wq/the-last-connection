@@ -828,6 +828,26 @@ class Agent:
             goals = raw.get("goals")
             emotion = raw.get("emotion") if raw.get("emotion") in EMOTION_SET else "cautious"
             candidate = raw.get("speech") if isinstance(raw.get("speech"), str) else ""
+            appraisal = raw.get("appraisal")
+            before_relationship, social_changes = self._apply_social_appraisal(
+                state, appraisal)
+            # The single-pass model can REFUSE or pause before a physical
+            # attempt. The engine must not secretly execute goals from an
+            # answer where Eli has explicitly chosen not to comply.
+            willingness = ("accept" if not isinstance(appraisal, dict)
+                           else appraisal.get("willingness", "consider"))
+            if willingness not in ("accept", "consider", "decline"):
+                willingness = "consider"
+            if kind == "action" and willingness != "accept":
+                kind, goals = "conversation", []
+            self.store.trace(session_id, "relationship_turn", {
+                "before": before_relationship,
+                "after": state["relationship"],
+                "appraised_change": social_changes,
+                "willingness": willingness,
+                "chosen_emotion": emotion,
+                "untrusted_appraisal": appraisal,
+            })
             issue = ""
             actions: tuple[dict[str, str], ...] = ()
             suppressed = 0
@@ -882,6 +902,8 @@ class Agent:
                 "status": result.status, "validation_issue": issue,
                 "inference_ms": elapsed_ms, "model_calls": 1,
                 "satisfied_goals_omitted": suppressed,
+                "willingness": willingness,
+                "relationship": state["relationship"],
             })
             return result
 
@@ -2181,6 +2203,21 @@ class Agent:
             clause = sentence.strip()
             if not clause:
                 continue
+            # An imagined sound is not sensory memory. A character may
+            # wonder whether he heard something, but cannot state that he
+            # DID hear room knocks before Godot raises that event.
+            if not world.get("heard_knocks", False):
+                claimed_knocks = re.search(
+                    r"\bi\s+(?:(?:just|thought\s+i|swear\s+i)\s+)?"
+                    r"(?:heard|hear)\b[^.!?]{0,80}\bknock",
+                    clause, re.I)
+                denied_knocks = re.search(
+                    r"\bi\s+(?:didn['’]t|did\s+not|never|haven['’]t|"
+                    r"have\s+not)\s+hear\b",
+                    clause, re.I)
+                if claimed_knocks and not denied_knocks:
+                    removed = True
+                    continue
             # The camera cannot teach Eli that his plainly visible door exists.
             if Agent._asks_remote_about_obvious_prop(clause, world):
                 removed = True
