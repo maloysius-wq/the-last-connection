@@ -61,7 +61,7 @@ class ChronologyRegressions(unittest.TestCase):
             current["last_observation"], current)
         self.assertIn("breaker", result.speech)
         self.assertEqual(len(self.backend.inputs), 1)
-        request = self.backend.inputs[0][-1]["content"]
+        request = self.backend.inputs[0][0]["content"]
         self.assertIn('"prior_attempts_of_this_exact_operation":0', request)
         self.assertIn('"prior_confirmed_operations_on_this_object":[]', request)
         self.assertIn('"is_this_first_attempt_of_this_operation":true', request)
@@ -77,7 +77,7 @@ class ChronologyRegressions(unittest.TestCase):
         self.agent.outcome(
             "memory_repeat", "inspect", "breaker_box", True,
             "Eli inspected the breaker again. Lever down.", room)
-        request = self.backend.inputs[-1][-1]["content"]
+        request = self.backend.inputs[-1][0]["content"]
         self.assertIn('"prior_attempts_of_this_exact_operation":1', request)
         self.assertIn('"is_this_first_attempt_of_this_operation":false', request)
         self.assertEqual(
@@ -96,7 +96,7 @@ class ChronologyRegressions(unittest.TestCase):
         self.agent.outcome(
             "memory_speech", "inspect", "breaker_box", True,
             "Eli checked the breaker. The lever is down.", room)
-        event_prompt = self.backend.inputs[-1][-1]["content"]
+        event_prompt = self.backend.inputs[-1][0]["content"]
         self.assertIn('"prior_attempts_of_this_exact_operation":0', event_prompt)
         ledger = self.agent._confirmed_event_ledger(
             self.store.load("memory_speech")["facts"])
@@ -112,7 +112,7 @@ class ChronologyRegressions(unittest.TestCase):
         self.agent.outcome(
             "memory_other", "inspect", "breaker_box", True,
             "Eli looked at the breaker. The lever is down.", room)
-        prompt = self.backend.inputs[-1][-1]["content"]
+        prompt = self.backend.inputs[-1][0]["content"]
         self.assertIn('"prior_attempts_of_this_exact_operation":0', prompt)
         self.assertIn('"prior_confirmed_operations_on_this_object":[]', prompt)
 
@@ -139,7 +139,7 @@ class ChronologyRegressions(unittest.TestCase):
 
     def _receipt(self, model):
         self.assertEqual(len(model.inputs), 1, "One reaction for the whole sequence")
-        prompt = model.inputs[0][-1]["content"]
+        prompt = model.inputs[0][0]["content"]
         marker = "VERIFIED THIS-TURN PHYSICAL RECEIPT (system truth): "
         self.assertIn(marker, prompt)
         # Decode the JSON receipt alone, not later natural-language directions.
