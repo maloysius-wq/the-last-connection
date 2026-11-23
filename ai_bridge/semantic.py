@@ -38,6 +38,13 @@ OBSERVATION_PREFIX = re.compile(
 # generic question/negation safeguard, not a command-phrase dictionary.
 SUGGESTION_REQUEST = re.compile(
     r"^\s*(?:why\s+don't\s+you|how\s+about(?!\s+if\b))\b", re.I)
+# Requests for an explanation are not permission to demonstrate physically.
+# "Can you OPEN the door?" remains a direct request; "Can you TELL ME
+# how to open the door?" is just conversation.
+EXPLANATION_REQUEST = re.compile(
+    r"^\s*(?:eli[, ]+\s*)?(?:can|could|would|will)\s+you\s+"
+    r"(?:please\s+)?(?:tell|explain|describe|show)\b", re.I)
+
 
 # These are speech-act / complexity HINTS, never a phrase-based permission
 # system. The existing model still proposes all actions and the evidence/world
@@ -98,7 +105,7 @@ def contains_explicit_action_request(message: str) -> bool:
     polite_physical = re.compile(
         r"^\s*(?:eli[,\s]+)?(?:can|could|would|will)\s+you\s+"
         r"(?:please\s+)?(?:go|walk|move|pick|grab|take|flip|turn|"
-        r"switch|open|use|enter|type|input|press|inspect|read|try\s+to)\b",
+        r"switch|open|use|enter|type|input|press|inspect|read|try(?:\s+to)?)\b",
         re.I)
     return any((bool(mentioned_targets(part)) and
                 (DIRECT_COMMAND.match(part) or polite_physical.match(part)))
@@ -354,6 +361,8 @@ def _non_command_context(message: str, start: int, evidence: str) -> bool:
     boundary = max(message.rfind(x, 0, start) for x in ".!?;\n")
     preceding = message[boundary + 1:start]
     context = preceding + evidence
+    if EXPLANATION_REQUEST.match(context):
+        return True
     suggested_directive = bool(SUGGESTION_REQUEST.search(context))
     if HYPOTHETICAL.search(context) and not suggested_directive:
         return True

@@ -166,6 +166,27 @@ class RealSessionRegressions(unittest.TestCase):
                      step("use", "keypad", "enter 9999 in the keypad", "1234")]))
         self.assertEqual(result.actions, ())
 
+    def test_explanation_question_does_not_open_door(self):
+        question = "Would you tell me how to open the door?"
+        with self.assertRaises(PlanRejected):
+            validated_steps([step("use", "exit_door", "open the door")],
+                            question, room())
+        result, _ = self.decide(
+            question,
+            proposed("action", []),
+            audited([step("use", "exit_door", "open the door")]))
+        self.assertEqual(result.actions, ())
+
+    def test_polite_try_opening_is_an_action_request(self):
+        request = "Can you try opening the door now?"
+        self.assertTrue(contains_explicit_action_request(request))
+        result, backend = self.decide(
+            request, proposed("conversation", [], "Maybe it is possible."),
+            audited([step("use", "exit_door", "opening the door")]))
+        self.assertEqual(result.action, "use")
+        self.assertEqual(result.target, "exit_door")
+        self.assertEqual(backend.review_calls, 1)
+
     def test_false_open_claim_stripped_when_only_unlocked(self):
         current = room()
         current["door_unlocked"] = True
