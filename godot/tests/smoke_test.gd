@@ -128,6 +128,24 @@ func _run() -> void:
             "Export button does not steal keyboard focus from chat")
         _expect(not export_btn.disabled,
             "Export button is accessible without starting an action")
+    # The previous release accepted creative experiments from the LLM but
+    # mistakenly omitted "experiment" in the Godot queue whitelist. Ensure
+    # semantic plans that passed the server can actually reach the engine.
+    _expect(bool(app.call("_valid_queue_step", {
+        "action": "experiment", "target": "exit_door", "argument": "knock three times"
+    })), "Freeform experiments pass the game's queue validator")
+    _expect(bool(app.call("_valid_queue_step", {
+        "action": "experiment", "target": "room", "argument": "dance in place"
+    })), "In-place creative gestures pass the game's queue validator")
+    _expect(not bool(app.call("_valid_queue_step", {
+        "action": "experiment", "target": "room", "argument": ""
+    })), "Creative attempts require a meaningful physical description")
+    _expect(bool(app.call("_valid_queue_step", {
+        "action": "use", "target": "breaker_box", "argument": ""
+    })), "Normalized breaker action reaches Godot without unsupported arguments")
+    _expect(not bool(app.call("_valid_queue_step", {
+        "action": "use", "target": "breaker_box", "argument": "flip_up"
+    })), "Raw model-specific arguments must be normalized before the engine")
     var pre_experiment_power := bool(world.snapshot()["lights_on"])
     world.perform_action("experiment", "room", "dance awkwardly to test the camera")
     var weird: Array = await world.action_finished

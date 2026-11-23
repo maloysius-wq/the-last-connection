@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+from difflib import SequenceMatcher
 from typing import Any
 
 from .intent import mentioned_targets
@@ -177,7 +178,9 @@ INSTRUCTIONS = (
     "uncertain instruction requires kind=clarify, steps=[] and a natural "
     "question. A clearly requested action uses kind=action. For flashlight "
     "use argument=on/off when specified, else empty. Enter_code needs the "
-    "user's explicitly stated four digits; no guessed codes. Other arguments "
+    "user's explicitly stated four digits; no guessed codes. For breaker_box "
+    "and exit_door use, argument is empty. Experiment argument is the short "
+    "physical attempt. Other arguments "
     "are empty. Do not append helpful extra actions. Never report physical "
     "success in speech before the engine confirms it. Keep speech short, "
     "frightened, believable and conversational, not a verbose monologue."
@@ -232,7 +235,11 @@ REVIEW_INSTRUCTIONS = (
     "in-place experiment only). For experiments use a short natural "
     "argument of the attempted behavior; never claim puzzle progress. "
     "Flashlight switch ON requires argument=on; switch OFF uses argument=off. "
-    "Other action arguments empty, except keypad requires four digits given "
+    "For breaker use, report an empty argument (it restores power); "
+    "for opening the door use an empty argument; do not encode switch "
+    "directions or operation labels in argument. "
+    "Other action arguments empty, except freeform experiments and keypad's "
+    "four digits given "
     "explicitly in the user message. Do not infer a code. "
     "Do not treat a question about an imagined action, a negated instruction, "
     "or mere mention of an object as permission to touch it. "
@@ -289,6 +296,43 @@ def _find_span(message: str, evidence: str, cursor: int) -> tuple[int, int]:
         if found:
             start, end = cursor + found.start(), cursor + found.end()
     if start < 0:
+        # A small GGUF sometimes inserts a connective while quoting a
+        # *real* instruction ("flip the lever up" versus the player's
+        # "flip the lever so it's up"). Recover only an anchored, same-order
+        # phrase from THIS utterance. Unlike a general intent parser, this
+        # never invents evidence, changes targets, or guesses a keypad code.
+        tokens = list(re.finditer(r"[a-z0-9]+(?:['’][a-z0-9]+)?",
+                                  message[cursor:], re.I))
+        quoted = [m.group().casefold() for m in re.finditer(
+            r"[a-z0-9]+(?:['’][a-z0-9]+)?", quote, re.I)]
+        best: tuple[float, int, int] | None = None
+        if len(quoted) >= 3 and len(tokens) <= 300:
+            contrary = ({"on", "off"}, {"up", "down"},
+                        {"open", "close", "closed"}, {"lock", "unlock"})
+            for i, token in enumerate(tokens):
+                if token.group().casefold() != quoted[0]:
+                    continue
+                for size in range(len(quoted), min(len(quoted) + 4,
+                                                   len(tokens) - i) + 1):
+                    window = tokens[i:i + size]
+                    original = [m.group().casefold() for m in window]
+                    if original[-1] != quoted[-1]:
+                        continue
+                    if any(bool(set(original) & choices) and
+                           bool(set(quoted) & choices) and
+                           set(original) & choices != set(quoted) & choices
+                           for choices in contrary):
+                        continue
+                    first = cursor + window[0].start()
+                    last = cursor + window[-1].end()
+                    if re.search(r"[.!?;\n]", message[first:last]):
+                        continue
+                    score = SequenceMatcher(None, quoted, original).ratio()
+                    if score >= 0.76 and (best is None or score > best[0]):
+                        best = (score, first, last)
+        if best:
+            _, start, end = best
+    if start < 0:
         raise PlanRejected("Model action is not quoted from this player turn")
     return start, end
 
@@ -331,7 +375,10 @@ def validated_steps(raw: Any, message: str, world: dict[str, Any],
             raise PlanRejected("Unknown action, object, or argument")
         start, end = _find_span(message, quote, cursor)
         cursor = start + 1  # distinct ordered starts; nested broad quotes okay.
-        if _non_command_context(message, start, quote):
+        # Check the actual quoted span, not the model's paraphrase: it may
+        # have skipped an inserted "don't", "not", or other safety word.
+        evidence_here = message[start:end]
+        if _non_command_context(message, start, evidence_here):
             raise PlanRejected("A hypothetical or negated request cannot authorize action")
         # Inspecting the whole room is the engine's survey operation.
         # This is an action synonym, not another player-phrase dictionary.
@@ -384,6 +431,23 @@ def validated_steps(raw: Any, message: str, world: dict[str, Any],
                 if re.fullmatch(r"(?:turn|switch)\s+(?:on|off)\s+(?:the\s+)?light", quote, re.I):
                     if previous_target != "flashlight" and referent != "flashlight":
                         raise PlanRejected("Ambiguous room light versus handheld flashlight")
+            elif action == "use" and target == "breaker_box":
+                # Godot's breaker USE operation has no parameters; it raises
+                # the lever and restores power. A model may still express
+                # the requested direction as "on", "up" or "flip_up".
+                # Normalize those representations, not the player's intent.
+                if argument not in ("", "on", "up", "flip_up",
+                                    "turn_on", "switch_on", "activate"):
+                    raise PlanRejected("Unsupported breaker mode")
+                if re.search(r"\b(?:off|down|deactivate)\b", evidence_here, re.I):
+                    raise PlanRejected("Cannot treat breaker OFF as power ON")
+                argument = ""
+            elif action == "use" and target == "exit_door":
+                # Opening a locked door can be attempted, but only the engine
+                # can decide whether it actually opens.
+                if argument not in ("", "open", "try_open", "pull", "push"):
+                    raise PlanRejected("Unsupported door operation")
+                argument = ""
             elif argument and action != "experiment":
                 raise PlanRejected("Unrequested action argument")
             names = mentioned_targets(quote)

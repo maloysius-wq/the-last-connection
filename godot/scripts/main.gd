@@ -360,7 +360,7 @@ func _valid_queue_step(step: Dictionary) -> bool:
     var action: String = str(step.get("action", ""))
     var target: String = str(step.get("target", ""))
     var argument: String = str(step.get("argument", ""))
-    if action not in ["move_to", "inspect", "take", "use", "enter_code", "survey"]:
+    if action not in ["move_to", "inspect", "take", "use", "enter_code", "survey", "experiment"]:
         return false
     if action == "survey":
         return target == "room" and argument.is_empty()
