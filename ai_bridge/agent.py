@@ -1238,7 +1238,8 @@ class Agent:
     def _model_outcome_reply(self, state: dict[str, Any], action: str,
                              target: str, success: bool, description: str,
                              world: dict[str, Any], *,
-                             turn_events: list[dict[str, Any]] | None = None) -> str:
+                             turn_events: list[dict[str, Any]] | None = None,
+                             session_id: str = "") -> str:
         if not callable(getattr(self.backend, "converse", None)):
             # Legacy deterministic mock-mode remains clearly marked as such.
             return self._acknowledge(action, target, success, world, description)
@@ -1337,6 +1338,14 @@ class Agent:
                 turn_events=events, verified_codes=trusted_codes)
             if grounded:
                 return grounded
+            if session_id:
+                # The rejected candidate is useful for diagnosing a silent
+                # reply, but it is never displayed to Eli or made into memory.
+                self.store.trace(session_id, "outcome_speech_filtered", {
+                    "action": action, "target": target,
+                    "candidate": str(spoken)[:500],
+                    "reason": "Unverified physical detail, numeric clue, or incomplete speech",
+                })
         return ""
 
     @staticmethod
@@ -1853,6 +1862,14 @@ class Agent:
                     r"\s+(?:that|it|the\s+flashlight)|pick\s+(?:it|that)\s+up)\b",
                     "should I pick it up",
                     speech, flags=re.I)
+        # Repair a specific impossible spatial conjunction using the engine's
+        # authoritative HELD state, without altering the operator's words.
+        # The same prop cannot currently be on the desk and in Eli's hand.
+        if "flashlight" in world.get("inventory", []):
+            speech = re.sub(
+                r"\bOn (?:the|that) (?:desk|table),\s*"
+                r"(?:the )?flashlight is (?:now )?in my hand\b",
+                "The flashlight is in my hand", speech, flags=re.I)
         # A fresh room or a session with no attempted door interaction does
         # not provide evidence that the door REMAINS locked from an earlier
         # attempt. "The door is locked" is a present observation and valid.
@@ -2293,7 +2310,7 @@ class Agent:
                 try:
                     speech = self._model_outcome_reply(
                         state, action, target, success, description, world,
-                        turn_events=pending)
+                        turn_events=pending, session_id=session_id)
                 except BackendUnavailable:
                     # OBSERVATION already displays authoritative facts; do not
                     # replace Eli with a canned phrase or interrupt the queue.
