@@ -68,8 +68,7 @@ class TestModelAuthoredDialogue(unittest.TestCase):
         self.assertIn("breaker", result.speech)
         self.assertNotIn("which actions", result.speech)
         self.assertEqual(len(backend.spoken_prompts), 1)
-        self.assertIn("The interpretation", backend.spoken_prompts[0][-1]["content"] if False
-                      else backend.spoken_prompts[0][0]["content"])
+        self.assertIn("interpretation", backend.spoken_prompts[0][-1]["content"].lower())
 
     def test_model_conversation_clarification_without_canned_line(self):
         backend = HumanBackend(proposed("clarify", [], "Could you say that again?"),
