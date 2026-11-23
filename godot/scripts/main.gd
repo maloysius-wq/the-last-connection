@@ -274,8 +274,8 @@ func _on_http_completed(result: int, response_code: int, _headers: PackedStringA
         # The engine has finished and the local bridge recorded this exact
         # outcome. Do not continue a failed or unrecorded step.
         if not last_step_succeeded:
-            var failed_reply := str(response.get("speech", "")).strip_edges()
-            if not failed_reply.is_empty():
+            var failed_reply := str(response.get("speech", ""))
+            if not failed_reply.strip_edges().is_empty():
                 _message("ELI", failed_reply)
             if queued_actions.size() > 1:
                 _message("SYSTEM", "Sequence stopped at step " + str(queue_index + 1) +
@@ -287,8 +287,8 @@ func _on_http_completed(result: int, response_code: int, _headers: PackedStringA
             queue_index += 1
             _start_queued_action()
             return
-        var final_reply := str(response.get("speech", "")).strip_edges()
-        if not final_reply.is_empty():
+        var final_reply := str(response.get("speech", ""))
+        if not final_reply.strip_edges().is_empty():
             _message("ELI", final_reply)
         if queued_actions.size() > 1:
             _message("SYSTEM", "Sequence complete: " + str(queued_actions.size()) +
@@ -298,8 +298,8 @@ func _on_http_completed(result: int, response_code: int, _headers: PackedStringA
 
     # No synthetic spoken placeholder when the local model couldn't
     # ground a reply. The authoritative OBSERVATION still remains visible.
-    var eli_reply := str(response.get("speech", "")).strip_edges()
-    if not eli_reply.is_empty():
+    var eli_reply := str(response.get("speech", ""))
+    if not eli_reply.strip_edges().is_empty():
         _message("ELI", eli_reply)
     if request_stage == "decide":
         var plan_value: Variant = response.get("actions", [])
