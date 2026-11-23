@@ -979,7 +979,7 @@ class Agent:
         only when it names no unrequested prop and promises the right action
         *without* claiming that the engine has already completed it.
         """
-        if len(verified) != 1 or not isinstance(raw_speech, str):
+        if not verified or not isinstance(raw_speech, str):
             return ""
         speech = Agent._finish_spoken_reply(raw_speech)
         if not speech or len(speech) > 260:
@@ -997,8 +997,29 @@ class Agent:
         action = verified[0]["action"]
         target = verified[0]["target"]
         described = mentioned_targets(speech)
-        if described and (described - {target}):
+        allowed_targets = {step["target"] for step in verified}
+        if described and (described - allowed_targets):
             return ""
+        if len(verified) > 1:
+            # Multi-step speech is the model's, not a canned numbered list.
+            # It must acknowledge the requested end-state (rather than
+            # apparently promise to stop after the first action).
+            final = verified[-1]
+            end_cues = {
+                "survey": r"\b(?:look|scan|survey|check|see|room)\b",
+                "inspect": r"\b(?:look|inspect|examine|read|check)\b",
+                "take": r"\b(?:grab|pick|take|collect)\b",
+                "move_to": r"\b(?:go|walk|head|move|approach)\b",
+                "use": r"\b(?:use|switch|flip|turn|open|try|activate)\b",
+                "enter_code": r"\b(?:enter|type|key|try|punch)\b",
+            }
+            if not re.search(end_cues[final["action"]], speech, re.I):
+                return ""
+            if (final["action"] == "use" and final["target"] == "flashlight"
+                    and final["argument"] and
+                    not re.search(r"\b" + re.escape(final["argument"]) + r"\b", speech, re.I)):
+                return ""
+            return speech
         # Even on the same prop or in the room, Eli must never promise a
         # SECOND physical action that the one-step plan does not contain.
         if re.search(
