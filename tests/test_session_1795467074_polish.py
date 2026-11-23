@@ -88,6 +88,7 @@ class SessionPolishTests(unittest.TestCase):
         model = LocalModel([goal("survey", "room")],
                            "The room's cramped, and I don't like the door.")
         decision = self.agent(model).decide(
+            "survey_request",
             "Take a look around the room and tell me what you can see.",
             world())
         self.assertEqual(decision.actions, (goal("survey", "room"),))
@@ -161,6 +162,7 @@ class SessionPolishTests(unittest.TestCase):
         room = world()
         room["door_unlocked"] = True
         room["escaped"] = True
+        room["heard_knocks"] = True
         room["actor_at"] = "exit_door"
         model = LocalModel([], "I opened it and stepped outside. I'm free, but what was knocking?")
         answer = self.agent(model).outcome(
