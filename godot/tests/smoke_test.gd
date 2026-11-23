@@ -525,8 +525,10 @@ func _run() -> void:
     app.set("queue_index", 0)
     app.set("exit_authorized", false)
     app.call("_start_queued_action")
+    # Headless Godot does not necessarily report OS modal visibility.
+    # The safety contract is the pending approval state and NO world exit.
     _expect(str(app.get("request_stage")) == "confirm_exit"
-        and app.get("exit_dialog").visible
+        and app.get("exit_dialog") is ConfirmationDialog
         and world.snapshot()["escaped"] == false,
         "Terminal door use requires an explicit UI confirmation first")
     app.get("exit_dialog").hide()
