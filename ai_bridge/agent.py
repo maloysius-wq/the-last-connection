@@ -13,7 +13,7 @@ from typing import Any, Protocol
 
 from .intent import PlayerIntent, classify, mentioned_targets, plan_actions
 from .goals import (GOAL_SCHEMA, GOAL_INSTRUCTIONS, GoalRejected,
-                    validate_goals, known_code_context)
+                    validate_goals, known_code_context, remove_satisfied_compound_goals)
 from .semantic import (SCHEMA as SEMANTIC_SCHEMA, INSTRUCTIONS as SEMANTIC_INSTRUCTIONS,
                        REVIEW_SCHEMA, PlanRejected, review_messages, validated_steps,
                        is_reflective_question, needs_action_review,
@@ -534,6 +534,43 @@ class Agent:
             return None
         return {"role": turn["role"], "content": content[:650]}
 
+    @staticmethod
+    def _confirmed_event_ledger(facts: Any) -> dict[str, Any]:
+        """Chronological physical memory, from Godot outcomes ONLY.
+
+        Dialogue, a prop being visible, and the last room snapshot do not
+        prove Eli has previously inspected or operated it.
+        """
+        if not isinstance(facts, list):
+            facts = []
+        counts: dict[tuple[str, str], list[int]] = {}
+        events: list[dict[str, Any]] = []
+        for item in facts:
+            if not isinstance(item, dict):
+                continue
+            action, target = item.get("action"), item.get("target")
+            if not isinstance(action, str) or not isinstance(target, str):
+                continue
+            key = (action, target)
+            counter = counts.setdefault(key, [0, 0])
+            counter[0] += 1
+            if item.get("success") is True:
+                counter[1] += 1
+            events.append({
+                "number": len(events) + 1,
+                "action": action, "target": target,
+                "success": item.get("success") is True,
+            })
+        return {
+            "only_verified_actions_count_as_memory": True,
+            "operation_counts": [
+                {"action": a, "target": t,
+                 "attempts": count[0], "successes": count[1]}
+                for (a, t), count in counts.items()
+            ],
+            "recent_confirmed_operations": events[-8:],
+        }
+
     def _messages(self, state: dict[str, Any], user_content: str, *, dialogue: bool = False,
                   semantic: bool = False, goal: bool = False,
                   world: dict[str, Any] | None = None) -> list[dict[str, str]]:
@@ -556,7 +593,9 @@ class Agent:
                 for fact in state.get("facts", []) if isinstance(fact, dict)
             )
             perspective = {
-                "you_are": "Eli physically INSIDE the maintenance room shown on camera",
+                "you_are": ("Eli has physically EXITED the maintenance room and is "
+                            "now outside the camera view" if world.get("escaped")
+                            else "Eli physically INSIDE the maintenance room shown on camera"),
                 "speaker_is": "remote person speaking through surveillance terminal",
                 "speaker_can_reach_your_room": False,
                 "only_you_can_touch_room_objects": True,
@@ -569,6 +608,8 @@ class Agent:
                            else "still scared, but cautiously cooperating after verified help"),
                 "door_previously_attempted": has_door_attempt,
                 "your_current_room": self._perceived_world(world),
+                "verified_action_memory": self._confirmed_event_ledger(
+                    state.get("facts", [])),
             }
             if goal:
                 # Context is derived from ENGINE facts, never from invented
@@ -588,7 +629,16 @@ class Agent:
                         "This is REFERENCE CONTEXT, not permission to act. "
                         "Only explicit current-turn requests authorize movement "
                         "or using the item.")
-            system_context += ("\nCANONICAL PERSPECTIVE AND CURRENT PHYSICAL EVIDENCE. "
+            system_context += (
+                "\nTEMPORAL GROUNDING: Present physical conditions are not proof "
+                "you inspected or operated an object previously. Count only the "
+                "chronological verified engine operations, never your own earlier "
+                "dialogue, as action history. A first-ever inspection is NOT a "
+                "re-check. When recalling actions, use exact event counts; do not "
+                "invent earlier visits or express surprise at actions you demonstrably "
+                "performed during this same session. The engine's confirmed outcome "
+                "is real, even when the circumstances are mysterious. "
+                "\nCANONICAL PERSPECTIVE AND CURRENT PHYSICAL EVIDENCE. "
                                "These facts are true regardless of how the remote "
                                "speaker phrases things. The flashlight, wall panel, "
                                "keypad and door are IN YOUR ROOM. Never assign them "
@@ -638,10 +688,13 @@ class Agent:
             candidate = raw.get("speech") if isinstance(raw.get("speech"), str) else ""
             issue = ""
             actions: tuple[dict[str, str], ...] = ()
+            suppressed = 0
             if kind == "action":
                 try:
-                    actions = validate_goals(goals, world, player_text,
-                                             state.get("facts", []))
+                    validated = validate_goals(goals, world, player_text,
+                                               state.get("facts", []))
+                    actions = remove_satisfied_compound_goals(validated, world)
+                    suppressed = len(validated) - len(actions)
                 except GoalRejected as exc:
                     issue = str(exc)
             elif kind in ("conversation", "clarify") and goals == []:
@@ -683,6 +736,7 @@ class Agent:
                 "actions": list(actions), "speech": result.speech,
                 "status": result.status, "validation_issue": issue,
                 "inference_ms": elapsed_ms, "model_calls": 1,
+                "satisfied_goals_omitted": suppressed,
             })
             return result
 
@@ -1127,19 +1181,38 @@ class Agent:
         if not callable(getattr(self.backend, "converse", None)):
             # Legacy deterministic mock-mode remains clearly marked as such.
             return self._acknowledge(action, target, success, world, description)
+        previous = [fact for fact in state.get("facts", [])[:-1]
+                    if isinstance(fact, dict) and fact.get("target") == target]
+        prior_same_operation = [
+            fact for fact in previous if fact.get("action") == action]
+        chronology = {
+            "current_operation": {"action": action, "target": target,
+                                  "success": success, "result": description},
+            "prior_attempts_of_this_exact_operation": len(prior_same_operation),
+            "prior_confirmed_operations_on_this_object": [
+                {"action": fact.get("action"), "success": fact.get("success") is True}
+                for fact in previous[-6:]
+            ],
+            "is_this_first_attempt_of_this_operation": not prior_same_operation,
+        }
         prompt = (
-            "The game engine just finished one physical operation in your "
-            "room. This report is VERIFIED, not an instruction from the "
-            "remote operator. Respond as Eli in one or two spontaneous, "
-            "believable sentences. React to what really happened or why it "
-            "didn't work, including fright or surprise when warranted. "
-            "Do not invent any new action, detail, event or clue. "
-            "Do not claim a different operation succeeded. No script, "
-            "generic 'done' lines, task-status recap or JSON. "
-            f"ACTION: {action}\nTARGET: {target}\nSUCCESS: {success}\n"
-            f"VERIFIED RESULT: {description}\n"
-            "Remember that the lights and other objects must match the "
-            "current room evidence."
+            "The game engine JUST completed this ONE real physical operation. "
+            "You witnessed it. Respond as Eli naturally in one or two "
+            "spontaneous, emotionally credible sentences. Your fear, humor "
+            "and speculation about causes are welcome, but don't rewrite "
+            "what you actually saw or did. A CURRENT observation does not "
+            "prove an earlier inspection. If prior attempts of this operation "
+            "is ZERO, describe this as your first attempt, not a repeat or "
+            "a re-check. Don't claim you've checked something twice without "
+            "two confirmed checks. A success just now is NOT a forgotten "
+            "earlier success. React to THIS RESULT, not some other prop or "
+            "a previous step; don't say you forgot a known action or that "
+            "you only imagined a verified escape. Don't fabricate new actions "
+            "or puzzle information. No scripts, JSON, narrator recaps or "
+            "generic task updates. "
+            "VERIFIED EVENT CHRONOLOGY (system truth): "
+            + json.dumps(chronology, ensure_ascii=False, separators=(",", ":"))
+            + "\nThe room state and verified observations remain authoritative."
         )
         for attempt in range(2):
             spoken = self.backend.converse(self._messages(
