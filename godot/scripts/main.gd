@@ -24,6 +24,9 @@ var http: HTTPRequest
 var update_http: HTTPRequest
 var update_button: Button
 var update_dialog: ConfirmationDialog
+var export_http: HTTPRequest
+var export_button: Button
+var export_busy := false
 var update_stage := ""
 var available_update_tag := ""
 var session_id: String
@@ -74,6 +77,10 @@ func _ready() -> void:
     update_http.timeout = 30.0
     add_child(update_http)
     update_http.request_completed.connect(_on_update_response)
+    export_http = HTTPRequest.new()
+    export_http.timeout = 30.0
+    add_child(export_http)
+    export_http.request_completed.connect(_on_session_exported)
     update_dialog = ConfirmationDialog.new()
     update_dialog.title = "Update The Last Connection?"
     update_dialog.confirmed.connect(_install_update)
@@ -211,6 +218,11 @@ func _build_ui() -> void:
     update_button.focus_mode = Control.FOCUS_NONE
     update_button.pressed.connect(_check_for_updates)
     right.add_child(update_button)
+    export_button = Button.new()
+    export_button.text = "EXPORT CONVERSATION + LOGS ZIP"
+    export_button.focus_mode = Control.FOCUS_NONE
+    export_button.pressed.connect(_export_current_session)
+    right.add_child(export_button)
     var new_game := Button.new()
     new_game.text = "NEW SESSION / RESET ROOM"
     new_game.focus_mode = Control.FOCUS_NONE
@@ -554,6 +566,77 @@ func _update_idle() -> void:
     update_stage = ""
     update_button.disabled = false
     update_button.text = "CHECK FOR UPDATES"
+    call_deferred("_restore_input_focus")
+
+
+func _export_folder() -> String:
+    var folder := _save_path().get_base_dir().path_join("exports")
+    if folder.begins_with("user://"):
+        return ProjectSettings.globalize_path(folder)
+    return folder
+
+
+func _export_current_session() -> void:
+    if export_busy or session_id.is_empty():
+        return
+    export_busy = true
+    export_button.disabled = true
+    export_button.text = "BUILDING SESSION ZIP..."
+    # Keep diagnostics aligned with a finished or currently active turn;
+    # saving it does not send anything to the internet.
+    var transcript := log_view.get_parsed_text()
+    var body := JSON.stringify({
+        "session_id": session_id,
+        "transcript": transcript,
+        "world": world.snapshot()
+    })
+    var code := export_http.request(
+        BRIDGE_URL + "/api/session/export",
+        PackedStringArray(["Content-Type: application/json", "X-TLC-Export: 1"]),
+        HTTPClient.METHOD_POST, body)
+    if code != OK:
+        _message("SYSTEM", "Couldn't start local conversation ZIP export.")
+        _end_export()
+
+
+func _on_session_exported(result: int, code: int, _headers: PackedStringArray,
+        bytes: PackedByteArray) -> void:
+    if result != HTTPRequest.RESULT_SUCCESS or code != 200:
+        var details = JSON.parse_string(bytes.get_string_from_utf8())
+        var error_text := str(details.get("error", "The local export service is unavailable.")
+            if typeof(details) == TYPE_DICTIONARY else "The local export service is unavailable.")
+        _message("SYSTEM", "ZIP export failed: " + error_text.left(220))
+        _end_export()
+        return
+    if bytes.size() < 30 or bytes[0] != 80 or bytes[1] != 75:
+        _message("SYSTEM", "ZIP export failed: the bridge returned an invalid archive.")
+        _end_export()
+        return
+    var folder := _export_folder()
+    if DirAccess.make_dir_recursive_absolute(folder) != OK:
+        _message("SYSTEM", "ZIP export failed: couldn't create exports folder.")
+        _end_export()
+        return
+    var filename := "TheLastConnection-" + session_id + "-" + str(int(Time.get_unix_time_from_system())) + ".zip"
+    var path := folder.path_join(filename)
+    var file := FileAccess.open(path, FileAccess.WRITE)
+    if file == null:
+        _message("SYSTEM", "ZIP export failed: couldn't write to the exports folder.")
+        _end_export()
+        return
+    file.store_buffer(bytes)
+    file.close()
+    _message("SYSTEM", "Conversation + diagnostic logs saved to: " + path)
+    # Open Explorer so the ZIP can be dragged directly into the ChatGPT chat.
+    if OS.has_feature("windows"):
+        OS.shell_open(folder)
+    _end_export()
+
+
+func _end_export() -> void:
+    export_busy = false
+    export_button.disabled = false
+    export_button.text = "EXPORT CONVERSATION + LOGS ZIP"
     call_deferred("_restore_input_focus")
 
 
