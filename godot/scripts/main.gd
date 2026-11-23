@@ -13,6 +13,42 @@ func _save_path() -> String:
             return folder.path_join("tlc_save.cfg")
         push_warning("Cannot create portable save directory; using standard user storage")
     return SAVE_PATH
+# One append-only transcript per session. Keep the complete displayed dialogue
+# across game restarts so a later diagnostic ZIP includes earlier turns too.
+# These text files live alongside the portable save, never in a cloud service.
+func _transcript_path() -> String:
+    return _save_path().get_base_dir().path_join(session_id + ".transcript.txt")
+
+
+func _load_transcript() -> void:
+    var path := _transcript_path()
+    if not FileAccess.file_exists(path):
+        return
+    var file := FileAccess.open(path, FileAccess.READ)
+    if file == null:
+        push_warning("Couldn't restore conversation transcript: " + path)
+        return
+    var transcript := file.get_as_text()
+    file.close()
+    if not transcript.is_empty():
+        # Loading is display-only: do not append the old lines to disk again
+        # or replay all of Eli's earlier voice lines.
+        log_view.append_text(transcript)
+
+
+func _append_transcript(line: String) -> void:
+    var path := _transcript_path()
+    var existed := FileAccess.file_exists(path)
+    var file := FileAccess.open(path, FileAccess.READ_WRITE if existed else FileAccess.WRITE)
+    if file == null:
+        push_warning("Couldn't save conversation transcript: " + path)
+        return
+    if existed:
+        file.seek_end()
+    file.store_string(line)
+    file.close()
+
+
 const WorldScript = preload("res://scripts/world.gd")
 
 var world # Concrete world.gd instance; dynamic type allows its custom signals and methods.
@@ -230,7 +266,10 @@ func _build_ui() -> void:
     right.add_child(new_game)
 
 func _message(speaker: String, text: String) -> void:
-    log_view.append_text("[" + speaker + "] " + text + "\n\n")
+    var line := "[" + speaker + "] " + text + "\n\n"
+    log_view.append_text(line)
+    if not session_id.is_empty():
+        _append_transcript(line)
     if speaker == "ELI":
         _queue_eli_speech(text)
 
@@ -665,9 +704,14 @@ func _load_save() -> void:
         voice_text_only_button.set_pressed_no_signal(text_only)
         sensitivity_slider.set_value_no_signal(microphone_sensitivity)
         volume_slider.set_value_no_signal(voice_volume)
-    if session_id.is_empty() or session_id.contains("."):
+    # Session IDs are used as on-disk transcript basenames. Apply the same
+    # strict characters/length boundary as the Python bridge before reading.
+    var safe_id := RegEx.new()
+    safe_id.compile("^[A-Za-z0-9_-]{1,64}$")
+    if safe_id.search(session_id) == null:
         session_id = "eli_" + str(int(Time.get_unix_time_from_system())) + "_" + str(randi_range(1000,9999))
         _save()
+    _load_transcript()
 
 func _save() -> void:
     var cfg := ConfigFile.new()
