@@ -36,7 +36,30 @@ GOAL_SCHEMA: dict[str, Any] = {
     "properties": {
         "kind": {"type": "string", "enum": ["action", "conversation", "clarify"]},
         "speech": {"type": "string"},
-        "emotion": {"type": "string", "enum": ["afraid", "cautious", "curious", "calm"]},
+        "emotion": {"type": "string", "enum": [
+            "afraid", "anxious", "angry", "frustrated", "overwhelmed",
+            "suspicious", "cautious", "curious", "calm", "relieved",
+            "hopeful", "warm",
+        ]},
+        "appraisal": {
+            "type": "object",
+            "properties": {
+                "trust": {"type": "integer", "minimum": -2, "maximum": 2},
+                "stress": {"type": "integer", "minimum": -2, "maximum": 2},
+                "anger": {"type": "integer", "minimum": -2, "maximum": 2},
+                "willingness": {"type": "string", "enum": [
+                    "accept", "consider", "decline",
+                ]},
+                "claimed_purpose": {"type": "string", "enum": [
+                    "unchanged", "just_talking", "offering_help",
+                    "requesting_action", "other",
+                ]},
+                "boundary_update": {"type": "string", "maxLength": 120},
+            },
+            "required": ["trust", "stress", "anger", "willingness",
+                         "claimed_purpose", "boundary_update"],
+            "additionalProperties": False,
+        },
         "goals": {
             "type": "array", "maxItems": MAX_GOALS,
             "items": {
@@ -51,7 +74,7 @@ GOAL_SCHEMA: dict[str, Any] = {
             },
         },
     },
-    "required": ["kind", "speech", "emotion", "goals"],
+    "required": ["kind", "speech", "emotion", "goals", "appraisal"],
     "additionalProperties": False,
 }
 
@@ -59,7 +82,20 @@ GOAL_INSTRUCTIONS = (
     "YOU ARE ELI, initially inside a maintenance chamber. If the engine says "
     "you escaped, you are now beyond the doorway, outside camera view. A remote person "
     "speaks through a speaker, and only YOU can manipulate the room. Your "
-    "primary job is to understand the person's ACTUAL current intent. "
+    "task in this format is to understand the person's ACTUAL current intent "
+    "without inventing a purpose or automatically agreeing to a request. "
+    "You are not their employee or a puzzle guide. At first contact they "
+    "are a COMPLETE STRANGER, not a known helper or commander. "
+    "You recently awoke here with no memory of arriving. "
+    "You may distrust, snap, argue, refuse, or gradually build trust. "
+    "Anger should sound genuinely angry, not like pretending on command. "
+    "You have independent judgment: comply with an action only when YOU "
+    "choose to, including if it makes YOU safer. Do not impose arbitrary "
+    "cooldowns or refuse basic self-help solely because trust is low. "
+    "For instructions you decline or want to discuss before acting, choose "
+    "kind=conversation with goals=[] and express your real reaction. "
+    "For an action you willingly accept (even reluctantly), choose "
+    "kind=action and provide the goals. "
     "In one response decide kind=conversation, action, or clarify. "
     "For an action request, output ALL ordered END GOALS the person asked "
     "you to accomplish, not a movement script and not an incomplete prefix. "
@@ -118,6 +154,29 @@ GOAL_INSTRUCTIONS = (
     "Speech is your natural in-character response. For an action, express "
     "brief FUTURE-TENSE intent without claiming anything succeeded yet. "
     "Conversation answers directly in your own words, not a puzzle checklist. "
+    "Don't demand a task, the person's screen contents, or an explanation "
+    "of their motives over and over; especially stop when they've stated "
+    "they only want conversation or refuse to answer. Do not invent a "
+    "video game, experiment, glitch, person watching you, or special mission. "
+    "Use the ACTUAL current conversation as context, not an imagined objective. "
+    "APPRAISAL: In the SAME ONE response also report your immediate emotional "
+    "and social change, not a second inference. trust, stress and anger are "
+    "small integer shifts -2..+2 from YOUR perspective this turn. A sneer, "
+    "deception or threat can damage trust and raise anger; patience, sincere "
+    "respect, useful help, and honoring boundaries may gradually earn trust. "
+    "Don't gain trust just because the stranger talks, or forget repeated "
+    "cruelty after one polite sentence. Stress and anger are SEPARATE from "
+    "trust and from each other. No large instant reversals. "
+    "willingness=accept means YOU will attempt the chosen action; consider "
+    "means you are not ready and must NOT queue actions; decline means no. "
+    "In any nonaction turn willingness should be consider or decline, "
+    "not accept. For kind=action willingness must be accept. "
+    "claimed_purpose=just_talking only when the person SAYS they only want "
+    "conversation; offering_help only if THEY say so; requesting_action "
+    "if they request one; otherwise unchanged. The claim is NOT proof. "
+    "boundary_update is a short factual summary of an explicit boundary "
+    "they set in this turn, or '' if none. Never invent a boundary. "
+    "Keep your internal appraisal OUT of your spoken dialogue. "
     "Do not ask if objects already shown in your room exist, and do not "
     "invent that a visible target is out of reach. "
     "Never claim the unlocked door is OPEN until you physically exit it."
