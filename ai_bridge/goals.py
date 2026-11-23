@@ -180,10 +180,18 @@ def validate_goals(raw: Any, world: dict[str, Any],
                 if target != "keypad":
                     raise GoalRejected("Only the keypad accepts digits")
                 if argument.lower() in ("", "known", "discovered", "observed", "that code"):
-                    argument = code_from_observation
+                    if len(typed_codes) == 1:
+                        # A code stated NOW outranks any older observed clue.
+                        argument = next(iter(typed_codes))
+                    elif len(typed_codes) > 1:
+                        raise GoalRejected("Several codes were given; choose one")
+                    else:
+                        argument = code_from_observation
                 if not re.fullmatch(r"[0-9]{4}", argument):
                     raise GoalRejected("Eli needs an actual four-digit code")
-                if argument not in typed_codes and argument != code_from_observation:
+                if typed_codes and argument not in typed_codes:
+                    raise GoalRejected("Chosen digits contradict the current operator message")
+                if not typed_codes and argument != code_from_observation:
                     raise GoalRejected("Those digits were never provided or observed")
             elif action == "use":
                 if target not in USABLE:
