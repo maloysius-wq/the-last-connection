@@ -154,8 +154,10 @@ class GoalPipeline(unittest.TestCase):
             validate_goals([goal("take", "breaker_box")], world(), "Take it", [])
         with self.assertRaises(GoalRejected):
             validate_goals([goal("use", "ceiling")], world(), "Try it", [])
+        scene = world()
+        scene["objects"]["wall"] = {"visible": True, "description": "Heavy wall."}
         result = validate_goals([goal("experiment", "wall", "knock three times")],
-                                world(), "Let's make some noise", [])
+                                scene, "Let's make some noise", [])
         self.assertEqual(result[0], goal("experiment", "wall", "knock three times"))
 
     def test_repeated_actions_collapse_without_quote_matching(self):
