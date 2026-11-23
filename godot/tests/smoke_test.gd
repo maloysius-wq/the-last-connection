@@ -121,6 +121,32 @@ func _run() -> void:
         app.call("_update_idle")
         _expect(not update_btn.disabled and update_btn.text == "CHECK FOR UPDATES",
             "Update button can be used again after a check finishes")
+    var export_btn: Button = app.get("export_button")
+    _expect(export_btn != null, "Player can export conversation and diagnostics as ZIP")
+    if export_btn != null:
+        _expect(export_btn.focus_mode == Control.FOCUS_NONE,
+            "Export button does not steal keyboard focus from chat")
+        _expect(not export_btn.disabled,
+            "Export button is accessible without starting an action")
+    var pre_experiment_power := bool(world.snapshot()["lights_on"])
+    world.perform_action("experiment", "room", "dance awkwardly to test the camera")
+    var weird: Array = await world.action_finished
+    _expect(weird[2] == true and "dance awkwardly" in str(weird[3]),
+        "Eli actually attempts a free-form movement inside the room")
+    _expect(world.snapshot()["lights_on"] == pre_experiment_power,
+        "Unusual physical experiments cannot invent electricity or puzzle success")
+    world.perform_action("experiment", "exit_door", "knock on the door")
+    weird = await world.action_finished
+    _expect(weird[2] == true and "knock on the door" in str(weird[3]),
+        "Eli walks to the real door and experiments without an artificial phrase dictionary")
+    _expect(world.snapshot()["actor_at"] == "exit_door",
+        "Experiment changes position to the real prop")
+    _expect(not world.snapshot()["door_unlocked"],
+        "Creative experiments do not counterfeit a keypad unlock")
+    world.reset_state()
+    _expect(world.snapshot()["objects"].has("desk") and
+            world.snapshot()["objects"].has("wall"),
+        "Room surfaces are now present as actual visible scene targets")
     _expect(not world.snapshot()["inventory"].has("flashlight"), "Flashlight begins on desk")
     world.perform_action("move_to", "breaker_box")
     var moved: Array = await world.action_finished
