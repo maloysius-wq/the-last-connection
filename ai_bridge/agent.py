@@ -13,7 +13,7 @@ from typing import Any, Protocol
 
 from .intent import PlayerIntent, classify, mentioned_targets, plan_actions
 from .goals import (GOAL_SCHEMA, GOAL_INSTRUCTIONS, GoalRejected,
-                    validate_goals, known_code_context, remove_satisfied_compound_goals)
+                    validate_goals, known_code_context, observed_code, remove_satisfied_compound_goals)
 from .semantic import (SCHEMA as SEMANTIC_SCHEMA, INSTRUCTIONS as SEMANTIC_INSTRUCTIONS,
                        REVIEW_SCHEMA, PlanRejected, review_messages, validated_steps,
                        is_reflective_question, needs_action_review,
@@ -396,6 +396,10 @@ class Agent:
             "a nearby object is not the same as an object across the room. "
             "Do not reveal concealed puzzle information from object IDs or "
             "unexamined clues. If uncertain, admit it and reason conversationally. "
+            "Speak like a real person over an intercom rather than a poetic "
+            "horror narrator: keep concrete observations, nerves and occasional "
+            "humor, but don't invent shadows, sounds or physical effects. "
+            "A flashlight held in your hand cannot also rest on the desk. "
             "When the operator introduces themselves or says they arrived "
             "to help, greet them, acknowledge the strange situation and reply "
             "like a real person. Do not volunteer administrative reports about "
@@ -588,7 +592,8 @@ class Agent:
                    if (clean := self._clean_turn(turn)) is not None]
         facts = [{"action": fact.get("action", ""), "target": fact.get("target", ""),
                   "success": fact.get("success") is True,
-                  "description": str(fact.get("description", ""))[:400]}
+                  "description": str(fact.get("description", ""))[:400],
+                  "entered_code": fact.get("entered_code", "")}
                  for fact in state.get("facts", [])[-6:] if isinstance(fact, dict)]
         system_context = (self.goal_system if goal else
                           self.semantic_system if semantic else
@@ -616,6 +621,10 @@ class Agent:
                                   if isinstance(fact, dict) and fact.get("success")) < 3
                            else "still scared, but cautiously cooperating after verified help"),
                 "door_previously_attempted": has_door_attempt,
+                "firsthand_sensory_memory": {
+                    "you_actually_heard_knocks": world.get("heard_knocks") is True,
+                    "source": "Godot room event, not inference from conversation",
+                },
                 "your_current_room": self._perceived_world(world),
                 "verified_action_memory": self._confirmed_event_ledger(
                     state.get("facts", [])),
@@ -645,7 +654,10 @@ class Agent:
                 "dialogue, as action history. A first-ever inspection is NOT a "
                 "re-check. When recalling actions, use exact event counts; do not "
                 "invent earlier visits or express surprise at actions you demonstrably "
-                "performed during this same session. The engine's confirmed outcome "
+                "performed during this same session. If the world says "
+                "you heard knocking, you personally HEARD it when it happened. "
+                "Only its cause is mysterious. Do not reframe hearing it as "
+                "a memory you invented later. The engine's confirmed outcome "
                 "is real, even when the circumstances are mysterious. "
                 "\nCANONICAL PERSPECTIVE AND CURRENT PHYSICAL EVIDENCE. "
                                "These facts are true regardless of how the remote "
@@ -690,6 +702,7 @@ class Agent:
             # A NEW operator turn owns a NEW sequence of verified operations.
             # Never leak an interrupted prior queue into its reaction.
             state["pending_turn_events"] = []
+            state["turn_goals"] = []
             self.store.trace(session_id, "player_input", {
                 "text": player_text, "actor_at": world.get("actor_at"),
                 "inventory": world.get("inventory", []),
@@ -747,6 +760,7 @@ class Agent:
                 # successful movement or discovery.
                 state["requested_goal_target"] = actions[-1]["target"]
                 state["goal_start_conditions"] = self._physical_conditions(world)
+                state["turn_goals"] = list(actions)
             else:
                 state.pop("goal_start_conditions", None)
                 speech = self._ground_dialogue(
@@ -1136,7 +1150,8 @@ class Agent:
     def _ground_verified_outcome(speech: str, action: str, target: str,
                                  success: bool, description: str,
                                  world: dict[str, Any], *,
-                                 turn_events: list[dict[str, Any]] | None = None) -> str:
+                                 turn_events: list[dict[str, Any]] | None = None,
+                                 verified_codes: set[str] | None = None) -> str:
         """Screen model dialogue against the single *completed* engine event.
 
         Never use prose to mutate the world. A suspect statement is omitted
@@ -1147,7 +1162,10 @@ class Agent:
             return ""
         text = re.sub(r"(?is)<think>.*?</think>", "", speech).strip()
         text = re.sub(r"^(?:Eli|Assistant)\s*:\s*", "", text, flags=re.I)
-        verified = Agent._finish_spoken_reply(text)
+        # Speech should sound like a live reaction, not a lengthy narrated
+        # horror paragraph. Preserve finished sentences and the character.
+        verified = Agent._finish_spoken_reply(
+            text, sentence_limit=3, character_limit=390)
         if not verified:
             return ""
         # Prevent surprise puzzle secrets, especially a guessed door code.
@@ -1157,9 +1175,12 @@ class Agent:
         evidence_text = " ".join(
             str(event.get("description", "")) for event in receipt
             if isinstance(event, dict)) if receipt else description
-        if (re.search(r"\b\d{4}\b", verified) and
-                not set(re.findall(r"\b\d{4}\b", verified)).issubset(
-                    set(re.findall(r"\b\d{4}\b", evidence_text)))):
+        # A clue Eli genuinely READ or a code the engine just ENTERED is
+        # legitimate first-hand knowledge even when the *latest* observation
+        # (e.g. "keypad turned green") does not repeat those four digits.
+        approved_digits = set(re.findall(r"\b\d{4}\b", evidence_text))
+        approved_digits.update(verified_codes or ())
+        if not set(re.findall(r"\b\d{4}\b", verified)).issubset(approved_digits):
             return ""
         seen = mentioned_targets(verified)
         completed_targets = {target}
@@ -1217,7 +1238,8 @@ class Agent:
     def _model_outcome_reply(self, state: dict[str, Any], action: str,
                              target: str, success: bool, description: str,
                              world: dict[str, Any], *,
-                             turn_events: list[dict[str, Any]] | None = None) -> str:
+                             turn_events: list[dict[str, Any]] | None = None,
+                             session_id: str = "") -> str:
         if not callable(getattr(self.backend, "converse", None)):
             # Legacy deterministic mock-mode remains clearly marked as such.
             return self._acknowledge(action, target, success, world, description)
@@ -1274,6 +1296,9 @@ class Agent:
             "Ground physical/sensory detail in the verified descriptions "
             "and conditions. Don't invent a beam color, a sound that wasn't "
             "heard, or a puzzle effect absent from Godot's evidence. "
+            "Speak to the operator like a nervous person, not a dramatic "
+            "horror narrator or status screen. One to three short sentences "
+            "are plenty; keep your humor, warmth and personality. "
             "Now answer as Eli in one or two emotionally believable, "
             "spontaneous sentences. React primarily to the most important "
             "change in the whole sequence, not just the final survey; do "
@@ -1284,6 +1309,23 @@ class Agent:
             "fear, suspicion, relief, or surprise at its consequences, but "
             "do not erase your own firsthand memory."
         )
+        if world.get("escaped") is True and any(
+                event.get("action") == "use" and event.get("target") == "exit_door"
+                and event.get("success") is True for event in events):
+            prompt += (
+                " YOU JUST OPENED THE UNLOCKED DOOR AND STEPPED OUT OF CAMERA "
+                "VIEW. This is a completed escape, not merely the earlier "
+                "keypad unlocking. React to having left the room, even if "
+                "you still fear what lies beyond it."
+            )
+        trusted_codes = {
+            fact["entered_code"] for fact in state.get("facts", [])
+            if isinstance(fact, dict) and isinstance(fact.get("entered_code"), str)
+            and re.fullmatch(r"[0-9]{4}", fact["entered_code"])
+        }
+        known = observed_code(state.get("facts", []))
+        if known:
+            trusted_codes.add(known)
         for attempt in range(2):
             spoken = self.backend.converse(self._messages(
                 state, prompt + ("\nYour previous reply conflicted with the "
@@ -1293,9 +1335,17 @@ class Agent:
                 verified_turn_receipt=chronology))
             grounded = self._ground_verified_outcome(
                 spoken, action, target, success, description, world,
-                turn_events=events)
+                turn_events=events, verified_codes=trusted_codes)
             if grounded:
                 return grounded
+            if session_id:
+                # The rejected candidate is useful for diagnosing a silent
+                # reply, but it is never displayed to Eli or made into memory.
+                self.store.trace(session_id, "outcome_speech_filtered", {
+                    "action": action, "target": target,
+                    "candidate": str(spoken)[:500],
+                    "reason": "Unverified physical detail, numeric clue, or incomplete speech",
+                })
         return ""
 
     @staticmethod
@@ -1812,6 +1862,14 @@ class Agent:
                     r"\s+(?:that|it|the\s+flashlight)|pick\s+(?:it|that)\s+up)\b",
                     "should I pick it up",
                     speech, flags=re.I)
+        # Repair a specific impossible spatial conjunction using the engine's
+        # authoritative HELD state, without altering the operator's words.
+        # The same prop cannot currently be on the desk and in Eli's hand.
+        if "flashlight" in world.get("inventory", []):
+            speech = re.sub(
+                r"\bOn (?:the|that) (?:desk|table),\s*"
+                r"(?:the )?flashlight is (?:now )?in my hand\b",
+                "The flashlight is in my hand", speech, flags=re.I)
         # A fresh room or a session with no attempted door interaction does
         # not provide evidence that the door REMAINS locked from an earlier
         # attempt. "The door is locked" is a present observation and valid.
@@ -1915,15 +1973,17 @@ class Agent:
                 "but I'm glad we can talk.")
 
     @staticmethod
-    def _finish_spoken_reply(text: str, *, detailed: bool = False) -> str:
+    def _finish_spoken_reply(text: str, *, detailed: bool = False,
+                             sentence_limit: int | None = None,
+                             character_limit: int | None = None) -> str:
         """Keep only COMPLETE spoken sentences, never slice the last word.
 
         Local GGUF backends can reach their token ceiling in mid-sentence, and
         the previous [:650] output cap cut Eli off visibly. Preserve the last
         complete thought, with a comfortable, adaptive dialogue length.
         """
-        max_sentences = 8 if detailed else 7
-        max_chars = 1150 if detailed else 500
+        max_sentences = sentence_limit if sentence_limit is not None else (8 if detailed else 7)
+        max_chars = character_limit if character_limit is not None else (1150 if detailed else 500)
         pieces = re.split(r"(?<=[.!?])\s+", text.strip())
         kept: list[str] = []
         for part in pieces:
@@ -2200,9 +2260,25 @@ class Agent:
             raise InvalidRequest("Invalid outcome speech flag")
         with self._lock:
             state = self.store.load(session_id)
-            state["facts"] = (state.get("facts", []) + [
-                {"action": action, "target": target, "success": success, "description": description}
-            ])[-60:]
+            # The code actually typed is retrieved from the already-validated
+            # ordered engine goals. Raw conversation/LLM prose cannot create
+            # a verified keypad memory, even when it contains four digits.
+            pending_before = state.get("pending_turn_events", [])
+            if not isinstance(pending_before, list):
+                pending_before = []
+            plan = state.get("turn_goals", [])
+            planned_step = (plan[len(pending_before)] if isinstance(plan, list)
+                            and len(plan) > len(pending_before) else None)
+            entry = {"action": action, "target": target,
+                     "success": success, "description": description}
+            if (action == "enter_code" and target == "keypad"
+                    and isinstance(planned_step, dict)
+                    and planned_step.get("action") == action
+                    and planned_step.get("target") == target
+                    and isinstance(planned_step.get("argument"), str)
+                    and re.fullmatch(r"[0-9]{4}", planned_step["argument"])):
+                entry["entered_code"] = planned_step["argument"]
+            state["facts"] = (state.get("facts", []) + [entry])[-60:]
             # Queue outcomes arrive one HTTP request at a time. Accumulate
             # them independently of model speech so the final reply has the
             # actual complete cause/effect chain. A fresh decide() resets it.
@@ -2234,7 +2310,7 @@ class Agent:
                 try:
                     speech = self._model_outcome_reply(
                         state, action, target, success, description, world,
-                        turn_events=pending)
+                        turn_events=pending, session_id=session_id)
                 except BackendUnavailable:
                     # OBSERVATION already displays authoritative facts; do not
                     # replace Eli with a canned phrase or interrupt the queue.
@@ -2244,6 +2320,7 @@ class Agent:
                 # no earlier turn can be misremembered as a future action.
                 state["pending_turn_events"] = []
                 state.pop("goal_start_conditions", None)
+                state.pop("turn_goals", None)
                 self.store.save(session_id, state)
             if speech:
                 history = [clean for turn in state.get("history", [])[-22:]

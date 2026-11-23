@@ -336,7 +336,14 @@ func _finish_action(action: String, target: String, argument: String) -> void:
         else:
             description = "Eli walked to the " + target.replace("_", " ") + " and is standing beside it."
     elif action == "inspect":
-        if target == "maintenance_note":
+        if target == "exit_door":
+            # Inspect the actual latch without changing the door state.
+            # A lock check must NEVER become an irreversible escape.
+            description = ("Eli checked the door latch. It is unlocked, but "
+                + "the door remains closed and Eli is still inside the room.") if door_unlocked else (
+                "Eli checked the door latch. It is locked, and the door "
+                + "remains closed. The keypad beside it glows red.")
+        elif target == "maintenance_note":
             # The secret writing is revealed by an actual close inspection,
             # never by a generic room snapshot or a brief look around.
             description = str(descriptions[target])
@@ -445,7 +452,7 @@ func _survey_result() -> String:
     # appear merely because Eli glanced around.
     var light_text := "The handheld flashlight is on." if flashlight_on else (
         "The flashlight is in Eli's hand but switched off." if inventory.has("flashlight")
-        else "The flashlight is still on the desk.")
+        else "The flashlight rests on the desk.")
     var power_text := "The overhead lights are on." if breaker_on else "The overhead lights are out."
     var door_text := "The keypad glows green and the door is unlocked." if door_unlocked else (
         "The keypad glows red beside the locked door.")

@@ -83,7 +83,18 @@ GOAL_INSTRUCTIONS = (
     "switching it off is use/flashlight/argument=off. Turning room power on "
     "is use/breaker_box/empty argument. Opening or trying a door is "
     "use/exit_door/empty argument whether currently locked or unlocked. "
+    "Checking whether a door is locked, examining its handle, or testing "
+    "its lock STATUS is inspect/exit_door, NOT use/exit_door. "
+    "use/exit_door OPENS the door and EXITS the room if unlocked; it is "
+    "irreversible and is NEVER a mere inspection, a check, or an automatic "
+    "follow-up to a green keypad. An explicit request to open, walk through, "
+    "or leave is the use/exit_door end goal. "
     "Reading a note is inspect/maintenance_note; looking around is survey/room. "
+    "For a DIRECT request to physically look or scan around the room and "
+    "report back, choose action/survey/room, which really moves your head "
+    "before describing the room. A casual question about what you ALREADY "
+    "see, without requesting a new survey, can be conversation. "
+    "Never pretend to perform a new scan in conversation-only speech. "
     "For keypad entry output enter_code/keypad and argument=the four digits "
     "given by the operator, or argument='known' if the operator refers to "
     "a code you physically discovered. If no known code or digits are "
@@ -289,4 +300,20 @@ def validate_goals(raw: Any, world: dict[str, Any],
             compact.append(goal)
     if not compact:
         raise GoalRejected("No executable goals remain")
+
+    # A door-use in an unlocked room is an irreversible EXIT, not a check.
+    # If a proposal opens and then inspects that same door, preserve the
+    # explicitly proposed SAFE observation and drop the contradictory exit.
+    # This resolves engine goal semantics, not the operator's words.
+    # No goal may follow an actual exit, since Eli is then outside.
+    terminal = {"action": "use", "target": "exit_door", "argument": ""}
+    if terminal in compact:
+        exit_at = compact.index(terminal)
+        after_exit = compact[exit_at + 1:]
+        if after_exit and all(
+                goal["action"] == "inspect" and goal["target"] == "exit_door"
+                for goal in after_exit):
+            compact = compact[:exit_at] + after_exit
+        elif after_exit:
+            raise GoalRejected("Leaving the room must be the last physical goal")
     return tuple(compact)
