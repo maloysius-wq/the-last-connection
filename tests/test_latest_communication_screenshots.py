@@ -34,8 +34,24 @@ class TestCurrentScreenshots(unittest.TestCase):
             "Do you see the lever on the breaker box?"))
         self.assertTrue(is_reflective_question(
             "Can you see the power switch?"))
+        self.assertTrue(is_reflective_question(
+            "Eli, do you see the lever on the breaker box?"))
         self.assertFalse(is_reflective_question(
             "Do you see the lever? Go ahead and flip it."))
+
+    def test_eli_vocative_does_not_block_semantic_second_pass(self):
+        from ai_bridge.semantic import contains_explicit_action_request
+        text = "Eli, go get the flashlight"
+        self.assertTrue(contains_explicit_action_request(text))
+        with TemporaryDirectory() as tmp:
+            backend = AuditedBackend(
+                proposed("clarify", [], "Which action do you mean?"),
+                audited([step("take", "flashlight", "go get the flashlight")]))
+            decision = Agent(
+                backend, SessionStore(Path(tmp)), PERSONA).decide("eli", text, world())
+            self.assertEqual(decision.action, "take")
+            self.assertEqual(decision.target, "flashlight")
+            self.assertEqual(backend.review_calls, 1)
 
     def test_go_to_desk_then_pick_up_flashlight_is_valid_sequence(self):
         text = "Move over to the desk and pick up the flashlight"
