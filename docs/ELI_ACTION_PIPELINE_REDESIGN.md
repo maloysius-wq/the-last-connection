@@ -1,6 +1,6 @@
 # Eli interaction pipeline: goal-engine rebuild
 
-Status: Implemented on development PR #33; release only after current-head Python, Godot and Windows CI pass. The older two-pass pipeline below describes HISTORICAL failures, not the production code in this PR.
+Status: **SHIPPED.** PR #33 merged to main as `9b7eba272ed7cdef22c5bab87a5abd60dd5f6b6b`; main Python/Godot CI `45243321217` and Windows portable release `45243321210` passed. Download: https://github.com/maloysius-wq/the-last-connection/releases/tag/portable-9b7eba272ed7cdef22c5bab87a5abd60dd5f6b6b . The older two-pass pipeline below describes historical failures, **not the active production path**.
 
 ## New production architecture
 
