@@ -107,13 +107,19 @@ When Eli misunderstands something, press **EXPORT CONVERSATION + LOGS ZIP** in t
 
 Each archive contains:
 - `conversation.txt`: the full text currently visible in the terminal (including player, Eli, and authoritative OBSERVATION/SYSTEM lines)
-- `diagnostics.jsonl`: session-scoped player messages, raw structured model proposals, review outputs, chosen plans, any plan-validation issue and engine-confirmed results
+- `diagnostics.jsonl`: player input, one structured goal proposal and inference latency, verified engine goals, any capability/data issue, and real Godot outcomes (older exported sessions may contain the retired two-pass review events)
 - `conversation_state.json` and `current_room.json`: conversation state plus the exact room flags/items when exported
 - `export_manifest.json` and `README.txt`: session identifier and how to interpret the export
 
 The ZIP is **created locally only after clicking the button**, is never automatically uploaded, and excludes the GGUF file, other saved conversations, microphone recordings, passwords and API credentials. Its contents can include everything you typed and Eli said, so review the ZIP before sharing it.
 
 The game also appends displayed conversation lines (YOU, ELI, OBSERVATION and SYSTEM) to `user_data/<session_id>.transcript.txt` as they happen. When reopening the game, it restores that session's visible conversation without replaying Eli's voice or duplicating saved lines. **NEW SESSION / RESET ROOM** starts a separate transcript, leaving the previous session's text file available for investigation. Like save files, these private local transcripts are retained by the in-game updater; you can remove old transcript files manually after you no longer need them. This update cannot reconstruct dialogue that disappeared during restarts **before** transcript persistence was installed. Neither the text files nor the diagnostics are sent to any external service.
+
+## How Eli handles instructions
+
+The production AI now interprets each player utterance as either conversation or **up to five physical end goals in order**, using a **single inference on your existing local GGUF**. There is no second AI opinion, no regex phrasebook deciding what you meant, and no requirement for the model to copy fragments of your sentence as action permission. Godot itself checks whether the room supports each goal, automatically walks Eli to an interactable object, performs the interaction, and records the true result. For example, asking him to open the door should not require a separate walk-to-door command. The action queue stops after an actual failed step. Eli can still attempt unusual physical experiments without hallucinating a new puzzle effect.
+
+If the model supplies a goal the physical engine cannot safely perform, you see a specific **SYSTEM: Goal not executed** message, rather than a fabricated explanation from Eli. Codes are accepted only if you state the four digits or Eli has read them through a confirmed close-up note inspection. The game never treats model-spoken clues as verified observations.
 
 ## Experimental actions
 
