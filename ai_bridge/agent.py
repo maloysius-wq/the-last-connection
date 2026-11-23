@@ -871,7 +871,7 @@ class Agent:
                 re.escape(obj.replace("_", r"\s*")) + r"\b", verified, re.I):
                 return ""
         if not success and re.search(
-                r"\b(?:i\s+(?:got|did|opened|unlocked|restored|fixed|"
+                r"\b(?:i\s+(?:(?:just|already)\s+)?(?:got|did|opened|unlocked|restored|fixed|"
                 r"turned|switched)|it\s+(?:worked|opened|unlocked)|"
                 r"we(?:'ve|\s+have)\s+(?:done|made)\s+it)\b",
                 verified, re.I):
