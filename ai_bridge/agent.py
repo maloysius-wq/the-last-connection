@@ -13,7 +13,7 @@ from typing import Any, Protocol
 
 from .intent import PlayerIntent, classify, mentioned_targets, plan_actions
 from .goals import (GOAL_SCHEMA, GOAL_INSTRUCTIONS, GoalRejected,
-                    validate_goals, known_code_context, remove_satisfied_compound_goals)
+                    validate_goals, known_code_context, observed_code, remove_satisfied_compound_goals)
 from .semantic import (SCHEMA as SEMANTIC_SCHEMA, INSTRUCTIONS as SEMANTIC_INSTRUCTIONS,
                        REVIEW_SCHEMA, PlanRejected, review_messages, validated_steps,
                        is_reflective_question, needs_action_review,
@@ -396,6 +396,10 @@ class Agent:
             "a nearby object is not the same as an object across the room. "
             "Do not reveal concealed puzzle information from object IDs or "
             "unexamined clues. If uncertain, admit it and reason conversationally. "
+            "Speak like a real person over an intercom rather than a poetic "
+            "horror narrator: keep concrete observations, nerves and occasional "
+            "humor, but don't invent shadows, sounds or physical effects. "
+            "A flashlight held in your hand cannot also rest on the desk. "
             "When the operator introduces themselves or says they arrived "
             "to help, greet them, acknowledge the strange situation and reply "
             "like a real person. Do not volunteer administrative reports about "
@@ -588,7 +592,8 @@ class Agent:
                    if (clean := self._clean_turn(turn)) is not None]
         facts = [{"action": fact.get("action", ""), "target": fact.get("target", ""),
                   "success": fact.get("success") is True,
-                  "description": str(fact.get("description", ""))[:400]}
+                  "description": str(fact.get("description", ""))[:400],
+                  "entered_code": fact.get("entered_code", "")}
                  for fact in state.get("facts", [])[-6:] if isinstance(fact, dict)]
         system_context = (self.goal_system if goal else
                           self.semantic_system if semantic else
@@ -616,6 +621,10 @@ class Agent:
                                   if isinstance(fact, dict) and fact.get("success")) < 3
                            else "still scared, but cautiously cooperating after verified help"),
                 "door_previously_attempted": has_door_attempt,
+                "firsthand_sensory_memory": {
+                    "you_actually_heard_knocks": world.get("heard_knocks") is True,
+                    "source": "Godot room event, not inference from conversation",
+                },
                 "your_current_room": self._perceived_world(world),
                 "verified_action_memory": self._confirmed_event_ledger(
                     state.get("facts", [])),
@@ -645,7 +654,10 @@ class Agent:
                 "dialogue, as action history. A first-ever inspection is NOT a "
                 "re-check. When recalling actions, use exact event counts; do not "
                 "invent earlier visits or express surprise at actions you demonstrably "
-                "performed during this same session. The engine's confirmed outcome "
+                "performed during this same session. If the world says "
+                "you heard knocking, you personally HEARD it when it happened. "
+                "Only its cause is mysterious. Do not reframe hearing it as "
+                "a memory you invented later. The engine's confirmed outcome "
                 "is real, even when the circumstances are mysterious. "
                 "\nCANONICAL PERSPECTIVE AND CURRENT PHYSICAL EVIDENCE. "
                                "These facts are true regardless of how the remote "
@@ -690,6 +702,7 @@ class Agent:
             # A NEW operator turn owns a NEW sequence of verified operations.
             # Never leak an interrupted prior queue into its reaction.
             state["pending_turn_events"] = []
+            state["turn_goals"] = []
             self.store.trace(session_id, "player_input", {
                 "text": player_text, "actor_at": world.get("actor_at"),
                 "inventory": world.get("inventory", []),
@@ -747,6 +760,7 @@ class Agent:
                 # successful movement or discovery.
                 state["requested_goal_target"] = actions[-1]["target"]
                 state["goal_start_conditions"] = self._physical_conditions(world)
+                state["turn_goals"] = list(actions)
             else:
                 state.pop("goal_start_conditions", None)
                 speech = self._ground_dialogue(
