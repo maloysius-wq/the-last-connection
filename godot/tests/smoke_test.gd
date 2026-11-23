@@ -206,10 +206,41 @@ func _run() -> void:
     var result: Array = await world.action_finished
     _expect(result[2] == true, "Flashlight pickup succeeds")
     _expect(world.snapshot()["inventory"].has("flashlight"), "Inventory updates after pickup")
+    # The user reported "I flipped it but nothing happened". Distinguish
+    # a look at the switch from actual activation before and after power.
+    world.perform_action("inspect", "breaker_box")
+    result = await world.action_finished
+    _expect(result[2] == true and "has not flipped" in str(result[3]),
+        "Pre-power inspection does not claim the breaker was activated")
+    _expect(not world.snapshot()["lights_on"] and not world.note_mesh.visible,
+        "Inspecting never changes power or reveals the code note")
+    _expect(world.breaker_lever.position.y < 1.5,
+        "Unpowered breaker lever is visibly down")
     world.perform_action("use", "breaker_box")
     result = await world.action_finished
-    _expect(result[2] == true, "Breaker can be switched on")
+    _expect(result[2] == true and "restored" in str(result[3]),
+        "Breaker can be switched on and reports restoration")
     _expect(world.snapshot()["lights_on"] == true, "Breaker changes lighting state")
+    _expect(world.breaker_lever.position.y > 1.5 and world.note_mesh.visible,
+        "Restoring power physically raises the switch and reveals the note")
+    _expect(world.overhead_light.light_energy > 1.0,
+        "Power restoration visibly brightens the overhead lights")
+    _expect("lever is up" in str(world.snapshot()["objects"]["breaker_box"]["description"]),
+        "World snapshot and dialogue context know the switch is now up")
+    world.perform_action("inspect", "breaker_box")
+    result = await world.action_finished
+    _expect(result[2] == true and "lever is up" in str(result[3]),
+        "Inspecting after power restoration cannot claim the lever remains down")
+    world.perform_action("use", "breaker_box")
+    result = await world.action_finished
+    _expect(result[2] == true and "already up" in str(result[3]),
+        "Repeating an already completed breaker action reports the true state")
+    _expect("Nothing happened" not in str(result[3]) and
+            "knocks" not in str(result[3]),
+        "Repeated action neither falsely fails nor replays one-time knocking")
+    _expect(world.snapshot()["lights_on"] == true and
+            world.snapshot()["objects"].has("maintenance_note"),
+        "Repeated breaker use preserves power and the visible clue")
     world.perform_action("use", "exit_door")
     result = await world.action_finished
     _expect(result[2] == false, "Exit remains locked before solving puzzle")
@@ -231,8 +262,14 @@ func _run() -> void:
     var saved: Dictionary = world.export_state()
     world.reset_state()
     _expect(world.snapshot()["escaped"] == false, "Room reset works")
+    _expect(world.snapshot()["lights_on"] == false and not world.note_mesh.visible and
+            world.breaker_lever.position.y < 1.5,
+        "Reset restores powered-off visuals as well as saved puzzle state")
     world.restore_state(saved)
     _expect(world.snapshot()["escaped"] == true, "Escape save restores correctly")
+    _expect(world.snapshot()["lights_on"] == true and world.note_mesh.visible and
+            world.breaker_lever.position.y > 1.5,
+        "Restoring an old power-on save also restores visible breaker and note")
     # Exercise the ACTUAL terminal decision -> world-action handoff, not just
     # direct world.perform_action tests. A response with action=use must move
     # Eli and change authoritative inventory/flashlight state.

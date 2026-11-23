@@ -15,6 +15,8 @@ var note_mesh: Node3D
 var exit_door_mesh: MeshInstance3D
 var keypad_indicator: MeshInstance3D
 var overhead_light: OmniLight3D
+var breaker_lever: MeshInstance3D
+var breaker_indicator: MeshInstance3D
 var handheld_light: OmniLight3D
 var flashlight_on := false
 var actor_at := "room_center"
@@ -88,7 +90,13 @@ func _construct_room() -> void:
     note_mesh.visible = false
 
     _box(self, Vector3(0.0, 1.45, -3.31), Vector3(0.85, 1.0, 0.22), Color("444f57"))
-    _box(self, Vector3(0.0, 1.54, -3.17), Vector3(0.4, 0.12, 0.06), Color("b0a78b"))
+    # The breaker switch and its indicator visibly reflect power state.
+    # The static old bar was easy to mistake for a switch Eli never moved.
+    _box(self, Vector3(0.0, 1.54, -3.17), Vector3(0.4, 0.12, 0.06), Color("545d65"))
+    breaker_lever = _box(self, Vector3(0.0, 1.38, -3.10),
+        Vector3(0.11, 0.29, 0.10), Color("b0a78b"))
+    breaker_indicator = _box(self, Vector3(0.30, 1.72, -3.14),
+        Vector3(0.12, 0.12, 0.06), Color("b93232"))
     exit_door_mesh = _box(self, Vector3(2.0, 1.25, -3.29), Vector3(1.4, 2.5, 0.15), Color("3f454d"))
     _box(self, Vector3(2.54, 1.15, -3.13), Vector3(0.08, 0.21, 0.07), Color("b4b6ac"))
     _box(self, Vector3(3.0, 1.25, -3.3), Vector3(0.3, 0.5, 0.21), Color("535f69"))
@@ -100,6 +108,7 @@ func _construct_room() -> void:
     overhead_light.light_energy = 0.25
     overhead_light.omni_range = 8
     add_child(overhead_light)
+    _apply_power_visuals()
 
     actor = Node3D.new()
     actor.name = "Eli"
@@ -139,6 +148,18 @@ func _construct_room() -> void:
     camera.look_at(Vector3(0, 1.1, -1.2), Vector3.UP)
     camera.current = true
 
+func _apply_power_visuals() -> void:
+    # The saved/engine-authoritative breaker flag determines every visible
+    # consequence. A second USE request must never undo power implicitly.
+    overhead_light.light_energy = 1.5 if breaker_on else 0.25
+    note_mesh.visible = breaker_on
+    breaker_lever.position.y = 1.67 if breaker_on else 1.38
+    breaker_lever.rotation.z = -0.55 if breaker_on else 0.55
+    var indicator_material := StandardMaterial3D.new()
+    indicator_material.albedo_color = Color("4eaf81") if breaker_on else Color("b93232")
+    breaker_indicator.material_override = indicator_material
+
+
 func snapshot() -> Dictionary:
     var objects := {}
     for key in descriptions.keys():
@@ -150,7 +171,7 @@ func snapshot() -> Dictionary:
             continue
         var description: String = descriptions[key]
         if key == "breaker_box" and breaker_on:
-            description = "The breaker box is switched on and the lights are working."
+            description = "The breaker lever is up. Power is restored and the overhead lights are on."
         if key == "maintenance_note":
             description = "A folded note is on the desk; the writing must be examined closely."
         if key == "exit_door" and door_unlocked:
@@ -239,7 +260,21 @@ func _finish_action(action: String, target: String, argument: String) -> void:
         else:
             description = "Eli walked to the " + target.replace("_", " ") + " and is standing beside it."
     elif action == "inspect":
-        description = str(descriptions.get(target, "Nothing unusual is visible."))
+        if target == "maintenance_note":
+            # The secret writing is revealed by an actual close inspection,
+            # never by a generic room snapshot or a brief look around.
+            description = str(descriptions[target])
+        else:
+            var current_objects: Dictionary = snapshot()["objects"]
+            var item: Dictionary = current_objects.get(target, {})
+            description = str(item.get("description",
+                descriptions.get(target, "Nothing unusual is visible.")))
+        if target == "breaker_box":
+            description = ("Eli inspected the breaker. Its lever is up; "
+                + "the overhead lights are on, and a folded note is visible "
+                + "on the desk.") if breaker_on else (
+                "Eli inspected the breaker. Its lever is down and the overhead "
+                + "lights are out. He has not flipped the switch.")
     elif action == "take":
         if target == "flashlight" and not inventory.has("flashlight"):
             inventory.append("flashlight")
@@ -267,12 +302,21 @@ func _finish_action(action: String, target: String, argument: String) -> void:
             success = false
             description = "The keypad rejected the code. Its red indicator flashed twice."
     elif action == "use":
-        if target == "breaker_box" and not breaker_on:
-            breaker_on = true
-            knocks_heard = true
-            note_mesh.visible = true
-            overhead_light.light_energy = 1.5
-            description = "Eli restored the power and the room lights turned on. Three slow knocks sounded from the other side of the locked exit door. A folded note is now visible on the desk."
+        if target == "breaker_box":
+            if not breaker_on:
+                breaker_on = true
+                knocks_heard = true
+                _apply_power_visuals()
+                description = ("Eli flipped the breaker up. Power was restored, "
+                    + "the overhead lights switched on, and a folded note appeared "
+                    + "on the desk. Three slow knocks sounded behind the exit door.")
+            else:
+                # An idempotent repeat must acknowledge ALREADY ON, not say
+                # "Nothing happened" or imply the switch failed.
+                _apply_power_visuals()
+                description = ("Eli checked the breaker again. Its lever is "
+                    + "already up, the overhead lights are on, and a folded note "
+                    + "is visible on the desk. Power was restored earlier.")
         elif target == "exit_door" and door_unlocked:
             escaped = true
             exit_door_mesh.visible = false
@@ -346,8 +390,7 @@ func restore_state(data: Dictionary) -> void:
     handheld_light.visible = flashlight_on
     breaker_on = bool(data.get("breaker_on", false))
     knocks_heard = bool(data.get("knocks_heard", false))
-    overhead_light.light_energy = 1.5 if breaker_on else 0.25
-    note_mesh.visible = breaker_on
+    _apply_power_visuals()
     door_unlocked = bool(data.get("door_unlocked", false))
     escaped = bool(data.get("escaped", false))
     exit_door_mesh.visible = not escaped
