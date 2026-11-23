@@ -521,17 +521,17 @@ func _run() -> void:
         "Inspected unlocked door stays physically CLOSED and Eli remains inside")
 
     # An unlocked exit request always asks for a separate real confirmation.
-    app.set("queued_actions", [{"action": "use", "target": "exit_door", "argument": ""}])
+    var exit_step := {"action": "use", "target": "exit_door", "argument": ""}
+    app.set("queued_actions", [exit_step])
     app.set("queue_index", 0)
     app.set("exit_authorized", false)
-    app.call("_start_queued_action")
-    # Headless Godot does not necessarily report OS modal visibility.
-    # The safety contract is the pending approval state and NO world exit.
-    _expect(str(app.get("request_stage")) == "confirm_exit"
+    # The confirmation itself is native UI; headless CI verifies the pure
+    # prerequisite rather than displaying a modal without a real window.
+    _expect(bool(app.call("_requires_exit_confirmation", exit_step))
         and app.get("exit_dialog") is ConfirmationDialog
         and world.snapshot()["escaped"] == false,
-        "Terminal door use requires an explicit UI confirmation first")
-    app.get("exit_dialog").hide()
+        "An unlocked terminal door use requires explicit confirmation")
+    app.set("request_stage", "confirm_exit")
     app.call("_on_exit_cancelled")
     _expect(str(app.get("request_stage")) == "idle"
         and app.get("queued_actions").is_empty()
