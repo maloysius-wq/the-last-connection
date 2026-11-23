@@ -1456,8 +1456,18 @@ class Agent:
         if action == "take" and target == "flashlight":
             return "Got it. Flashlight in hand."
         if action == "use" and target == "breaker_box":
-            return ("The lights are back. Did you hear those knocks?"
-                    if world.get("heard_knocks") else "The lights are back.")
+            # A previously restored breaker is idempotent. Do not make Eli
+            # pretend he just restored power or replay the authored knocks.
+            if not world.get("lights_on"):
+                return "The switch moved, but the overhead lights are still out. That's not right."
+            if "already up" in description.lower() or "restored earlier" in description.lower():
+                return "Wait, the breaker was already on. The lights are working, and there's a note on the desk."
+            return ("The lights just came back. Did you hear those knocks?"
+                    if world.get("heard_knocks") else "The lights just came back.")
+        if action == "inspect" and target == "breaker_box":
+            return ("The lever's already up, and the lights are on."
+                    if world.get("lights_on") else
+                    "The lever's down. I haven't flipped it yet.")
         if action == "inspect" and target == "maintenance_note":
             return "I can read the writing now. Did you catch that?"
         if action == "enter_code" and target == "keypad":
