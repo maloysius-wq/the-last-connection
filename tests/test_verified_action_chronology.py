@@ -142,8 +142,8 @@ class ChronologyRegressions(unittest.TestCase):
         prompt = model.inputs[0][-1]["content"]
         marker = "VERIFIED THIS-TURN PHYSICAL RECEIPT (system truth): "
         self.assertIn(marker, prompt)
-        return json.loads(prompt.split(marker, 1)[1].split(
-            "\\nEverything in this receipt", 1)[0])
+        # Decode the JSON receipt alone, not later natural-language directions.
+        return json.JSONDecoder().raw_decode(prompt.split(marker, 1)[1])[0]
 
     def test_uploaded_light_stick_request_preserves_both_felt_actions(self):
         initial = world()
