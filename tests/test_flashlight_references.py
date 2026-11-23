@@ -78,12 +78,14 @@ class TestFlashlightReferences(unittest.TestCase):
         self.assertEqual(backend.conversations, 1)
         self.assertEqual(backend.decisions, 0)
         agent.outcome("screenshot", "take", "flashlight", True,
-                      "Eli picked up the flashlight.", room(holding=True, switched=False))
+                      "Eli picked up the flashlight.", room(holding=True, switched=False),
+                      speak=False)
         actual = room(holding=True, switched=True)
         actual["last_observation"] = "Eli picked up the flashlight from the desk and switched it on."
         acknowledgment = agent.outcome(
-            "screenshot", "use", "flashlight", True, actual["last_observation"], actual)
-        self.assertIn("see a little better", acknowledgment.speech)
+            "screenshot", "use", "flashlight", True, actual["last_observation"], actual,
+            speak=False)
+        self.assertEqual(acknowledgment.speech, "")
         self.assertEqual(backend.conversations + backend.decisions, 1,
                          "No extra model inference during any queued outcome")
 
@@ -168,7 +170,7 @@ class TestFlashlightReferences(unittest.TestCase):
         agent = self.agent(NarrativeBackend([]))
         actual = room(holding=True, switched=False)
         agent.outcome("confirmed", "take", "flashlight", True,
-                      "Eli picked up the flashlight.", actual)
+                      "Eli picked up the flashlight.", actual, speak=False)
         self.assertEqual(self.store.load("confirmed")["referent"], "flashlight")
 
     def test_unrelated_autobiography_does_not_trigger_claim_guard(self):
