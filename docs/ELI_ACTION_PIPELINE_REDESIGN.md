@@ -1,8 +1,21 @@
-# Eli interaction pipeline: next architectural redesign
+# Eli interaction pipeline: goal-engine rebuild
 
-Status: PROPOSAL ONLY, not implemented. Drafted from the **2026-11-23 real GGUF session ZIP** and the current main source. Preserve the shipped safeguards.
+Status: Implemented on development PR #33; release only after current-head Python, Godot and Windows CI pass. The older two-pass pipeline below describes HISTORICAL failures, not the production code in this PR.
 
-## What is shipped now
+## New production architecture
+
+1. Godot sends a typed message, or local Whisper.cpp transcription, plus an authoritative world snapshot and session ID to the existing local Python bridge. The same typed/voice entry point is preserved.
+2. `Agent._decide_goals` calls `plan_goals` **once** on the user's current local GGUF/Ollama model. New constrained `GOAL_SCHEMA` returns `kind` (action/conversation/clarify), natural Eli speech, and up to five ordered **end goals** with action, target, and argument. **No quote/evidence spans; no regex phrase matching; no second interpretation veto; no extra model call to rewrite pre-action dialogue.**
+3. `ai_bridge/goals.py` verifies capabilities, visible objects, ordered goals, typed four-digit code or an actual inspected note observation, and allowed action arguments. Invalid or incomplete goals are reported as a SYSTEM status and no physical action is attempted. The model's generated explanation never becomes world truth.
+4. The Godot UI checks `world.supports_goal` instead of maintaining a separate action whitelist. `world.perform_goal` executes the authoritative operation and automatically approaches objects before inspecting, taking, using, entering codes or experimenting. The goal queue executes in order and stops after an actual failure. The existing room implementation still owns puzzle effects, inventory, power, and escaping.
+5. `/api/outcome` confirms actual completed actions, persists observation and confirmed target, and can generate one natural final reaction with the same local model. Piper reads Eli's speech if enabled. Intermediate actions do not require a separate model inference. Session diagnostics include goal proposal, inference latency, execution decision and verified outcomes.
+6. The old `ai_bridge/semantic.py` and legacy `Agent.decide` branch remain for scripted historical tests/mock mode only and are **not executed by production backends**. Their evidence-based action permissions and review are retired from the real Windows/Ollama path.
+
+The current goal protocol is about end-states. Examples of goals are `use/flashlight/on`, `use/breaker_box`, `inspect/maintenance_note`, `enter_code/keypad/<confirmed digits>`, `use/exit_door`, and `experiment/wall/<attempt>`. A normal interaction automatically includes movement. Standalone `move_to` remains available when the player explicitly wants relocation only.
+
+## What the old system did (historical, replaced)
+
+## What was shipped before PR #33
 
 - Typed messages and local Whisper.cpp voice transcription both enter the exact same `godot/scripts/main.gd::_submit` path.
 - Godot sends current input, session ID and the authoritative world snapshot to `POST /api/decide` on 127.0.0.1.
@@ -30,7 +43,7 @@ Specific failures:
 - PR #31: reject explanation-only questions such as `Would you tell me how to open the door?` from being treated as execution instructions, while preserving polite `Can you try opening the door now?` and contextual `Press it NOW`. More tests safeguard the boundary.
 - These changes are not proof that the user's local GGUF always generates useful proposals; CI replays captured outputs but does not run their private model or microphone.
 
-## Proposed next system
+## Original redesign goals (preserved for design rationale)
 
 1. **Extract end goals, not micromovements.** The model proposes structured objectives, for example `open(exit_door)`, `read(maintenance_note)`, `enter_discovered_code(keypad)`, `take(flashlight)`, or `experiment(wall, "knock")`. Explicitly requested standalone movement remains possible. The engine builds required approaches and interaction animations from its own scene graph and state. Do not require the model to generate `move_to` then `use` for a routine operation.
 2. **Bind references to authoritative evidence.** Track the most recent inspected clue, object referent, held item, outstanding user goal and last confirmed outcomes as structured, source-tagged state; do not derive action authorization from Eli's generated prose or stale quoted instructions. A short direct follow-up such as `do it` may explicitly resume a still-valid named goal, with clear scope/expiry; it must not authorize an unrelated or denied act.
@@ -52,3 +65,9 @@ Specific failures:
 ## Nonnegotiable safeguards
 
 Do not modify or replace the user's GGUF or copy it onto C:. Keep normal gameplay entirely local. Preserve existing game saves and transcript exports, in-game opt-in GitHub updates, voice, keyboard focus, session diagnostics, world authority, and quote/negation guards until a replacement has equivalent or better tests. No automated scheduled work.
+
+## Verification boundary
+
+Automated tests use scripted structured model proposals and real headless Godot movement/state transitions. They prove the new engine accepts a correctly interpreted physical goal without the old quotation or second-review veto. **They do not prove a specific locally installed 4B GGUF will always interpret conversational intent correctly.** User Windows playtests and exported goal diagnostics are still needed before claiming actual on-device reliability.
+
+Do not replace the installed GGUF, require a cloud dependency, change local voice/keyboard behavior, or allow Eli's prose to unlock doors. Any future improvements must operate on model goal quality, scene capabilities and observed outcomes, not a growing dictionary of the user's words.
