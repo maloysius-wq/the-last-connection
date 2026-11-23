@@ -100,3 +100,19 @@ Bundled voice engine sources and notices:
 - [whisper.cpp v1.8.3](https://github.com/ggml-org/whisper.cpp/releases/tag/v1.8.3) (MIT) and `ggml-tiny.en-q5_1.bin` Whisper transcription model
 - [Piper 2023.11.14-2](https://github.com/rhasspy/piper/releases/tag/2023.11.14-2) (MIT)
 - [Piper en_US-joe-medium voice v1.0.0](https://huggingface.co/rhasspy/piper-voices/tree/v1.0.0/en/en_US/joe/medium), per-voice dataset card lists CC0. The model card is bundled in the voice directory.
+
+## Export the current conversation and diagnostic logs
+
+When Eli misunderstands something, press **EXPORT CONVERSATION + LOGS ZIP** in the surveillance terminal. The game saves a timestamped `.zip` in `user_data/exports/` next to the game and opens that folder in Windows Explorer. Attach the ZIP to the ChatGPT conversation to inspect the incident.
+
+Each archive contains:
+- `conversation.txt`: the full text currently visible in the terminal (including player, Eli, and authoritative OBSERVATION/SYSTEM lines)
+- `diagnostics.jsonl`: session-scoped player messages, raw structured model proposals, review outputs, chosen plans, any plan-validation issue and engine-confirmed results
+- `conversation_state.json` and `current_room.json`: conversation state plus the exact room flags/items when exported
+- `export_manifest.json` and `README.txt`: session identifier and how to interpret the export
+
+The ZIP is **created locally only after clicking the button**, is never automatically uploaded, and excludes the GGUF file, other saved conversations, microphone recordings, passwords and API credentials. Its contents can include everything you typed and Eli said, so review the ZIP before sharing it. The diagnostic event trail begins after upgrading to this version; the transcript also includes older messages that remain visible in the terminal.
+
+## Experimental actions
+
+Eli can attempt unusual things such as knocking on the door, tapping a flashlight against the desk, dancing, or testing a wall. The small local GGUF interprets the physical intention and sends a freeform `experiment` to Godot, which actually moves/gestures and reports the attempt. An experiment by itself does not magically unlock doors, make new items or change breaker/puzzle state. Existing real puzzle actions like flipping the breaker, picking up the flashlight and entering a code still follow authoritative engine rules. A hypothetical suggestion or a question never authorizes a physical attempt.

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
@@ -19,7 +20,7 @@ from urllib import request, error
 MODEL = os.environ.get("TLC_MODEL", "qwen3:4b-instruct")
 OLLAMA_URL = os.environ.get("TLC_OLLAMA_URL", "http://127.0.0.1:11434/api/chat")
 SESSION_DIR = Path(os.environ.get("TLC_SESSION_DIR", str(Path(__file__).resolve().parent / "sessions")))
-ACTION_SET = frozenset(("wait", "move_to", "inspect", "take", "use", "enter_code", "survey"))
+ACTION_SET = frozenset(("wait", "move_to", "inspect", "take", "use", "enter_code", "survey", "experiment"))
 EMOTION_SET = frozenset(("calm", "cautious", "curious", "afraid"))
 SESSION_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 RESPONSE_SCHEMA = {
@@ -274,6 +275,33 @@ class SessionStore:
         temp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
         temp.replace(path)
 
+    def trace_path(self, session_id: str) -> Path:
+        return self._path(session_id).with_suffix(".diagnostics.jsonl")
+
+    def trace(self, session_id: str, kind: str, details: dict[str, Any]) -> None:
+        """Local, per-conversation diagnostics. No mic bytes or model secrets.
+
+        The player deliberately chooses whether to export these logs. Failure
+        to log must never block a legitimate physical action or conversation.
+        """
+        try:
+            path = self.trace_path(session_id)
+            event = json.dumps({
+                "utc": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+                "kind": kind,
+                "details": details
+            }, ensure_ascii=False, default=str)
+            if len(event) > 25000:
+                event = json.dumps({"kind": "diagnostics_truncated", "event": kind})
+            if path.exists() and path.stat().st_size > 2_000_000:
+                # Bound private local history for long-running play sessions.
+                lines = path.read_bytes().splitlines(keepends=True)
+                path.write_bytes(b"".join(lines[-120:]))
+            with path.open("a", encoding="utf-8") as output:
+                output.write(event + "\n")
+        except OSError:
+            pass
+
 
 class Agent:
     def __init__(self, backend: Backend, store: SessionStore, personality_path: Path) -> None:
@@ -358,6 +386,7 @@ class Agent:
             "visible door, keypad and breaker. Do not treat a gameshow claim "
             "as verified; stay skeptical and human.")
         self._lock = threading.Lock()
+        self._last_validation_issue = ""
 
     @staticmethod
     def _world(world: Any) -> dict[str, Any]:
@@ -519,6 +548,16 @@ class Agent:
         world = self._world(world)
         with self._lock:
             state = self.store.load(session_id)
+            self._last_validation_issue = ""
+            self.store.trace(session_id, "player_input", {
+                "text": player_text,
+                "actor_at": world.get("actor_at"),
+                "inventory": world.get("inventory", []),
+                "visible_objects": list(world.get("objects", {})),
+                "power": world.get("lights_on"),
+                "flashlight": world.get("flashlight_on"),
+                "door_unlocked": world.get("door_unlocked"),
+            })
             # Action permission comes from the *current* player turn, never
             # from the LLM's impulse or previous observations.
             # Resolve 'pick THAT up and turn IT on' against the latest
@@ -565,6 +604,9 @@ class Agent:
                 else:
                     raw = self.backend.interpret(
                         self._messages(state, player_text, semantic=True, world=world))
+                    self.store.trace(session_id, "model_interpretation", {
+                        "proposal": raw
+                    })
                     can_review = callable(getattr(self.backend, "review", None))
                     review_required = (
                         isinstance(raw, dict) and can_review and (
@@ -586,6 +628,9 @@ class Agent:
                         except BackendUnavailable:
                             audit = {"kind": "clarify", "steps": [],
                                      "reason": "The plan could not be reviewed"}
+                        self.store.trace(session_id, "model_plan_review", {
+                            "review": audit
+                        })
                         result = self._reviewed_semantic_decision(
                             raw, audit, player_text, world, state, referent)
                     else:
@@ -693,6 +738,15 @@ class Agent:
                 {"role": "assistant", "content": json.dumps(asdict(result), ensure_ascii=False)},
             ])[-24:]
             self.store.save(session_id, state)
+            self.store.trace(session_id, "decision", {
+                "speech": result.speech,
+                "action": result.action,
+                "target": result.target,
+                "argument": result.argument,
+                "actions": list(result.actions),
+                "emotion": result.emotion,
+                "validation_issue": self._last_validation_issue,
+            })
             return result
 
     @staticmethod
@@ -708,8 +762,13 @@ class Agent:
         for i, step in enumerate(steps):
             act, target, arg = step["action"], step["target"], step["argument"]
             if (act == "move_to" and i + 1 < len(steps) and
-                    steps[i + 1]["target"] == target and
-                    steps[i + 1]["action"] in ("inspect", "take", "use", "enter_code")):
+                    steps[i + 1]["action"] in ("inspect", "take", "use", "enter_code") and
+                    (steps[i + 1]["target"] == target or
+                     (target == "desk" and steps[i + 1]["target"] in
+                      ("flashlight", "maintenance_note")))):
+                # Godot automatically approaches the desk before manipulating
+                # either object on it. A second review that omits a redundant
+                # 'walk to the desk' is not contradicting the requested outcome.
                 continue
             if act == "use" and target == "flashlight" and arg == "on":
                 if not result or result[-1] != ("take", "flashlight", ""):
@@ -775,6 +834,7 @@ class Agent:
         exact operator turn and a concise account of what wasn't verified.
         A stock phrase is not emitted as Eli's voice even if generation fails.
         """
+        self._last_validation_issue = issue
         if not callable(getattr(self.backend, "converse", None)):
             # Scripted test/mock backends are explicitly nonproduction.
             return Decision(candidate if candidate else "", "wait", "", "cautious")
@@ -876,6 +936,17 @@ class Agent:
                 r"we(?:'ve|\s+have)\s+(?:done|made)\s+it)\b",
                 verified, re.I):
             return ""
+        if action == "experiment":
+            # Free-form attempts can be colorful, but they must not cause the
+            # model to invent new props, puzzle progress or damage that Godot
+            # did not actually simulate.
+            if re.search(
+                    r"\b(?:i\s+(?:broke|smashed|destroyed|opened|unlocked|"
+                    r"found|made|created|entered)|(?:door|wall|floor|ceiling)\s+"
+                    r"(?:broke|opened|collapsed|shattered)|"
+                    r"a\s+(?:key|passage|hole|tunnel)\s+(?:appeared|opened))\b",
+                    verified, re.I):
+                return ""
         if target == "breaker_box":
             if world.get("lights_on") is False and re.search(
                 r"\b(?:lights?\s+(?:are|is|came)\s+(?:on|back)|power(?:'s| is)\s+back)\b",
@@ -1012,6 +1083,7 @@ class Agent:
             final = verified[-1]
             end_cues = {
                 "survey": r"\b(?:look|scan|survey|check|see|room)\b",
+                "experiment": r"\b(?:try|attempt|test|do|give)\b",
                 "inspect": r"\b(?:look|inspect|examine|read|check)\b",
                 "take": r"\b(?:grab|pick|take|collect)\b",
                 "move_to": r"\b(?:go|walk|head|move|approach)\b",
@@ -1043,6 +1115,7 @@ class Agent:
             "survey": r"\b(?:look|scan|survey|check|see)\b",
             "enter_code": r"\b(?:enter|type|key|punch|try)\b",
             "use": r"\b(?:switch|turn|activate|use|try|flip|open|power)\b",
+            "experiment": r"\b(?:try|attempt|see|test|give|do|let)\b",
         }
         if not re.search(cues[action], speech, re.I):
             return ""
@@ -1204,6 +1277,8 @@ class Agent:
                 phrases.append("inspect the " + name)
             elif step.action == "enter_code":
                 phrases.append("enter the code on the keypad")
+            elif step.action == "experiment":
+                phrases.append(step.argument or "try something unusual")
             else:
                 phrases.append("use the " + name)
         return ("Okay. I'll " + ", then ".join(phrases) +
@@ -1217,6 +1292,8 @@ class Agent:
         name = names.get(intent.target, intent.target.replace("_", " "))
         if intent.action == "survey":
             return "I'll take a look around and tell you what I can actually see."
+        if intent.action == "experiment":
+            return "I'll try that and see what happens."
         if intent.action == "move_to":
             if world.get("actor_at") == intent.target:
                 return "I'm already by the " + name + ". I'll stay here."
@@ -1743,6 +1820,13 @@ class Agent:
             # Persist completed actions BEFORE speech generation. Failures of
             # Piper or the LLM must not create a fictional physical failure.
             self.store.save(session_id, state)
+            self.store.trace(session_id, "godot_action_outcome", {
+                "action": action, "target": target, "success": success,
+                "description": description, "speak": speak,
+                "lights_on": world.get("lights_on"),
+                "inventory": world.get("inventory", []),
+                "door_unlocked": world.get("door_unlocked"),
+            })
             speech = ""
             if speak:
                 try:
@@ -1758,5 +1842,8 @@ class Agent:
                 state["history"] = (history + [
                     {"role": "assistant", "content": speech}])[-24:]
                 self.store.save(session_id, state)
+            self.store.trace(session_id, "eli_reaction", {
+                "text": speech, "grounded": bool(speech),
+            })
             return Decision(speech, "wait", "",
                             "curious" if success else "cautious")

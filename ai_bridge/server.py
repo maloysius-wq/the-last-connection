@@ -11,6 +11,7 @@ from pathlib import Path
 
 from .agent import Agent, AgentError, BackendUnavailable, InvalidRequest, MockBackend, OllamaBackend, SessionStore, MODEL
 from .voice import LocalVoiceService, VoiceError, VoiceUnavailable, MAX_WAV_BYTES
+from .session_export import build_session_archive
 
 ROOT = Path(__file__).resolve().parent.parent
 MAX_BODY = 16_384
@@ -34,6 +35,15 @@ def create_handler(agent: Agent, mode: str, updater=None,
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(pcm_wav)
+
+        def _send_zip(self, payload: bytes):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/zip")
+            self.send_header("Content-Disposition", 'attachment; filename="TheLastConnection-Session.zip"')
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(payload)
 
         def _read_voice_json(self, maximum: int) -> dict:
             if self.headers.get("Content-Type", "").split(";")[0].strip().lower() != "application/json":
@@ -66,6 +76,26 @@ def create_handler(agent: Agent, mode: str, updater=None,
             return self._send(404, {"error": "Not found"})
 
         def do_POST(self):
+            if self.path == "/api/session/export":
+                if (self.headers.get("X-TLC-Export") != "1" or
+                        self.headers.get("Content-Type", "").split(";")[0].strip().lower()
+                        != "application/json"):
+                    return self._send(403, {"error": "Export requires an explicit in-game request."})
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                    if not 0 < length <= 900_000:
+                        raise InvalidRequest("Conversation export request is too large.")
+                    data = json.loads(self.rfile.read(length))
+                    if not isinstance(data, dict):
+                        raise InvalidRequest("Invalid session export request.")
+                    archive = build_session_archive(
+                        agent.store, data.get("session_id", ""),
+                        data.get("transcript", ""), data.get("world", {}))
+                    return self._send_zip(archive)
+                except (InvalidRequest, ValueError, TypeError, json.JSONDecodeError) as exc:
+                    return self._send(400, {"error": str(exc)[:220]})
+                except (OSError, RuntimeError):
+                    return self._send(503, {"error": "Local conversation export couldn't be created."})
             if self.path in ("/api/voice/transcribe", "/api/voice/speak"):
                 if voice is None:
                     return self._send(503, {"error": "Optional voice runtime is not installed. Text mode still works."})
