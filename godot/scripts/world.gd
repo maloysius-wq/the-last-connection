@@ -215,7 +215,13 @@ func supports_goal(goal: Dictionary) -> bool:
     if action == "take":
         return target == "flashlight" and argument.is_empty()
     if action == "enter_code":
-        return target == "keypad" and argument.length() == 4 and argument.is_valid_int()
+        if target != "keypad" or argument.length() != 4:
+            return false
+        for i in range(argument.length()):
+            var digit := argument.unicode_at(i)
+            if digit < 48 or digit > 57:
+                return false
+        return true
     if action == "use":
         if target == "flashlight":
             return argument in ["", "on", "off"]
