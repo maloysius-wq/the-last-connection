@@ -716,7 +716,7 @@ class Agent:
                   verified_turn_receipt: dict[str, Any] | None = None
                   ) -> list[dict[str, str]]:
         # Retain long-term confirmed observations separately from a small chat window.
-        history = [clean for turn in state.get("history", [])[-24:]
+        history = [clean for turn in state.get("history", [])[-12:]
                    if (clean := self._clean_turn(turn)) is not None]
         facts = [{"action": fact.get("action", ""), "target": fact.get("target", ""),
                   "success": fact.get("success") is True,
