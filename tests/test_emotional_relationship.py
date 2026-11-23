@@ -109,8 +109,7 @@ class EmotionalAgency(unittest.TestCase):
         self.assertEqual(r["anger"], 96)
         self.assertEqual(r["stress"], 95)
         self.assertEqual(len(model.requests), 4)
-        self.assertIn("deeply angry", model.requests[-1][0]["content"] if False
-                      else agent._relationship_stance(r))
+        self.assertIn("deeply angry", agent._relationship_stance(r))
 
     def test_speaker_only_wants_conversation_and_boundary_is_remembered(self):
         agent, model = self.make(
@@ -206,6 +205,7 @@ class EmotionalAgency(unittest.TestCase):
             "I'll try that.", kind="action", goals=[goal("use", "breaker_box")],
             social=appraisal(willingness="accept")))
         room = world()
+        room["heard_knocks"] = False
         agent.decide("power", "Try restoring the lights.", room)
         after = dict(room)
         after.update({"lights_on": True, "heard_knocks": True})
