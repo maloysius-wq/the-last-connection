@@ -632,6 +632,40 @@ class Agent:
         state["relationship"] = current
         return before, changes
 
+    @classmethod
+    def _apply_verified_environmental_effects(
+            cls, state: dict[str, Any], world: dict[str, Any]
+            ) -> dict[str, int]:
+        """A real change to Eli's situation affects his nerves, gently.
+
+        Do NOT mistake solving a puzzle for interpersonal trust. Even when a
+        stranger provided useful advice, Eli's trust can remain low, and the
+        speaker's insults are tracked independently via social appraisal.
+        Compare the engine's before/after receipt once at turn completion,
+        never parse an LLM's claim that something changed.
+        """
+        before = state.get("goal_start_conditions")
+        if not isinstance(before, dict):
+            return {}
+        relationship = cls._relationship(state)
+        effects: dict[str, int] = {}
+        # Acute reactions to physical consequences, not friendship points.
+        if before.get("flashlight_on") is False and world.get("flashlight_on") is True:
+            effects["stress"] = effects.get("stress", 0) - 4
+        if before.get("lights_on") is False and world.get("lights_on") is True:
+            effects["stress"] = effects.get("stress", 0) - 8
+        if before.get("door_unlocked") is False and world.get("door_unlocked") is True:
+            effects["stress"] = effects.get("stress", 0) - 5
+        if before.get("heard_knocks") is False and world.get("heard_knocks") is True:
+            effects["stress"] = effects.get("stress", 0) + 13
+        if before.get("escaped") is False and world.get("escaped") is True:
+            effects["stress"] = effects.get("stress", 0) - 10
+        if effects:
+            for field, delta in effects.items():
+                relationship[field] = max(0, min(100, relationship[field] + delta))
+            state["relationship"] = relationship
+        return effects
+
     @staticmethod
     def _physical_conditions(world: dict[str, Any]) -> dict[str, Any]:
         """Small engine-owned before/after snapshot; no LLM-derived memories."""
@@ -2447,6 +2481,14 @@ class Agent:
             })
             speech = ""
             if speak:
+                experience_effects = self._apply_verified_environmental_effects(
+                    state, world)
+                if experience_effects:
+                    self.store.save(session_id, state)
+                    self.store.trace(session_id, "verified_environmental_effect", {
+                        "effects": experience_effects,
+                        "relationship": state["relationship"],
+                    })
                 try:
                     speech = self._model_outcome_reply(
                         state, action, target, success, description, world,
