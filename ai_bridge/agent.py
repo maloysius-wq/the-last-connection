@@ -673,11 +673,11 @@ class Agent:
                 result = Decision(speech, "wait", "", emotion)
             prior = [clean for turn in state.get("history", [])[-22:]
                      if (clean := self._clean_turn(turn)) is not None]
-            state["history"] = (prior + [
-                {"role": "user", "content": player_text.strip()},
-                {"role": "assistant", "content": result.speech
-                 if result.speech else "(no spoken reply)"},
-            ])[-24:]
+            entries = [{"role": "user", "content": player_text.strip()}]
+            if result.speech:
+                entries.append({"role": "assistant", "content": result.speech})
+            # Never teach the LLM fake placeholder dialogue.
+            state["history"] = (prior + entries)[-24:]
             self.store.save(session_id, state)
             self.store.trace(session_id, "goal_decision", {
                 "actions": list(actions), "speech": result.speech,
