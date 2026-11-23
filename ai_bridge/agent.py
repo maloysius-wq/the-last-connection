@@ -1150,7 +1150,8 @@ class Agent:
     def _ground_verified_outcome(speech: str, action: str, target: str,
                                  success: bool, description: str,
                                  world: dict[str, Any], *,
-                                 turn_events: list[dict[str, Any]] | None = None) -> str:
+                                 turn_events: list[dict[str, Any]] | None = None,
+                                 verified_codes: set[str] | None = None) -> str:
         """Screen model dialogue against the single *completed* engine event.
 
         Never use prose to mutate the world. A suspect statement is omitted
@@ -1161,7 +1162,10 @@ class Agent:
             return ""
         text = re.sub(r"(?is)<think>.*?</think>", "", speech).strip()
         text = re.sub(r"^(?:Eli|Assistant)\s*:\s*", "", text, flags=re.I)
-        verified = Agent._finish_spoken_reply(text)
+        # Speech should sound like a live reaction, not a lengthy narrated
+        # horror paragraph. Preserve finished sentences and the character.
+        verified = Agent._finish_spoken_reply(
+            text, sentence_limit=3, character_limit=390)
         if not verified:
             return ""
         # Prevent surprise puzzle secrets, especially a guessed door code.
@@ -1171,9 +1175,12 @@ class Agent:
         evidence_text = " ".join(
             str(event.get("description", "")) for event in receipt
             if isinstance(event, dict)) if receipt else description
-        if (re.search(r"\b\d{4}\b", verified) and
-                not set(re.findall(r"\b\d{4}\b", verified)).issubset(
-                    set(re.findall(r"\b\d{4}\b", evidence_text)))):
+        # A clue Eli genuinely READ or a code the engine just ENTERED is
+        # legitimate first-hand knowledge even when the *latest* observation
+        # (e.g. "keypad turned green") does not repeat those four digits.
+        approved_digits = set(re.findall(r"\b\d{4}\b", evidence_text))
+        approved_digits.update(verified_codes or ())
+        if not set(re.findall(r"\b\d{4}\b", verified)).issubset(approved_digits):
             return ""
         seen = mentioned_targets(verified)
         completed_targets = {target}
@@ -1288,6 +1295,9 @@ class Agent:
             "Ground physical/sensory detail in the verified descriptions "
             "and conditions. Don't invent a beam color, a sound that wasn't "
             "heard, or a puzzle effect absent from Godot's evidence. "
+            "Speak to the operator like a nervous person, not a dramatic "
+            "horror narrator or status screen. One to three short sentences "
+            "are plenty; keep your humor, warmth and personality. "
             "Now answer as Eli in one or two emotionally believable, "
             "spontaneous sentences. React primarily to the most important "
             "change in the whole sequence, not just the final survey; do "
@@ -1298,6 +1308,23 @@ class Agent:
             "fear, suspicion, relief, or surprise at its consequences, but "
             "do not erase your own firsthand memory."
         )
+        if world.get("escaped") is True and any(
+                event.get("action") == "use" and event.get("target") == "exit_door"
+                and event.get("success") is True for event in events):
+            prompt += (
+                " YOU JUST OPENED THE UNLOCKED DOOR AND STEPPED OUT OF CAMERA "
+                "VIEW. This is a completed escape, not merely the earlier "
+                "keypad unlocking. React to having left the room, even if "
+                "you still fear what lies beyond it."
+            )
+        trusted_codes = {
+            fact["entered_code"] for fact in state.get("facts", [])
+            if isinstance(fact, dict) and isinstance(fact.get("entered_code"), str)
+            and re.fullmatch(r"[0-9]{4}", fact["entered_code"])
+        }
+        known = observed_code(state.get("facts", []))
+        if known:
+            trusted_codes.add(known)
         for attempt in range(2):
             spoken = self.backend.converse(self._messages(
                 state, prompt + ("\nYour previous reply conflicted with the "
@@ -1307,7 +1334,7 @@ class Agent:
                 verified_turn_receipt=chronology))
             grounded = self._ground_verified_outcome(
                 spoken, action, target, success, description, world,
-                turn_events=events)
+                turn_events=events, verified_codes=trusted_codes)
             if grounded:
                 return grounded
         return ""
@@ -1929,15 +1956,17 @@ class Agent:
                 "but I'm glad we can talk.")
 
     @staticmethod
-    def _finish_spoken_reply(text: str, *, detailed: bool = False) -> str:
+    def _finish_spoken_reply(text: str, *, detailed: bool = False,
+                             sentence_limit: int | None = None,
+                             character_limit: int | None = None) -> str:
         """Keep only COMPLETE spoken sentences, never slice the last word.
 
         Local GGUF backends can reach their token ceiling in mid-sentence, and
         the previous [:650] output cap cut Eli off visibly. Preserve the last
         complete thought, with a comfortable, adaptive dialogue length.
         """
-        max_sentences = 8 if detailed else 7
-        max_chars = 1150 if detailed else 500
+        max_sentences = sentence_limit if sentence_limit is not None else (8 if detailed else 7)
+        max_chars = character_limit if character_limit is not None else (1150 if detailed else 500)
         pieces = re.split(r"(?<=[.!?])\s+", text.strip())
         kept: list[str] = []
         for part in pieces:
