@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
@@ -274,6 +275,33 @@ class SessionStore:
         temp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
         temp.replace(path)
 
+    def trace_path(self, session_id: str) -> Path:
+        return self._path(session_id).with_suffix(".diagnostics.jsonl")
+
+    def trace(self, session_id: str, kind: str, details: dict[str, Any]) -> None:
+        """Local, per-conversation diagnostics. No mic bytes or model secrets.
+
+        The player deliberately chooses whether to export these logs. Failure
+        to log must never block a legitimate physical action or conversation.
+        """
+        try:
+            path = self.trace_path(session_id)
+            event = json.dumps({
+                "utc": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+                "kind": kind,
+                "details": details
+            }, ensure_ascii=False, default=str)
+            if len(event) > 25000:
+                event = json.dumps({"kind": "diagnostics_truncated", "event": kind})
+            if path.exists() and path.stat().st_size > 2_000_000:
+                # Bound private local history for long-running play sessions.
+                lines = path.read_bytes().splitlines(keepends=True)
+                path.write_bytes(b"".join(lines[-120:]))
+            with path.open("a", encoding="utf-8") as output:
+                output.write(event + "\n")
+        except OSError:
+            pass
+
 
 class Agent:
     def __init__(self, backend: Backend, store: SessionStore, personality_path: Path) -> None:
@@ -519,6 +547,15 @@ class Agent:
         world = self._world(world)
         with self._lock:
             state = self.store.load(session_id)
+            self.store.trace(session_id, "player_input", {
+                "text": player_text,
+                "actor_at": world.get("actor_at"),
+                "inventory": world.get("inventory", []),
+                "visible_objects": list(world.get("objects", {})),
+                "power": world.get("lights_on"),
+                "flashlight": world.get("flashlight_on"),
+                "door_unlocked": world.get("door_unlocked"),
+            })
             # Action permission comes from the *current* player turn, never
             # from the LLM's impulse or previous observations.
             # Resolve 'pick THAT up and turn IT on' against the latest
@@ -565,6 +602,9 @@ class Agent:
                 else:
                     raw = self.backend.interpret(
                         self._messages(state, player_text, semantic=True, world=world))
+                    self.store.trace(session_id, "model_interpretation", {
+                        "proposal": raw
+                    })
                     can_review = callable(getattr(self.backend, "review", None))
                     review_required = (
                         isinstance(raw, dict) and can_review and (
@@ -586,6 +626,9 @@ class Agent:
                         except BackendUnavailable:
                             audit = {"kind": "clarify", "steps": [],
                                      "reason": "The plan could not be reviewed"}
+                        self.store.trace(session_id, "model_plan_review", {
+                            "review": audit
+                        })
                         result = self._reviewed_semantic_decision(
                             raw, audit, player_text, world, state, referent)
                     else:
@@ -693,6 +736,14 @@ class Agent:
                 {"role": "assistant", "content": json.dumps(asdict(result), ensure_ascii=False)},
             ])[-24:]
             self.store.save(session_id, state)
+            self.store.trace(session_id, "decision", {
+                "speech": result.speech,
+                "action": result.action,
+                "target": result.target,
+                "argument": result.argument,
+                "actions": list(result.actions),
+                "emotion": result.emotion,
+            })
             return result
 
     @staticmethod
@@ -1749,6 +1800,13 @@ class Agent:
             # Persist completed actions BEFORE speech generation. Failures of
             # Piper or the LLM must not create a fictional physical failure.
             self.store.save(session_id, state)
+            self.store.trace(session_id, "godot_action_outcome", {
+                "action": action, "target": target, "success": success,
+                "description": description, "speak": speak,
+                "lights_on": world.get("lights_on"),
+                "inventory": world.get("inventory", []),
+                "door_unlocked": world.get("door_unlocked"),
+            })
             speech = ""
             if speak:
                 try:
@@ -1764,5 +1822,8 @@ class Agent:
                 state["history"] = (history + [
                     {"role": "assistant", "content": speech}])[-24:]
                 self.store.save(session_id, state)
+            self.store.trace(session_id, "eli_reaction", {
+                "text": speech, "grounded": bool(speech),
+            })
             return Decision(speech, "wait", "",
                             "curious" if success else "cautious")
