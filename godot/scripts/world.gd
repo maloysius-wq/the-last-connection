@@ -194,6 +194,53 @@ func snapshot() -> Dictionary:
         "heard_knocks": knocks_heard, "actor_at": actor_at,
         "last_observation": last_observation.left(500), "objects": objects}
 
+# The AI delivers GOALS rather than a script of walking commands.
+# World capabilities and movement live here, not in UI text matching.
+func supports_goal(goal: Dictionary) -> bool:
+    var action := str(goal.get("action", ""))
+    var target := str(goal.get("target", ""))
+    var argument := str(goal.get("argument", ""))
+    if action == "survey":
+        return target == "room" and argument.is_empty()
+    if action == "experiment" and target == "room":
+        return argument.strip_edges().length() >= 2 and argument.length() <= 120 and not (
+            argument.contains("\n") or argument.contains("\r"))
+    if not object_positions.has(target):
+        return false
+    if action == "experiment":
+        return argument.strip_edges().length() >= 2 and argument.length() <= 120 and not (
+            argument.contains("\n") or argument.contains("\r"))
+    if action == "move_to" or action == "inspect":
+        return argument.is_empty()
+    if action == "take":
+        return target == "flashlight" and argument.is_empty()
+    if action == "enter_code":
+        if target != "keypad" or argument.length() != 4:
+            return false
+        for i in range(argument.length()):
+            var digit := argument.unicode_at(i)
+            if digit < 48 or digit > 57:
+                return false
+        return true
+    if action == "use":
+        if target == "flashlight":
+            return argument in ["", "on", "off"]
+        return target in ["breaker_box", "exit_door"] and argument.is_empty()
+    return false
+
+
+func perform_goal(goal: Dictionary) -> void:
+    var action := str(goal.get("action", ""))
+    var target := str(goal.get("target", ""))
+    var argument := str(goal.get("argument", ""))
+    if not supports_goal(goal):
+        action_finished.emit(action, target, false, "This goal is not supported by the room.")
+        return
+    # The engine computes the approach to the target, handles held objects,
+    # checks current visibility and performs state changes as one goal.
+    perform_action(action, target, argument)
+
+
 func perform_action(action: String, target: String, argument: String = "") -> void:
     if busy:
         action_finished.emit(action, target, false, "Eli is already performing an action.")

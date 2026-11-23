@@ -5,12 +5,15 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 import json
 import os
+import time
 from pathlib import Path
 import re
 import threading
 from typing import Any, Protocol
 
 from .intent import PlayerIntent, classify, mentioned_targets, plan_actions
+from .goals import (GOAL_SCHEMA, GOAL_INSTRUCTIONS, GoalRejected,
+                    validate_goals, known_code_context)
 from .semantic import (SCHEMA as SEMANTIC_SCHEMA, INSTRUCTIONS as SEMANTIC_INSTRUCTIONS,
                        REVIEW_SCHEMA, PlanRejected, review_messages, validated_steps,
                        is_reflective_question, needs_action_review,
@@ -58,6 +61,9 @@ class Decision:
     argument: str = ""
     # Only commands from this player's explicit request can enter the queue.
     actions: tuple[dict[str, str], ...] = ()
+    # A failure of ENGINE capability/data validation is a SYSTEM status,
+    # never an invented in-character excuse.
+    status: str = ""
 
 
 class Backend(Protocol):
@@ -104,6 +110,24 @@ class OllamaBackend:
             return parsed
         except (OSError, error.URLError, ValueError, KeyError, TypeError) as exc:
             raise BackendUnavailable("Local model could not interpret the request") from exc
+
+    def plan_goals(self, messages: list[dict[str, str]]) -> dict[str, Any]:
+        """Production: ONE local inference for complete physical objectives."""
+        payload = {"model": self.model, "stream": False, "think": False,
+                   "format": GOAL_SCHEMA,
+                   "options": {"temperature": 0.1, "num_predict": 620},
+                   "messages": messages}
+        req = request.Request(self.endpoint, json.dumps(payload).encode("utf-8"),
+                              {"Content-Type": "application/json"}, method="POST")
+        try:
+            with request.urlopen(req, timeout=120) as res:
+                content = json.loads(res.read(1_000_000))["message"]["content"]
+            parsed = json.loads(content)
+            if not isinstance(parsed, dict):
+                raise ValueError("Expected a goal object")
+            return parsed
+        except (OSError, error.URLError, ValueError, KeyError, TypeError) as exc:
+            raise BackendUnavailable("Local goal interpretation failed") from exc
 
     def review(self, messages: list[dict[str, str]]) -> dict[str, Any]:
         """Independently audit physical action coverage with the SAME GGUF."""
@@ -183,6 +207,23 @@ class LlamaCppBackend:
             return parsed
         except (OSError, error.URLError, ValueError, KeyError, TypeError, IndexError) as exc:
             raise BackendUnavailable("Local model could not interpret the request") from exc
+
+    def plan_goals(self, messages: list[dict[str, str]]) -> dict[str, Any]:
+        """Production: ONE constrained GGUF request for goals and Eli speech."""
+        payload = {"model": self.model, "messages": messages, "stream": False,
+                   "temperature": 0.1, "max_tokens": 620,
+                   "response_format": {"type": "json_schema", "schema": GOAL_SCHEMA}}
+        req = request.Request(self.endpoint, json.dumps(payload).encode("utf-8"),
+                              {"Content-Type": "application/json"}, method="POST")
+        try:
+            with request.urlopen(req, timeout=300) as res:
+                reply = json.loads(res.read(1_000_000))
+            parsed = json.loads(reply["choices"][0]["message"]["content"])
+            if not isinstance(parsed, dict):
+                raise ValueError("Expected a goal object")
+            return parsed
+        except (OSError, error.URLError, ValueError, KeyError, TypeError, IndexError) as exc:
+            raise BackendUnavailable("Local goal interpretation failed") from exc
 
     def review(self, messages: list[dict[str, str]]) -> dict[str, Any]:
         """Independently audit physical action coverage, no second model."""
@@ -333,6 +374,9 @@ class Agent:
             "Keep action replies to one or two sentences; conversational replies "
             "can use up to three concise sentences."
         )
+        # The production planner no longer calls the legacy two-pass semantic
+        # action reviewer or its verbatim-evidence quote parser.
+        self.goal_system = personality["system_prompt"] + "\n" + GOAL_INSTRUCTIONS
         self.conversation_system = personality["system_prompt"] + (
             "\nYou are having a live private conversation with someone over the "
             "maintenance room's speaker. Answer their ACTUAL question in warm, "
@@ -491,7 +535,7 @@ class Agent:
         return {"role": turn["role"], "content": content[:650]}
 
     def _messages(self, state: dict[str, Any], user_content: str, *, dialogue: bool = False,
-                  semantic: bool = False,
+                  semantic: bool = False, goal: bool = False,
                   world: dict[str, Any] | None = None) -> list[dict[str, str]]:
         # Retain long-term confirmed observations separately from a small chat window.
         history = [clean for turn in state.get("history", [])[-12:]
@@ -500,9 +544,10 @@ class Agent:
                   "success": fact.get("success") is True,
                   "description": str(fact.get("description", ""))[:400]}
                  for fact in state.get("facts", [])[-6:] if isinstance(fact, dict)]
-        system_context = (self.semantic_system if semantic else
+        system_context = (self.goal_system if goal else
+                          self.semantic_system if semantic else
                           self.conversation_system if dialogue else self.system)
-        if (dialogue or semantic) and world is not None:
+        if (dialogue or semantic or goal) and world is not None:
             # Keep environment facts in Eli's SYSTEM context rather than
             # mixing them into the remote player's words.
             has_door_attempt = any(
@@ -525,6 +570,11 @@ class Agent:
                 "door_previously_attempted": has_door_attempt,
                 "your_current_room": self._perceived_world(world),
             }
+            if goal:
+                # Context is derived from ENGINE facts, never from invented
+                # model dialogue or a fixed list of user-language synonyms.
+                perspective["confirmed_clue"] = known_code_context(state.get("facts", []))
+                perspective["last_confirmed_target"] = state.get("goal_focus", "")
             if semantic:
                 held = [name for name in world.get("inventory", [])
                         if isinstance(name, str) and
@@ -555,10 +605,95 @@ class Agent:
         return ([{"role": "system", "content": system_context}]
                 + history + [{"role": "user", "content": user_content}])
 
+    def _decide_goals(self, session_id: str, player_text: str,
+                      world: dict[str, Any]) -> Decision:
+        """Production path: a single semantic plan, engine-only verification.
+
+        No independent LLM reviewer, phrase regex permissions, quote-citation
+        reconciliation or mandatory pre-action dialogue rewrite.
+        """
+        with self._lock:
+            state = self.store.load(session_id)
+            self.store.trace(session_id, "player_input", {
+                "text": player_text, "actor_at": world.get("actor_at"),
+                "inventory": world.get("inventory", []),
+                "visible_objects": list(world.get("objects", {})),
+                "power": world.get("lights_on"),
+                "flashlight": world.get("flashlight_on"),
+                "door_unlocked": world.get("door_unlocked"),
+                "planner": "goals_v1",
+            })
+            begin = time.monotonic()
+            raw = self.backend.plan_goals(
+                self._messages(state, player_text, goal=True, world=world))
+            elapsed_ms = round((time.monotonic() - begin) * 1000)
+            self.store.trace(session_id, "goal_model_proposal", {
+                "proposal": raw, "inference_ms": elapsed_ms,
+            })
+            if not isinstance(raw, dict):
+                raw = {}
+            kind = raw.get("kind")
+            goals = raw.get("goals")
+            emotion = raw.get("emotion") if raw.get("emotion") in EMOTION_SET else "cautious"
+            candidate = raw.get("speech") if isinstance(raw.get("speech"), str) else ""
+            issue = ""
+            actions: tuple[dict[str, str], ...] = ()
+            if kind == "action":
+                try:
+                    actions = validate_goals(goals, world, player_text,
+                                             state.get("facts", []))
+                except GoalRejected as exc:
+                    issue = str(exc)
+            elif kind in ("conversation", "clarify") and goals == []:
+                pass
+            else:
+                issue = "The local model did not return a usable intent"
+            if issue:
+                # Never let an invalid action become a fictional Eli speech
+                # about reaching, performing or succeeding at that action.
+                result = Decision("", "wait", "", emotion,
+                                  status="Goal not executed: " + issue)
+            elif actions:
+                # The model already wrote its own acknowledgment. We may
+                # display it when it describes the authorized FUTURE goal;
+                # otherwise Godot will visibly act and Eli reacts afterward.
+                intro = self._safe_live_action_acknowledgment(candidate, actions)
+                first = actions[0]
+                result = Decision(intro, first["action"], first["target"],
+                                  emotion, first["argument"], actions)
+                # An object named by a validated action is a safe follow-up
+                # reference; do not derive it from conversational prose.
+                # Only /api/outcome can promote a goal target to CONFIRMED
+                # focus. A failed or interrupted plan cannot impersonate
+                # successful movement or discovery.
+                state["requested_goal_target"] = actions[-1]["target"]
+            else:
+                speech = self._ground_dialogue(
+                    candidate, world, state, player_text, allow_fallback=False)
+                result = Decision(speech, "wait", "", emotion)
+            prior = [clean for turn in state.get("history", [])[-22:]
+                     if (clean := self._clean_turn(turn)) is not None]
+            entries = [{"role": "user", "content": player_text.strip()}]
+            if result.speech:
+                entries.append({"role": "assistant", "content": result.speech})
+            # Never teach the LLM fake placeholder dialogue.
+            state["history"] = (prior + entries)[-24:]
+            self.store.save(session_id, state)
+            self.store.trace(session_id, "goal_decision", {
+                "actions": list(actions), "speech": result.speech,
+                "status": result.status, "validation_issue": issue,
+                "inference_ms": elapsed_ms, "model_calls": 1,
+            })
+            return result
+
     def decide(self, session_id: str, player_text: str, world: dict[str, Any]) -> Decision:
         if not isinstance(player_text, str) or not (1 <= len(player_text.strip()) <= 600):
             raise InvalidRequest("Message must contain 1-600 characters")
         world = self._world(world)
+        if callable(getattr(self.backend, "plan_goals", None)):
+            return self._decide_goals(session_id, player_text, world)
+        # Legacy mock and scripted fixtures only; shipped local backends
+        # always take the goal path above.
         with self._lock:
             state = self.store.load(session_id)
             self._last_validation_issue = ""
@@ -1922,9 +2057,11 @@ class Agent:
             state["facts"] = (state.get("facts", []) + [
                 {"action": action, "target": target, "success": success, "description": description}
             ])[-60:]
-            if success and action in ("move_to", "inspect", "take", "use"):
+            if success and action in ("move_to", "inspect", "take", "use", "enter_code", "survey", "experiment"):
                 state["focus"] = target
                 state["referent"] = target
+                if target != "room":
+                    state["goal_focus"] = target
             # Persist completed actions BEFORE speech generation. Failures of
             # Piper or the LLM must not create a fictional physical failure.
             self.store.save(session_id, state)

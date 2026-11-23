@@ -471,6 +471,60 @@ func _run() -> void:
         "Reset preserves the old session transcript for debugging")
     DirAccess.remove_absolute(transcript_path)
 
+    # Goal engine is now ROOM-OWNED: UI doesn't reinterpret the request,
+    # and USE automatically walks to the target before operating it.
+    world.reset_state()
+    _expect(bool(world.supports_goal({
+        "action": "use", "target": "exit_door", "argument": ""
+    })), "Door opening is one supported engine goal with implicit approach")
+    _expect(not bool(world.supports_goal({
+        "action": "use", "target": "keypad", "argument": ""
+    })), "Generic keypad use without a valid code is not an engine capability")
+    _expect(not bool(world.supports_goal({
+        "action": "enter_code", "target": "keypad", "argument": "-123"
+    })), "Engine rejects signed numbers posing as a four-digit code")
+    _expect(not bool(world.supports_goal({
+        "action": "take", "target": "breaker_box", "argument": ""
+    })), "Breaker cannot be carried even if a model invents that goal")
+    _expect(bool(app.call("_valid_queue_step", {
+        "action": "use", "target": "breaker_box", "argument": ""
+    })), "UI delegates goal validation to the authoritative world")
+    world.perform_goal({"action": "use", "target": "flashlight", "argument": "on"})
+    var goal_result: Array = await world.action_finished
+    _expect(goal_result[2] == true and
+        world.snapshot()["inventory"].has("flashlight") and
+        world.snapshot()["flashlight_on"] == true,
+        "One flashlight goal physically approaches, takes, and lights it")
+    world.perform_goal({"action": "use", "target": "breaker_box", "argument": ""})
+    goal_result = await world.action_finished
+    _expect(goal_result[2] == true and world.snapshot()["lights_on"] == true,
+        "One breaker goal physically travels to the box and restores power")
+    _expect(world.snapshot()["objects"].has("maintenance_note"),
+        "Engine reveals note only after power goal was confirmed")
+    world.perform_goal({"action": "inspect", "target": "maintenance_note", "argument": ""})
+    goal_result = await world.action_finished
+    _expect(goal_result[2] == true and "4317" in str(goal_result[3]),
+        "One note goal performs a close reading and returns confirmed clue")
+    world.perform_goal({"action": "enter_code", "target": "keypad", "argument": "4317"})
+    goal_result = await world.action_finished
+    _expect(goal_result[2] == true and world.snapshot()["door_unlocked"] == true
+        and world.snapshot()["escaped"] == false,
+        "Code goal unlocks door, but does not silently open or escape")
+    world.perform_goal({"action": "use", "target": "exit_door", "argument": ""})
+    goal_result = await world.action_finished
+    _expect(goal_result[2] == true and world.snapshot()["escaped"] == true,
+        "One door goal automatically approaches and opens unlocked exit")
+    world.reset_state()
+    world.perform_goal({"action": "experiment", "target": "wall",
+                        "argument": "knock three times"})
+    goal_result = await world.action_finished
+    _expect(goal_result[2] == true and world.snapshot()["lights_on"] == false,
+        "Creative goal physically attempts gesture without inventing puzzle effects")
+    _expect(not bool(world.supports_goal({
+        "action": "use", "target": "keypad", "argument": ""
+    })) and world.snapshot()["door_unlocked"] == false,
+        "Unsupported goal is rejected without a false world transition")
+
     if failures.is_empty():
         print("GODOT SMOKE PASS: scene, flashlight, breaker, code puzzle, escape and persistence")
         quit(0)
