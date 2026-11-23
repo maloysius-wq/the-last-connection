@@ -510,10 +510,51 @@ func _run() -> void:
     _expect(goal_result[2] == true and world.snapshot()["door_unlocked"] == true
         and world.snapshot()["escaped"] == false,
         "Code goal unlocks door, but does not silently open or escape")
+    # A lock CHECK is a safe, physical, firsthand inspection.
+    # It must not open the door or end the scene merely because the keypad
+    # became green earlier in this same interaction sequence.
+    world.perform_goal({"action": "inspect", "target": "exit_door", "argument": ""})
+    goal_result = await world.action_finished
+    _expect(goal_result[2] == true and "unlocked" in str(goal_result[3])
+        and "remains closed" in str(goal_result[3])
+        and world.snapshot()["escaped"] == false,
+        "Inspected unlocked door stays physically CLOSED and Eli remains inside")
+
+    # An unlocked exit request always asks for a separate real confirmation.
+    app.set("queued_actions", [{"action": "use", "target": "exit_door", "argument": ""}])
+    app.set("queue_index", 0)
+    app.set("exit_authorized", false)
+    app.call("_start_queued_action")
+    _expect(str(app.get("request_stage")) == "confirm_exit"
+        and app.get("exit_dialog").visible
+        and world.snapshot()["escaped"] == false,
+        "Terminal door use requires an explicit UI confirmation first")
+    app.get("exit_dialog").hide()
+    app.call("_on_exit_cancelled")
+    _expect(str(app.get("request_stage")) == "idle"
+        and app.get("queued_actions").is_empty()
+        and world.snapshot()["escaped"] == false,
+        "Declining the exit leaves the player inside and clears the pending queue")
+
+    # Engine remains capable of a deliberate, confirmed exit. The action itself
+    # is still room-owned, not reimplemented as dialogue or a fake animation.
     world.perform_goal({"action": "use", "target": "exit_door", "argument": ""})
     goal_result = await world.action_finished
     _expect(goal_result[2] == true and world.snapshot()["escaped"] == true,
-        "One door goal automatically approaches and opens unlocked exit")
+        "Deliberate door goal physically opens the unlocked exit")
+    app.set("queued_actions", [
+        {"action": "use", "target": "exit_door", "argument": ""},
+        {"action": "inspect", "target": "exit_door", "argument": ""}])
+    app.set("queue_index", 0)
+    app.set("request_stage", "outcome")
+    app.set("last_step_succeeded", true)
+    app.call("_on_http_completed", HTTPRequest.RESULT_SUCCESS, 200,
+        PackedStringArray(), JSON.stringify({
+            "speech": "I opened the door and stepped outside."
+        }).to_utf8_buffer())
+    _expect(str(app.get("request_stage")) == "idle"
+        and app.get("queued_actions").is_empty(),
+        "Successful terminal escape never executes subsequent queued room steps")
     world.reset_state()
     world.perform_goal({"action": "experiment", "target": "wall",
                         "argument": "knock three times"})
