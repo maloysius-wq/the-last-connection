@@ -217,6 +217,7 @@ class ChronologyRegressions(unittest.TestCase):
         agent.outcome("aborted", "take", "flashlight", True,
                       "Eli picked up the flashlight.", holding, speak=False)
         self.assertEqual(len(self.store.load("aborted")["pending_turn_events"]), 1)
+        backend.plan = [{"action": "inspect", "target": "breaker_box", "argument": ""}]
         agent.decide("aborted", "Inspect the breaker.",
                      {**holding, "lights_on": False})
         agent.outcome("aborted", "inspect", "breaker_box", True,
@@ -233,7 +234,7 @@ class ChronologyRegressions(unittest.TestCase):
             "failed", "Grab the flashlight and switch it on.",
             [{"action": "take", "target": "flashlight", "argument": ""},
              {"action": "use", "target": "flashlight", "argument": "on"}],
-            room, "I've got it, but the switch didn't work. Something is wrong.")
+            room, "I tried the switch, but nothing happened. Something is wrong.")
         holding = {**room, "inventory": ["flashlight"]}
         agent.outcome("failed", "take", "flashlight", True,
                       "Eli picked up the flashlight.", holding, speak=False)
