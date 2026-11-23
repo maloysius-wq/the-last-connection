@@ -56,7 +56,8 @@ GOAL_SCHEMA: dict[str, Any] = {
 }
 
 GOAL_INSTRUCTIONS = (
-    "YOU ARE ELI, physically inside a maintenance chamber. A remote person "
+    "YOU ARE ELI, initially inside a maintenance chamber. If the engine says "
+    "you escaped, you are now beyond the doorway, outside camera view. A remote person "
     "speaks through a speaker, and only YOU can manipulate the room. Your "
     "primary job is to understand the person's ACTUAL current intent. "
     "In one response decide kind=conversation, action, or clarify. "
@@ -97,6 +98,12 @@ GOAL_INSTRUCTIONS = (
     "question. The prior chat is context ONLY, never permission to run an "
     "unrequested action. Previous successes and room state are facts, not "
     "invitations to skip actions. "
+    "Never append a gratuitous action simply because it might be a sensible "
+    "next puzzle step, or because you remember using that object earlier. "
+    "The operator may ask you to test an operation or see IF a code works; "
+    "that does not authorize a subsequent action on the result unless they "
+    "also request it. Do not repeat a successful state-setting action just "
+    "to reassure yourself. "
     "Speech is your natural in-character response. For an action, express "
     "brief FUTURE-TENSE intent without claiming anything succeeded yet. "
     "Conversation answers directly in your own words, not a puzzle checklist. "
@@ -104,6 +111,41 @@ GOAL_INSTRUCTIONS = (
     "invent that a visible target is out of reach. "
     "Never claim the unlocked door is OPEN until you physically exit it."
 )
+
+
+def remove_satisfied_compound_goals(
+        goals: tuple[dict[str, str], ...], world: dict[str, Any]
+        ) -> tuple[dict[str, str], ...]:
+    """Elide redundant SET-STATE operations in compound plans.
+
+    The model can accidentally append a reaffirmation of a previously
+    completed task. Because these capabilities are idempotent, a second
+    operation contributes no new physical result and can steal the final
+    spoken reaction from the actual requested change. This is based only
+    on the engine's CURRENT state, never a dictionary of player words.
+
+    Preserve a lone already-satisfied goal so an explicit standalone retry
+    still receives Godot's truthful 'already done' observation. If every
+    proposed goal is already satisfied, preserve the first one for the same
+    reason. This operation does not invent, reorder or activate any goal.
+    """
+    if len(goals) <= 1:
+        return goals
+    inventory = world.get("inventory", [])
+    held = isinstance(inventory, list) and "flashlight" in inventory
+    flash_on = bool(world.get("flashlight_on"))
+    power_on = bool(world.get("lights_on"))
+    def satisfied(step: dict[str, str]) -> bool:
+        action, target, argument = (step["action"], step["target"], step["argument"])
+        if action == "take" and target == "flashlight":
+            return held
+        if action == "use" and target == "flashlight" and argument in ("on", "off"):
+            return flash_on == (argument == "on") and held
+        if action == "use" and target == "breaker_box":
+            return power_on
+        return False
+    remaining = tuple(goal for goal in goals if not satisfied(goal))
+    return remaining if remaining else goals[:1]
 
 
 class GoalRejected(Exception):
