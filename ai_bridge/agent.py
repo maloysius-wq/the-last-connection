@@ -535,6 +535,13 @@ class Agent:
         return {"role": turn["role"], "content": content[:650]}
 
     @staticmethod
+    def _physical_conditions(world: dict[str, Any]) -> dict[str, Any]:
+        """Small engine-owned before/after snapshot; no LLM-derived memories."""
+        keys = ("actor_at", "inventory", "flashlight_on", "lights_on",
+                "door_unlocked", "escaped", "heard_knocks")
+        return {key: world[key] for key in keys if key in world}
+
+    @staticmethod
     def _confirmed_event_ledger(facts: Any) -> dict[str, Any]:
         """Chronological physical memory, from Godot outcomes ONLY.
 
@@ -664,6 +671,9 @@ class Agent:
         """
         with self._lock:
             state = self.store.load(session_id)
+            # A NEW operator turn owns a NEW sequence of verified operations.
+            # Never leak an interrupted prior queue into its reaction.
+            state["pending_turn_events"] = []
             self.store.trace(session_id, "player_input", {
                 "text": player_text, "actor_at": world.get("actor_at"),
                 "inventory": world.get("inventory", []),
@@ -720,7 +730,9 @@ class Agent:
                 # focus. A failed or interrupted plan cannot impersonate
                 # successful movement or discovery.
                 state["requested_goal_target"] = actions[-1]["target"]
+                state["goal_start_conditions"] = self._physical_conditions(world)
             else:
+                state.pop("goal_start_conditions", None)
                 speech = self._ground_dialogue(
                     candidate, world, state, player_text, allow_fallback=False)
                 result = Decision(speech, "wait", "", emotion)
@@ -1107,7 +1119,8 @@ class Agent:
     @staticmethod
     def _ground_verified_outcome(speech: str, action: str, target: str,
                                  success: bool, description: str,
-                                 world: dict[str, Any]) -> str:
+                                 world: dict[str, Any], *,
+                                 turn_events: list[dict[str, Any]] | None = None) -> str:
         """Screen model dialogue against the single *completed* engine event.
 
         Never use prose to mutate the world. A suspect statement is omitted
@@ -1122,12 +1135,22 @@ class Agent:
         if not verified:
             return ""
         # Prevent surprise puzzle secrets, especially a guessed door code.
+        # Engine-reported details across THIS operator turn are legitimate.
+        # Referencing an intermediate action is not an invented new action.
+        receipt = turn_events or ()
+        evidence_text = " ".join(
+            str(event.get("description", "")) for event in receipt
+            if isinstance(event, dict)) if receipt else description
         if (re.search(r"\b\d{4}\b", verified) and
                 not set(re.findall(r"\b\d{4}\b", verified)).issubset(
-                    set(re.findall(r"\b\d{4}\b", description)))):
+                    set(re.findall(r"\b\d{4}\b", evidence_text)))):
             return ""
         seen = mentioned_targets(verified)
-        other = seen - {target}
+        completed_targets = {target}
+        completed_targets.update(
+            event.get("target") for event in receipt
+            if isinstance(event, dict) and event.get("success") is True)
+        other = seen - completed_targets
         for obj in other:
             if re.search(
                 r"\bi\s+(?:just\s+|already\s+)?(?:opened|unlocked|"
@@ -1177,15 +1200,28 @@ class Agent:
 
     def _model_outcome_reply(self, state: dict[str, Any], action: str,
                              target: str, success: bool, description: str,
-                             world: dict[str, Any]) -> str:
+                             world: dict[str, Any], *,
+                             turn_events: list[dict[str, Any]] | None = None) -> str:
         if not callable(getattr(self.backend, "converse", None)):
             # Legacy deterministic mock-mode remains clearly marked as such.
             return self._acknowledge(action, target, success, world, description)
-        previous = [fact for fact in state.get("facts", [])[:-1]
+
+        # A single reply follows the WHOLE operator-requested physical
+        # sequence. Earlier intermediate outcomes were intentionally not
+        # voiced for latency, but Eli DID perform and witness them. A final
+        # survey doesn't erase the breaker action that preceded it.
+        events = turn_events or [{
+            "action": action, "target": target, "success": success,
+            "description": description,
+            "world_after": self._physical_conditions(world),
+        }]
+        prior_facts = state.get("facts", [])[:-len(events)]
+        previous = [fact for fact in prior_facts
                     if isinstance(fact, dict) and fact.get("target") == target]
         prior_same_operation = [
             fact for fact in previous if fact.get("action") == action]
         chronology = {
+            # Keep the pre-existing counts for single-step compatibility.
             "current_operation": {"action": action, "target": target,
                                   "success": success, "result": description},
             "prior_attempts_of_this_exact_operation": len(prior_same_operation),
@@ -1194,33 +1230,54 @@ class Agent:
                 for fact in previous[-6:]
             ],
             "is_this_first_attempt_of_this_operation": not prior_same_operation,
+            # The full in-order receipt, with each step's ACTUAL world state.
+            "turn_started_with": state.get("goal_start_conditions"),
+            "verified_steps_this_turn": [
+                {"step": index + 1, **event}
+                for index, event in enumerate(events)
+            ],
+            "turn_ended_with": self._physical_conditions(world),
         }
         prompt = (
-            "The game engine JUST completed this ONE real physical operation. "
-            "You witnessed it. Respond as Eli naturally in one or two "
-            "spontaneous, emotionally credible sentences. Your fear, humor "
-            "and speculation about causes are welcome, but don't rewrite "
-            "what you actually saw or did. A CURRENT observation does not "
-            "prove an earlier inspection. If prior attempts of this operation "
-            "is ZERO, describe this as your first attempt, not a repeat or "
-            "a re-check. Don't claim you've checked something twice without "
-            "two confirmed checks. A success just now is NOT a forgotten "
-            "earlier success. React to THIS RESULT, not some other prop or "
-            "a previous step; don't say you forgot a known action or that "
-            "you only imagined a verified escape. Don't fabricate new actions "
-            "or puzzle information. No scripts, JSON, narrator recaps or "
-            "generic task updates. "
-            "VERIFIED EVENT CHRONOLOGY (system truth): "
+            "IMPORTANT: You are Eli, the PERSON who physically performed "
+            "ALL the just-completed steps listed below IN ORDER. Do not "
+            "describe yourself as an outside observer of the actions. "
+            "Even if you did not speak during intermediate steps, YOU "
+            "remember consciously picking up, switching, walking, and "
+            "looking when those verified actions occurred. "
+            "The last action was the final step, NOT the entire event. "
+            "The BEFORE and AFTER states are evidence of what changed. "
+            "For example, if you just turned on a light and then surveyed "
+            "the room, you KNOW you turned it on; do not say you somehow "
+            "missed the change or forgot whether it was on. You CAN react "
+            "with shock or curiosity to UNEXPECTED consequences, but not "
+            "with amnesia about your own deliberate actions. "
+            "A current observation does not mean you previously inspected "
+            "it. When remembering earlier checks, count only separately "
+            "verified operations, not assumptions or prior fictional speech. "
+            "Ground physical/sensory detail in the verified descriptions "
+            "and conditions. Don't invent a beam color, a sound that wasn't "
+            "heard, or a puzzle effect absent from Godot's evidence. "
+            "Now answer as Eli in one or two emotionally believable, "
+            "spontaneous sentences. React primarily to the most important "
+            "change in the whole sequence, not just the final survey; do "
+            "not recite a robotic list of steps, invent a new action, "
+            "or contradict an already confirmed operation. "
+            "VERIFIED THIS-TURN PHYSICAL RECEIPT (system truth): "
             + json.dumps(chronology, ensure_ascii=False, separators=(",", ":"))
-            + "\nThe room state and verified observations remain authoritative."
+            + "\nEverything in this receipt was physically experienced by YOU. "
+            "You may express fear, suspicion, relief, or surprise about its "
+            "consequences, but do not erase your own firsthand memory."
         )
         for attempt in range(2):
             spoken = self.backend.converse(self._messages(
-                state, prompt + ("\nYour last reply added an unsupported detail. "
-                "Try again using only the verified outcome." if attempt else ""),
+                state, prompt + ("\nYour previous reply conflicted with the "
+                "verified event receipt. Ground your answer in ALL of the "
+                "actions that just happened." if attempt else ""),
                 dialogue=True, world=world))
             grounded = self._ground_verified_outcome(
-                spoken, action, target, success, description, world)
+                spoken, action, target, success, description, world,
+                turn_events=events)
             if grounded:
                 return grounded
         return ""
@@ -2130,6 +2187,17 @@ class Agent:
             state["facts"] = (state.get("facts", []) + [
                 {"action": action, "target": target, "success": success, "description": description}
             ])[-60:]
+            # Queue outcomes arrive one HTTP request at a time. Accumulate
+            # them independently of model speech so the final reply has the
+            # actual complete cause/effect chain. A fresh decide() resets it.
+            pending = state.get("pending_turn_events", [])
+            if not isinstance(pending, list):
+                pending = []
+            event = {"action": action, "target": target, "success": success,
+                     "description": description,
+                     "world_after": self._physical_conditions(world)}
+            pending = (pending + [event])[-8:]
+            state["pending_turn_events"] = pending
             if success and action in ("move_to", "inspect", "take", "use", "enter_code", "survey", "experiment"):
                 state["focus"] = target
                 state["referent"] = target
@@ -2149,11 +2217,18 @@ class Agent:
             if speak:
                 try:
                     speech = self._model_outcome_reply(
-                        state, action, target, success, description, world)
+                        state, action, target, success, description, world,
+                        turn_events=pending)
                 except BackendUnavailable:
                     # OBSERVATION already displays authoritative facts; do not
                     # replace Eli with a canned phrase or interrupt the queue.
                     speech = ""
+            if speak:
+                # Clear the receipt EVEN when the local model is unavailable;
+                # no earlier turn can be misremembered as a future action.
+                state["pending_turn_events"] = []
+                state.pop("goal_start_conditions", None)
+                self.store.save(session_id, state)
             if speech:
                 history = [clean for turn in state.get("history", [])[-22:]
                            if (clean := self._clean_turn(turn)) is not None]
@@ -2162,6 +2237,7 @@ class Agent:
                 self.store.save(session_id, state)
             self.store.trace(session_id, "eli_reaction", {
                 "text": speech, "grounded": bool(speech),
+                "verified_steps_in_reaction": len(pending) if speak else 0,
             })
             return Decision(speech, "wait", "",
                             "curious" if success else "cautious")
