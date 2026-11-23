@@ -641,7 +641,7 @@ func _end_export() -> void:
 
 
 func _new_game() -> void:
-    if request_stage != "idle" or world.busy:
+    if request_stage != "idle" or world.busy or export_busy:
         return
     session_id = "eli_" + str(int(Time.get_unix_time_from_system())) + "_" + str(randi_range(1000,9999))
     world.reset_state()
