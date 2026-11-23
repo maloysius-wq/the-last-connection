@@ -19,7 +19,7 @@ from urllib import request, error
 MODEL = os.environ.get("TLC_MODEL", "qwen3:4b-instruct")
 OLLAMA_URL = os.environ.get("TLC_OLLAMA_URL", "http://127.0.0.1:11434/api/chat")
 SESSION_DIR = Path(os.environ.get("TLC_SESSION_DIR", str(Path(__file__).resolve().parent / "sessions")))
-ACTION_SET = frozenset(("wait", "move_to", "inspect", "take", "use", "enter_code", "survey"))
+ACTION_SET = frozenset(("wait", "move_to", "inspect", "take", "use", "enter_code", "survey", "experiment"))
 EMOTION_SET = frozenset(("calm", "cautious", "curious", "afraid"))
 SESSION_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 RESPONSE_SCHEMA = {
@@ -1012,6 +1012,7 @@ class Agent:
             final = verified[-1]
             end_cues = {
                 "survey": r"\b(?:look|scan|survey|check|see|room)\b",
+                "experiment": r"\b(?:try|attempt|test|do|give)\b",
                 "inspect": r"\b(?:look|inspect|examine|read|check)\b",
                 "take": r"\b(?:grab|pick|take|collect)\b",
                 "move_to": r"\b(?:go|walk|head|move|approach)\b",
@@ -1043,6 +1044,7 @@ class Agent:
             "survey": r"\b(?:look|scan|survey|check|see)\b",
             "enter_code": r"\b(?:enter|type|key|punch|try)\b",
             "use": r"\b(?:switch|turn|activate|use|try|flip|open|power)\b",
+            "experiment": r"\b(?:try|attempt|see|test|give|do|let)\b",
         }
         if not re.search(cues[action], speech, re.I):
             return ""
@@ -1204,6 +1206,8 @@ class Agent:
                 phrases.append("inspect the " + name)
             elif step.action == "enter_code":
                 phrases.append("enter the code on the keypad")
+            elif step.action == "experiment":
+                phrases.append(step.argument or "try something unusual")
             else:
                 phrases.append("use the " + name)
         return ("Okay. I'll " + ", then ".join(phrases) +
@@ -1217,6 +1221,8 @@ class Agent:
         name = names.get(intent.target, intent.target.replace("_", " "))
         if intent.action == "survey":
             return "I'll take a look around and tell you what I can actually see."
+        if intent.action == "experiment":
+            return "I'll try that and see what happens."
         if intent.action == "move_to":
             if world.get("actor_at") == intent.target:
                 return "I'm already by the " + name + ". I'll stay here."
