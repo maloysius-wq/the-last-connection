@@ -120,6 +120,23 @@ class GoalPipeline(unittest.TestCase):
                             facts=[NOTE_FACT], room=world(note=True))
         self.assertEqual(answer.actions, (goal("enter_code", "keypad", "9876"),))
 
+    def test_explicit_code_in_current_turn_outranks_older_reading(self):
+        answer = self.decide(
+            "Enter 9876 on that keypad, not the earlier number.",
+            [goal("enter_code", "keypad", "known")],
+            facts=[NOTE_FACT], room=world(note=True))
+        self.assertEqual(answer.actions, (goal("enter_code", "keypad", "9876"),))
+
+    def test_conflicting_explicit_digits_are_not_overridden_by_older_clue(self):
+        answer = self.decide(
+            "Enter 9876, not 4317.",
+            [goal("enter_code", "keypad", "4317")],
+            facts=[NOTE_FACT], room=world(note=True))
+        # One source contains two quoted numbers; this semantic ambiguity
+        # is intentionally not resolved by any word-matching parser.
+        self.assertEqual(answer.actions, ())
+        self.assertTrue(answer.status)
+
     def test_hidden_note_visible_after_breaker_power_goal(self):
         answer = self.decide("Turn on the power and read the note.",
                             [goal("use", "breaker_box"),
