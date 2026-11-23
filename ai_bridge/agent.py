@@ -927,47 +927,52 @@ class Agent:
     def _reviewed_semantic_decision(self, first: Any, audit: Any,
                                     player_text: str, world: dict[str, Any],
                                     state: dict[str, Any], referent: str) -> Decision:
-        """Reconcile independently validated goals, without an arbitrary veto.
+        """Reconcile verified *actions* first; generate Eli's speech just once.
 
-        The small model's second pass may omit a valid step, quote a whole
-        sentence or incorrectly ask to clarify. When the *original* contains
-        several independently grounded goals, an unusable secondary opinion
-        must not cancel all of them. A lone potentially incomplete action still
-        fails closed if its completeness review cannot finish.
+        A second small-model review can omit or invent steps. Compare the
+        independently validated goal sets, never scripted replies. Avoid
+        doing extra speech-model calls for proposals we won't execute.
         """
-        fallback = self._model_clarification(
-            player_text, world, state,
-            "The two readings did not confirm a complete, compatible sequence.")
         original = self._semantic_decision(
-            first, player_text, world, state, referent)
+            first, player_text, world, state, referent, speak=False)
         a = self._plan_goals(original.actions) if original.action != "wait" else ()
+        chosen: Decision | None = None
         if (not isinstance(audit, dict) or audit.get("kind") != "action" or
                 not isinstance(audit.get("steps"), list)):
-            return original if len(a) >= 2 else fallback
+            if len(a) >= 2:
+                chosen = original
+        else:
+            reviewed = self._semantic_decision(
+                {**first, "kind": "action", "steps": audit["steps"]},
+                player_text, world, state, referent, speak=False)
+            b = self._plan_goals(reviewed.actions) if reviewed.action != "wait" else ()
+            if not b:
+                if len(a) >= 2:
+                    chosen = original
+            elif not a:
+                chosen = reviewed
+            else:
+                comparison_a = self._comparable_goals(original.actions)
+                comparison_b = self._comparable_goals(reviewed.actions)
+                compatible = (self._ordered_subset(comparison_a, comparison_b) or
+                              self._ordered_subset(comparison_b, comparison_a))
+                if compatible:
+                    chosen = reviewed if len(b) > len(a) else original
+                elif len(a) >= 3:
+                    # The review may not veto an independently verified full
+                    # three-goal sequence, nor authorize its invented extras.
+                    chosen = original
 
-        reviewed = self._semantic_decision(
-            {**first, "kind": "action", "steps": audit["steps"]},
-            player_text, world, state, referent)
-        b = self._plan_goals(reviewed.actions) if reviewed.action != "wait" else ()
-        if not b:
-            # The independent GGUF reviewer is advisory, not a source of
-            # authority. Keep a genuinely multi-goal validated proposal.
-            return original if len(a) >= 2 else fallback
-        if not a:
-            return reviewed
-        comparison_a = self._comparable_goals(original.actions)
-        comparison_b = self._comparable_goals(reviewed.actions)
-        if not (self._ordered_subset(comparison_a, comparison_b) or
-                self._ordered_subset(comparison_b, comparison_a)):
-            # A fully validated three-goal plan should not be vetoed by a
-            # reviewer that proposes contradictory extra actions. Only the
-            # original authorized steps are retained, never the extras.
-            return original if len(a) >= 3 else fallback
-        if len(b) > len(a):
-            return reviewed
-        # Equal goals or the review dropped a goal: keep the original. The
-        # model's reviewing pass must never remove a valid requested step.
-        return original
+        if chosen is None or chosen.action == "wait":
+            return self._model_clarification(
+                player_text, world, state,
+                "The two interpretations of this request did not confirm a "
+                "complete, compatible and safe sequence.")
+        raw_speech = first.get("speech", "") if isinstance(first, dict) else ""
+        generated = self._model_action_intro(
+            player_text, world, state, chosen.actions, raw_speech)
+        return Decision(generated, chosen.action, chosen.target,
+                        chosen.emotion, chosen.argument, chosen.actions)
 
     @staticmethod
     def _safe_live_action_acknowledgment(raw_speech: Any,
@@ -1052,13 +1057,15 @@ class Agent:
 
     def _semantic_decision(self, raw: Any, player_text: str,
                            world: dict[str, Any], state: dict[str, Any],
-                           referent: str) -> Decision:
+                           referent: str, *, speak: bool = True) -> Decision:
         """Interpret natural requests, verify each physical step, never guess.
 
         In this mode the model handles language; the deterministic code is
         limited to hard safety invariants and world-truth enforcement.
         """
         if not isinstance(raw, dict):
+            if not speak:
+                return Decision("", "wait")
             return self._model_clarification(
                 player_text, world, state, "The interpretation was not a structured object.")
         kind = raw.get("kind")
@@ -1067,9 +1074,13 @@ class Agent:
         if not isinstance(emotion, str) or emotion not in EMOTION_SET:
             emotion = "cautious"
         if kind not in ("conversation", "action", "clarify") or not isinstance(steps, list):
+            if not speak:
+                return Decision("", "wait")
             return self._model_clarification(
                 player_text, world, state, "The interpretation was malformed.")
         if kind != "action":
+            if not speak:
+                return Decision("", "wait")
             if steps:
                 # A model saying "conversation" is never permission to act.
                 return self._model_clarification(
@@ -1087,6 +1098,8 @@ class Agent:
         try:
             verified = validated_steps(steps, player_text, world, referent)
         except PlanRejected as exc:
+            if not speak:
+                return Decision("", "wait")
             return self._model_clarification(
                 player_text, world, state, str(exc))
 
@@ -1103,8 +1116,9 @@ class Agent:
         # If the model's first preamble claims completion or adds instructions,
         # ask that same local model for a grounded rewrite. Never swap in a
         # fixed "I'll try that" phrase in production.
-        speech = self._model_action_intro(
+        speech = (self._model_action_intro(
             player_text, world, state, verified, raw.get("speech"))
+            if speak else "")
         return Decision(speech, first["action"], first["target"],
                         emotion, first["argument"], verified)
 
