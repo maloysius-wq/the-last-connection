@@ -89,13 +89,15 @@ class TestCommandTruth(unittest.TestCase):
         self.assertEqual(result.action, "take")
         after_pickup = room(holding=True, lit=False)
         agent.outcome("execute", "take", "flashlight", True,
-                      "Eli picked up the flashlight from the desk.", after_pickup)
+                      "Eli picked up the flashlight from the desk.", after_pickup,
+                      speak=False)
         after = room(holding=True, lit=True)
         after["actor_at"] = "flashlight"
         confirmed = agent.outcome(
             "execute", "use", "flashlight", True,
-            "Eli switched on the handheld flashlight.", after)
-        self.assertIn("flashlight is on", confirmed.speech)
+            "Eli switched on the handheld flashlight.", after, speak=False)
+        self.assertEqual(confirmed.speech, "")
+        self.assertTrue(after["flashlight_on"])
         self.assertEqual(backend.dialogue_calls, 0)
         self.assertEqual(backend.action_calls, 0)
 
