@@ -60,6 +60,8 @@ var http: HTTPRequest
 var update_http: HTTPRequest
 var update_button: Button
 var update_dialog: ConfirmationDialog
+var exit_dialog: ConfirmationDialog
+var exit_authorized := false
 var export_http: HTTPRequest
 var export_button: Button
 var export_busy := false
@@ -122,6 +124,17 @@ func _ready() -> void:
     update_dialog.confirmed.connect(_install_update)
     update_dialog.canceled.connect(_on_update_dialog_dismissed)
     add_child(update_dialog)
+    # Leaving the live camera is irreversible. Only a physical exit that
+    # would ACTUALLY succeed prompts for confirmation; inspecting or testing
+    # a locked door remains ordinary frictionless play.
+    exit_dialog = ConfirmationDialog.new()
+    exit_dialog.title = "Have Eli leave the room?"
+    exit_dialog.dialog_text = ("The exit is unlocked. Opening it will make Eli "
+        + "leave the camera view and end room interactions. Proceed?")
+    exit_dialog.ok_button_text = "OPEN & EXIT"
+    exit_dialog.confirmed.connect(_on_exit_confirmed)
+    exit_dialog.canceled.connect(_on_exit_cancelled)
+    add_child(exit_dialog)
     world.action_finished.connect(_on_world_action_finished)
     _message("SYSTEM", "Connected to CAM 01. Type to talk, hold ALT+V (or V outside the editor), or use HOLD TO TALK.")
     _message("SYSTEM", "Eli's speech and microphone transcription run offline. Subtitles remain available.")
@@ -322,6 +335,16 @@ func _on_http_completed(result: int, response_code: int, _headers: PackedStringA
         return
 
     if request_stage == "outcome" and not queued_actions.is_empty():
+        # An actual world exit is TERMINAL regardless of any remaining model
+        # steps. React to the successful escape before ending the queue.
+        if world.escaped and last_step_succeeded:
+            var escape_reply := str(response.get("speech", ""))
+            if not escape_reply.strip_edges().is_empty():
+                _message("ELI", escape_reply)
+            if queue_index + 1 < queued_actions.size():
+                _message("SYSTEM", "Eli left the camera view. Remaining room steps were not attempted.")
+            _idle()
+            return
         # The engine has finished and the local bridge recorded this exact
         # outcome. Do not continue a failed or unrecorded step.
         if not last_step_succeeded:
@@ -413,6 +436,17 @@ func _start_queued_action() -> void:
         _idle()
         return
     var step: Dictionary = queued_actions[queue_index]
+    if world.escaped:
+        _message("SYSTEM", "Eli is outside the camera view. No more room actions can run.")
+        _idle()
+        return
+    if (str(step.get("action", "")) == "use"
+            and str(step.get("target", "")) == "exit_door"
+            and world.door_unlocked and not exit_authorized):
+        request_stage = "confirm_exit"
+        status.text = "Confirm opening the unlocked exit..."
+        exit_dialog.popup_centered()
+        return
     request_stage = "action"
     var step_total := queued_actions.size()
     status.text = ("Eli is performing step " + str(queue_index + 1) + "/" +
@@ -429,13 +463,28 @@ func _on_world_action_finished(action: String, target: String, success: bool, de
     # Intermediate steps only record truth. Eli speaks naturally after the
     # last successful step or immediately after a failure, avoiding repeated
     # slow GGUF calls and canned replies for each queued movement.
-    var should_speak := not success or queue_index + 1 >= queued_actions.size()
+    var should_speak := not success or world.escaped or queue_index + 1 >= queued_actions.size()
     var body := {"session_id": session_id, "action": action, "target": target,
         "success": success, "description": description, "world": world.snapshot(),
         "speak": should_speak}
     _request("/api/outcome", body, "outcome")
 
+func _on_exit_confirmed() -> void:
+    if request_stage != "confirm_exit" or queued_actions.is_empty():
+        return
+    exit_authorized = true
+    _start_queued_action()
+
+
+func _on_exit_cancelled() -> void:
+    if request_stage != "confirm_exit":
+        return
+    _message("SYSTEM", "Eli did not open the exit. The door remains closed.")
+    _idle()
+
+
 func _idle() -> void:
+    exit_authorized = false
     queued_actions.clear()
     queue_index = 0
     last_step_succeeded = false
@@ -480,7 +529,8 @@ func _restore_input_focus() -> void:
         return
     # Never steal focus from a modal. In particular, don't bring back the
     # focus_exited callback that interrupted CHECK FOR UPDATES mouse clicks.
-    if is_instance_valid(update_dialog) and update_dialog.visible:
+    if (is_instance_valid(update_dialog) and update_dialog.visible
+            or is_instance_valid(exit_dialog) and exit_dialog.visible):
         return
     input.grab_focus()
     input.caret_column = input.text.length()
