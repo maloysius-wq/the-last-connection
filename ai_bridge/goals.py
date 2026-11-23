@@ -139,6 +139,12 @@ def validate_goals(raw: Any, world: dict[str, Any],
         raise GoalRejected("The room state is unavailable")
 
     typed_codes = _current_user_digits(player_text)
+    # When several numeric candidates appear, don't guess which number was
+    # affirmed or negated. That is data ambiguity, not a phrase-parsing rule.
+    if len(typed_codes) > 1 and any(
+            isinstance(g, dict) and g.get("action") in ("enter_code", "use")
+            and g.get("target") == "keypad" for g in raw):
+        raise GoalRejected("Several four-digit codes were mentioned; specify one")
     code_from_observation = observed_code(facts)
     result: list[dict[str, str]] = []
     for item in raw:
