@@ -386,6 +386,7 @@ class Agent:
             "visible door, keypad and breaker. Do not treat a gameshow claim "
             "as verified; stay skeptical and human.")
         self._lock = threading.Lock()
+        self._last_validation_issue = ""
 
     @staticmethod
     def _world(world: Any) -> dict[str, Any]:
@@ -547,6 +548,7 @@ class Agent:
         world = self._world(world)
         with self._lock:
             state = self.store.load(session_id)
+            self._last_validation_issue = ""
             self.store.trace(session_id, "player_input", {
                 "text": player_text,
                 "actor_at": world.get("actor_at"),
@@ -743,6 +745,7 @@ class Agent:
                 "argument": result.argument,
                 "actions": list(result.actions),
                 "emotion": result.emotion,
+                "validation_issue": self._last_validation_issue,
             })
             return result
 
@@ -826,6 +829,7 @@ class Agent:
         exact operator turn and a concise account of what wasn't verified.
         A stock phrase is not emitted as Eli's voice even if generation fails.
         """
+        self._last_validation_issue = issue
         if not callable(getattr(self.backend, "converse", None)):
             # Scripted test/mock backends are explicitly nonproduction.
             return Decision(candidate if candidate else "", "wait", "", "cautious")
@@ -927,6 +931,17 @@ class Agent:
                 r"we(?:'ve|\s+have)\s+(?:done|made)\s+it)\b",
                 verified, re.I):
             return ""
+        if action == "experiment":
+            # Free-form attempts can be colorful, but they must not cause the
+            # model to invent new props, puzzle progress or damage that Godot
+            # did not actually simulate.
+            if re.search(
+                    r"\b(?:i\s+(?:broke|smashed|destroyed|opened|unlocked|"
+                    r"found|made|created|entered)|(?:door|wall|floor|ceiling)\s+"
+                    r"(?:broke|opened|collapsed|shattered)|"
+                    r"a\s+(?:key|passage|hole|tunnel)\s+(?:appeared|opened))\b",
+                    verified, re.I):
+                return ""
         if target == "breaker_box":
             if world.get("lights_on") is False and re.search(
                 r"\b(?:lights?\s+(?:are|is|came)\s+(?:on|back)|power(?:'s| is)\s+back)\b",
