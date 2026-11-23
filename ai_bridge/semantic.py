@@ -380,7 +380,7 @@ def validated_steps(raw: Any, message: str, world: dict[str, Any],
             elif argument and action != "experiment":
                 raise PlanRejected("Unrequested action argument")
             names = mentioned_targets(quote)
-            if names and (len(names) != 1 or target not in names):
+            if action != "experiment" and names and (len(names) != 1 or target not in names):
                 raise PlanRejected("Action target contradicts the quoted player request")
             if not names and PRONOUN.search(quote):
                 # Pronoun must refer to a single object, not whichever target
