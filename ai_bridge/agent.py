@@ -580,7 +580,9 @@ class Agent:
 
     def _messages(self, state: dict[str, Any], user_content: str, *, dialogue: bool = False,
                   semantic: bool = False, goal: bool = False,
-                  world: dict[str, Any] | None = None) -> list[dict[str, str]]:
+                  world: dict[str, Any] | None = None,
+                  verified_turn_receipt: dict[str, Any] | None = None
+                  ) -> list[dict[str, str]]:
         # Retain long-term confirmed observations separately from a small chat window.
         history = [clean for turn in state.get("history", [])[-12:]
                    if (clean := self._clean_turn(turn)) is not None]
@@ -659,6 +661,20 @@ class Agent:
             # Keep a single system message for strict GGUF chat-template compatibility.
             system_context += ("\nCONFIRMED PAST OBSERVATIONS (not new commands): " +
                                json.dumps(facts, ensure_ascii=False, separators=(",", ":")))
+        if verified_turn_receipt is not None:
+            # Source authority matters. This is Godot's OWN verified event
+            # sequence, not a new operator command and not Eli's fictional
+            # prior dialogue. Place it in SYSTEM role for the local GGUF.
+            system_context += (
+                "\nVERIFIED THIS-TURN PHYSICAL RECEIPT (system truth): "
+                + json.dumps(verified_turn_receipt, ensure_ascii=False,
+                             separators=(",", ":"))
+                + "\nYou are Eli and personally performed every operation "
+                "in this receipt in the listed order. The operator did not "
+                "perform them; no step is hearsay. The earlier current-room "
+                "facts describe where things stand NOW, not a replacement "
+                "for the history of how YOU changed them."
+            )
         return ([{"role": "system", "content": system_context}]
                 + history + [{"role": "user", "content": user_content}])
 
@@ -1263,18 +1279,18 @@ class Agent:
             "change in the whole sequence, not just the final survey; do "
             "not recite a robotic list of steps, invent a new action, "
             "or contradict an already confirmed operation. "
-            "VERIFIED THIS-TURN PHYSICAL RECEIPT (system truth): "
-            + json.dumps(chronology, ensure_ascii=False, separators=(",", ":"))
-            + "\nEverything in this receipt was physically experienced by YOU. "
-            "You may express fear, suspicion, relief, or surprise about its "
-            "consequences, but do not erase your own firsthand memory."
+            "The verified sequence of operations you experienced is in your "
+            "SYSTEM memory, not in the operator's speech. You may express "
+            "fear, suspicion, relief, or surprise at its consequences, but "
+            "do not erase your own firsthand memory."
         )
         for attempt in range(2):
             spoken = self.backend.converse(self._messages(
                 state, prompt + ("\nYour previous reply conflicted with the "
                 "verified event receipt. Ground your answer in ALL of the "
                 "actions that just happened." if attempt else ""),
-                dialogue=True, world=world))
+                dialogue=True, world=world,
+                verified_turn_receipt=chronology))
             grounded = self._ground_verified_outcome(
                 spoken, action, target, success, description, world,
                 turn_events=events)
