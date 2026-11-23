@@ -554,8 +554,14 @@ class Agent:
                     # "Which actions do you mean?" instead of real dialogue.
                     speech = self.backend.converse(
                         self._messages(state, player_text, dialogue=True, world=world))
-                    speech = self._ground_dialogue(speech, world, state, player_text)
-                    result = Decision(speech, "wait", "", "cautious")
+                    speech = self._ground_dialogue(
+                        speech, world, state, player_text, allow_fallback=False)
+                    if not speech or self._stock_clarification(speech):
+                        result = self._model_clarification(
+                            player_text, world, state,
+                            "The initial live reply was unsupported or generic.")
+                    else:
+                        result = Decision(speech, "wait", "", "cautious")
                 else:
                     raw = self.backend.interpret(
                         self._messages(state, player_text, semantic=True, world=world))
@@ -1675,16 +1681,22 @@ class Agent:
         return "All right. I've checked it."
 
     def outcome(self, session_id: str, action: str, target: str, success: bool,
-                description: str, world: dict[str, Any]) -> Decision:
-        """Record validated Godot outcomes instantly; never ask the LLM to re-describe them.
+                description: str, world: dict[str, Any], *,
+                speak: bool = True) -> Decision:
+        """Record engine truth first; then ask Eli to react only when useful.
 
-        The next player turn sees the new world and these authoritative facts.
+        Earlier versions returned fixed dialogue for every engine result.
+        This is the actual LLM conversational path; confirmed observations
+        remain authoritative, and an unavailable model never rolls back a
+        completed action or stalls a multi-step queue.
         """
         world = self._world(world)
         if action not in ACTION_SET or not isinstance(target, str) or not isinstance(success, bool):
             raise InvalidRequest("Invalid outcome")
         if not isinstance(description, str) or len(description) > 600:
             raise InvalidRequest("Invalid outcome description")
+        if not isinstance(speak, bool):
+            raise InvalidRequest("Invalid outcome speech flag")
         with self._lock:
             state = self.store.load(session_id)
             state["facts"] = (state.get("facts", []) + [
@@ -1693,6 +1705,23 @@ class Agent:
             if success and action in ("move_to", "inspect", "take", "use"):
                 state["focus"] = target
                 state["referent"] = target
+            # Persist completed actions BEFORE speech generation. Failures of
+            # Piper or the LLM must not create a fictional physical failure.
             self.store.save(session_id, state)
-            return Decision(self._acknowledge(action, target, success, world, description),
-                            "wait", "", "curious" if success else "cautious")
+            speech = ""
+            if speak:
+                try:
+                    speech = self._model_outcome_reply(
+                        state, action, target, success, description, world)
+                except BackendUnavailable:
+                    # OBSERVATION already displays authoritative facts; do not
+                    # replace Eli with a canned phrase or interrupt the queue.
+                    speech = ""
+            if speech:
+                history = [clean for turn in state.get("history", [])[-22:]
+                           if (clean := self._clean_turn(turn)) is not None]
+                state["history"] = (history + [
+                    {"role": "assistant", "content": speech}])[-24:]
+                self.store.save(session_id, state)
+            return Decision(speech, "wait", "",
+                            "curious" if success else "cautious")
