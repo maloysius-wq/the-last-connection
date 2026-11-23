@@ -434,6 +434,43 @@ func _run() -> void:
     _expect("Sequence stopped at step 1 of 2" in
         str(app.get("log_view").get_parsed_text()),
         "Terminal visibly reports cancelled later steps")
+    # The export button uses displayed chat. Verify the FULL conversation
+    # survives a save/reload, without duplicated lines or replayed speech,
+    # and that starting a new session isolates the old transcript.
+    var transcript_session := "eli_smoke_transcript_" + str(Time.get_ticks_usec())
+    app.set("session_id", transcript_session)
+    app.get("log_view").clear()
+    app.call("_message", "YOU", "Please try the breaker again.")
+    app.call("_message", "OBSERVATION", "The lever remained down.")
+    var expected_transcript := str(app.get("log_view").get_parsed_text())
+    var transcript_path := str(app.call("_transcript_path"))
+    _expect(FileAccess.file_exists(transcript_path),
+        "Conversation is persisted beside the portable save")
+    var disk_before := FileAccess.get_file_as_string(transcript_path)
+    _expect("Please try the breaker again." in disk_before and
+        "The lever remained down." in disk_before,
+        "Persisted transcript contains both player and engine lines")
+    app.call("_save")
+    app.get("log_view").clear()
+    app.call("_load_save")
+    _expect(str(app.get("session_id")) == transcript_session,
+        "Save reload retains the active session identifier")
+    _expect(str(app.get("log_view").get_parsed_text()) == expected_transcript,
+        "Session reload restores the entire chat transcript")
+    _expect(FileAccess.get_file_as_string(transcript_path) == disk_before,
+        "Loading chat does not append duplicate lines to the transcript file")
+    app.call("_new_game")
+    _expect(str(app.get("session_id")) != transcript_session,
+        "New session generates a different transcript identifier")
+    _expect(not str(app.get("log_view").get_parsed_text()).contains(
+        "Please try the breaker again."),
+        "New session does not display previous conversation")
+    _expect(str(app.call("_transcript_path")) != transcript_path,
+        "New session writes to a different transcript file")
+    _expect(FileAccess.get_file_as_string(transcript_path) == disk_before,
+        "Reset preserves the old session transcript for debugging")
+    DirAccess.remove_absolute(transcript_path)
+
     if failures.is_empty():
         print("GODOT SMOKE PASS: scene, flashlight, breaker, code puzzle, escape and persistence")
         quit(0)
