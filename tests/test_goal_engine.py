@@ -11,7 +11,8 @@ from unittest.mock import patch
 import unittest
 
 from ai_bridge.agent import Agent, LlamaCppBackend, OllamaBackend, SessionStore
-from ai_bridge.goals import GOAL_SCHEMA, GoalRejected, validate_goals, observed_code
+from ai_bridge.goals import (GOAL_SCHEMA, GoalRejected, validate_goals,
+                             observed_code, remove_satisfied_compound_goals)
 from test_semantic_planner import world
 
 PERSONA = Path(__file__).resolve().parents[1] / "data/characters/eli.json"
@@ -143,6 +144,50 @@ class GoalPipeline(unittest.TestCase):
         with self.assertRaises(GoalRejected):
             validate_goals([goal("take", "breaker_box", "beside the desk")],
                            world(), "Pick it up", [])
+
+    def test_redundant_old_state_cannot_steal_reaction_from_power_goal(self):
+        # Actual uploaded session: breaker requested, model unexpectedly
+        # appended a second flashlight-ON that was already satisfied.
+        scene = world()
+        scene["inventory"] = ["flashlight"]
+        scene["flashlight_on"] = True
+        decision = self.decide(
+            "Okay, try moving that lever up to turn it on.",
+            [goal("use", "breaker_box", "up"),
+             goal("use", "flashlight", "on")], room=scene,
+            speech="I'll turn the breaker on.")
+        self.assertEqual(decision.actions, (goal("use", "breaker_box"),))
+        self.assertEqual(decision.status, "")
+
+    def test_compound_retains_goals_not_yet_satisfied(self):
+        scene = world()
+        scene["inventory"] = ["flashlight"]
+        scene["flashlight_on"] = False
+        decision = self.decide(
+            "Get that flashlight on and inspect the breaker.",
+            [goal("take", "flashlight"), goal("use", "flashlight", "on"),
+             goal("inspect", "breaker_box")], room=scene)
+        self.assertEqual(decision.actions, (
+            goal("use", "flashlight", "on"), goal("inspect", "breaker_box")))
+
+    def test_a_single_already_done_goal_still_runs_for_truthful_reply(self):
+        scene = world()
+        scene["inventory"] = ["flashlight"]
+        scene["flashlight_on"] = True
+        decision = self.decide(
+            "Could you switch that flashlight on again?",
+            [goal("use", "flashlight", "on")], room=scene)
+        self.assertEqual(decision.actions, (goal("use", "flashlight", "on"),))
+
+    def test_everything_already_satisfied_keeps_one_engine_check(self):
+        scene = world()
+        scene["inventory"] = ["flashlight"]
+        scene["flashlight_on"] = True
+        scene["lights_on"] = True
+        self.assertEqual(remove_satisfied_compound_goals((
+            goal("use", "flashlight", "on"),
+            goal("use", "breaker_box")), scene),
+            (goal("use", "flashlight", "on"),))
 
     def test_short_goal_lets_engine_approach_the_door(self):
         decision = self.decide("Could you try opening the door now?",
