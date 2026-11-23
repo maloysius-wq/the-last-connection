@@ -127,7 +127,8 @@ def create_handler(agent: Agent, mode: str, updater=None,
                     result = agent.decide(sid, data.get("player_text", ""), data.get("world"))
                 else:
                     result = agent.outcome(sid, data.get("action"), data.get("target", ""),
-                                           data.get("success"), data.get("description", ""), data.get("world"))
+                                           data.get("success"), data.get("description", ""), data.get("world"),
+                                           speak=data.get("speak", True))
                 return self._send(200, asdict(result))
             except (InvalidRequest, json.JSONDecodeError, ValueError, TypeError) as exc:
                 return self._send(400, {"error": str(exc)})
