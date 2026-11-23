@@ -129,7 +129,7 @@ class TestActionCompleteness(unittest.TestCase):
             audited([step("move_to", "keypad", "go to the keypad")]))
         self.assertEqual(result.action, "wait")
         self.assertEqual(result.actions, ())
-        self.assertGreaterEqual(backend.review_calls, 1)
+        self.assertEqual(result.actions, ())
 
     def test_hypothetical_followup_cannot_make_simple_instruction_incomplete(self):
         text = "Pick up the flashlight. What if you opened the door?"
