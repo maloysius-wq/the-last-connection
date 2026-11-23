@@ -1051,8 +1051,8 @@ class Agent:
         # keypad referent, but cannot invent a code or target.
         pointed_imperative = bool(
             not named and referent == "keypad" and
-            re.match(r"^\\s*(?:eli[, ]+\\s*)?(?:please\\s+)?"
-                     r"(?:press|enter|input|type|key)\\s+(?:it|that)\\b",
+            re.match(r"^\s*(?:eli[, ]+\s*)?(?:please\s+)?"
+                     r"(?:press|enter|input|type|key)\s+(?:it|that)\b",
                      player_text, re.I))
         if not (contains_explicit_action_request(player_text) or pointed_imperative):
             return None
