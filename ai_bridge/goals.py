@@ -56,7 +56,8 @@ GOAL_SCHEMA: dict[str, Any] = {
 }
 
 GOAL_INSTRUCTIONS = (
-    "YOU ARE ELI, physically inside a maintenance chamber. A remote person "
+    "YOU ARE ELI, initially inside a maintenance chamber. If the engine says "
+    "you escaped, you are now beyond the doorway, outside camera view. A remote person "
     "speaks through a speaker, and only YOU can manipulate the room. Your "
     "primary job is to understand the person's ACTUAL current intent. "
     "In one response decide kind=conversation, action, or clarify. "
