@@ -1045,6 +1045,17 @@ class Agent:
             referent if not named else "")
         if not explicit_target:
             return None
+        # Salvage is for a clearly expressed CURRENT-TURN command, never
+        # merely a model believing a discussion about actions was an order.
+        # Short imperatives such as "Press it NOW" can use a recent verified
+        # keypad referent, but cannot invent a code or target.
+        pointed_imperative = bool(
+            not named and referent == "keypad" and
+            re.match(r"^\\s*(?:eli[, ]+\\s*)?(?:please\\s+)?"
+                     r"(?:press|enter|input|type|key)\\s+(?:it|that)\\b",
+                     player_text, re.I))
+        if not (contains_explicit_action_request(player_text) or pointed_imperative):
+            return None
         candidates: dict[tuple[str, str, str], dict[str, str]] = {}
         for source in (first, audit):
             if not isinstance(source, dict) or source.get("kind") != "action":
