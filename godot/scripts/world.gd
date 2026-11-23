@@ -28,14 +28,22 @@ var object_positions: Dictionary = {
     "breaker_box": Vector3(0.0, 0.0, -1.8),
     "exit_door": Vector3(2.0, 0.0, -1.8),
     "keypad": Vector3(2.9, 0.0, -1.8),
-    "maintenance_note": Vector3(-1.3, 0.0, -0.40)
+    "maintenance_note": Vector3(-1.3, 0.0, -0.40),
+    "desk": Vector3(-1.7, 0.0, -0.40),
+    "wall": Vector3(-2.7, 0.0, -1.4),
+    "floor": Vector3(-0.8, 0.0, -0.30),
+    "ceiling": Vector3(0.0, 0.0, -0.50)
 }
 var descriptions := {
     "flashlight": "A metal flashlight resting on the left-hand desk.",
     "breaker_box": "A breaker box on the back wall; its lever is down.",
     "exit_door": "A heavy locked door on the back wall.",
     "keypad": "A four-digit number pad beside the door; its indicator glows red.",
-    "maintenance_note": "The maintenance note reads: 'RESET SEQUENCE 4317'. Below it someone scrawled: 'Don't listen to the knocking.'"
+    "maintenance_note": "The maintenance note reads: 'RESET SEQUENCE 4317'. Below it someone scrawled: 'Don't listen to the knocking.'",
+    "desk": "A sturdy wooden desk with a scratched surface and sturdy legs.",
+    "wall": "Plain, heavy walls surround the maintenance room.",
+    "floor": "A hard, dusty floor beneath Eli's feet.",
+    "ceiling": "A low ceiling with the overhead light fixture."
 }
 
 func _ready() -> void:
@@ -196,10 +204,14 @@ func perform_action(action: String, target: String, argument: String = "") -> vo
     if action == "survey" and target != "room":
         action_finished.emit(action, target, false, "Eli can only survey the room.")
         return
-    if action != "survey" and not snapshot()["objects"].has(target):
+    if action == "experiment" and (argument.strip_edges().length() < 2 or
+            argument.length() > 120 or argument.contains("\n") or argument.contains("\r")):
+        action_finished.emit(action, target, false, "The proposed attempt is not a valid physical gesture.")
+        return
+    if action != "survey" and not (action == "experiment" and target == "room") and not snapshot()["objects"].has(target):
         action_finished.emit(action, target, false, "Eli cannot see or reach that object yet.")
         return
-    if action not in ["move_to", "inspect", "take", "use", "enter_code", "survey"]:
+    if action not in ["move_to", "inspect", "take", "use", "enter_code", "survey", "experiment"]:
         action_finished.emit(action, target, false, "Unsupported physical action.")
         return
     if action == "enter_code":
@@ -210,6 +222,10 @@ func perform_action(action: String, target: String, argument: String = "") -> vo
         action_finished.emit(action, target, false, "The flashlight can only be switched on or off.")
         return
     busy = true
+    if action == "experiment" and target == "room":
+        # Allow creative in-place experiments: Eli visibly turns and gestures.
+        _experiment_gesture(action, target, argument)
+        return
     if action == "survey":
         # Eli visibly looks around without moving to a made-up object.
         var original_y := actor.rotation.y
@@ -225,7 +241,7 @@ func perform_action(action: String, target: String, argument: String = "") -> vo
         return
     # Handling the flashlight in hand takes no walk to its old desk location.
     # Turning it off while still on the desk also needs no movement.
-    if target == "flashlight" and ((inventory.has("flashlight") and action in ["use", "inspect", "take"])
+    if target == "flashlight" and ((inventory.has("flashlight") and action in ["use", "inspect", "take", "experiment"])
             or (action == "use" and argument == "off")):
         call_deferred("_finish_action", action, target, argument)
         return
@@ -243,7 +259,20 @@ func perform_action(action: String, target: String, argument: String = "") -> vo
         tween.tween_property(actor, "position", destination, 0.85)
     else:
         tween.tween_property(actor, "position", destination, 1.2)
-    tween.finished.connect(_finish_action.bind(action, target, argument))
+    if action == "experiment":
+        tween.finished.connect(_experiment_gesture.bind(action, target, argument))
+    else:
+        tween.finished.connect(_finish_action.bind(action, target, argument))
+
+func _experiment_gesture(action: String, target: String, argument: String) -> void:
+    # The simulation actually moves Eli and animates an attempt, but does not
+    # pretend a new puzzle mechanism or inventory object was created.
+    var initial := actor.rotation.y
+    var gesture := create_tween()
+    gesture.tween_property(actor, "rotation:y", initial - 0.28, 0.18)
+    gesture.tween_property(actor, "rotation:y", initial + 0.32, 0.24)
+    gesture.tween_property(actor, "rotation:y", initial, 0.18)
+    gesture.finished.connect(_finish_action.bind(action, target, argument))
 
 func _finish_action(action: String, target: String, argument: String) -> void:
     busy = false
@@ -275,6 +304,12 @@ func _finish_action(action: String, target: String, argument: String) -> void:
                 + "on the desk.") if breaker_on else (
                 "Eli inspected the breaker. Its lever is down and the overhead "
                 + "lights are out. He has not flipped the switch.")
+    elif action == "experiment":
+        var place := "in the middle of the room" if target == "room" else ("at the " + target.replace("_", " "))
+        description = ("Eli moved and tried to " + argument.strip_edges() + " " + place +
+            ". He made the physical attempt, but no new mechanism opened, "
+            + "the power and locks remain in their previous states, and nothing new "
+            + "entered his inventory.")
     elif action == "take":
         if target == "flashlight" and not inventory.has("flashlight"):
             inventory.append("flashlight")
