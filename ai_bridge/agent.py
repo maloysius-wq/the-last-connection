@@ -2243,9 +2243,25 @@ class Agent:
             raise InvalidRequest("Invalid outcome speech flag")
         with self._lock:
             state = self.store.load(session_id)
-            state["facts"] = (state.get("facts", []) + [
-                {"action": action, "target": target, "success": success, "description": description}
-            ])[-60:]
+            # The code actually typed is retrieved from the already-validated
+            # ordered engine goals. Raw conversation/LLM prose cannot create
+            # a verified keypad memory, even when it contains four digits.
+            pending_before = state.get("pending_turn_events", [])
+            if not isinstance(pending_before, list):
+                pending_before = []
+            plan = state.get("turn_goals", [])
+            planned_step = (plan[len(pending_before)] if isinstance(plan, list)
+                            and len(plan) > len(pending_before) else None)
+            entry = {"action": action, "target": target,
+                     "success": success, "description": description}
+            if (action == "enter_code" and target == "keypad"
+                    and isinstance(planned_step, dict)
+                    and planned_step.get("action") == action
+                    and planned_step.get("target") == target
+                    and isinstance(planned_step.get("argument"), str)
+                    and re.fullmatch(r"[0-9]{4}", planned_step["argument"])):
+                entry["entered_code"] = planned_step["argument"]
+            state["facts"] = (state.get("facts", []) + [entry])[-60:]
             # Queue outcomes arrive one HTTP request at a time. Accumulate
             # them independently of model speech so the final reply has the
             # actual complete cause/effect chain. A fresh decide() resets it.
@@ -2287,6 +2303,7 @@ class Agent:
                 # no earlier turn can be misremembered as a future action.
                 state["pending_turn_events"] = []
                 state.pop("goal_start_conditions", None)
+                state.pop("turn_goals", None)
                 self.store.save(session_id, state)
             if speech:
                 history = [clean for turn in state.get("history", [])[-22:]
