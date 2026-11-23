@@ -12,7 +12,7 @@ import re
 from difflib import SequenceMatcher
 from typing import Any
 
-from .intent import mentioned_targets
+from .intent import TARGETS as NAMED_TARGET_PATTERNS, mentioned_targets
 
 MAX_STEPS = 5
 ACTIONS = frozenset(("move_to", "inspect", "take", "use", "enter_code", "survey", "experiment"))
@@ -376,16 +376,70 @@ def _non_command_context(message: str, start: int, evidence: str) -> bool:
     return bool(NEGATION.search(local) or OBSERVATION_PREFIX.search(local))
 
 
+def _latest_named_target(text: str) -> str:
+    """The closest explicitly named object in the CURRENT user utterance.
+
+    A later named target outranks an earlier completed action's target:
+    "take flashlight, turn it on, then go to breaker and turn THAT on".
+    Never resolve pronouns from model speech or a stale conversation alone.
+    """
+    matches = [(match.start(), match.end(), target)
+               for target, pattern in NAMED_TARGET_PATTERNS
+               for match in re.finditer(pattern, text, re.I)]
+    if not matches:
+        return ""
+    last = max(position for position, _, _ in matches)
+    named = {target for position, _, target in matches if position == last}
+    return next(iter(named)) if len(named) == 1 else ""
+
+
+def _implicit_approach_only(raw: list[Any], index: int) -> bool:
+    """Drop an LLM's redundant WALK that shares one action evidence quote.
+
+    Godot already walks toward a prop for use/take/inspect/enter_code. A
+    small GGUF sometimes emits move_to + use with the SAME "turn it on"
+    quote, which old validation rejected as duplicate authority. Collapse
+    only the redundant movement, never the requested interaction. Do not
+    turn "walk to the breaker" into permission to flip it.
+    """
+    if index + 1 >= len(raw):
+        return False
+    current, following = raw[index], raw[index + 1]
+    if not isinstance(current, dict) or not isinstance(following, dict):
+        return False
+    if (current.get("action") != "move_to" or current.get("argument") != ""
+            or following.get("action") not in
+            ("use", "take", "inspect", "enter_code")
+            or current.get("target") != following.get("target")):
+        return False
+    one, two = current.get("evidence"), following.get("evidence")
+    if (not isinstance(one, str) or not isinstance(two, str)
+            or one.strip().casefold() != two.strip().casefold()):
+        return False
+    # A quote about TRAVEL alone cannot authorize manipulating a prop.
+    cues = {
+        "use": r"\b(?:turn|switch|flip|activate|open|unlock|use|power|push|pull)\b",
+        "take": r"\b(?:pick|grab|take|collect|fetch)\b",
+        "inspect": r"\b(?:look|inspect|examine|read|check|study)\b",
+        "enter_code": r"\b(?:enter|type|input|key|press|submit|code)\b",
+    }
+    return bool(re.search(cues[following["action"]], two, re.I))
+
+
 def validated_steps(raw: Any, message: str, world: dict[str, Any],
                     referent: str = "", known_code: str = "") -> tuple[dict[str, str], ...]:
     """Return whole authorized plan or raise PlanRejected. Never partial-plan."""
     if not isinstance(raw, list) or not 1 <= len(raw) <= MAX_STEPS:
         raise PlanRejected("Invalid number of action steps")
     objects = world.get("objects", {})
+    # Normalize only duplicate inferred approach steps. Distinct user
+    # instructions still need distinct grounded evidence, in order.
+    planned = [item for index, item in enumerate(raw)
+               if not _implicit_approach_only(raw, index)]
     cursor = 0
     previous_target = ""
     result: list[dict[str, str]] = []
-    for item in raw:
+    for item in planned:
         if not isinstance(item, dict):
             raise PlanRejected("Malformed action step")
         action, target, argument, quote = (item.get(k) for k in
@@ -498,15 +552,13 @@ def validated_steps(raw: Any, message: str, world: dict[str, Any],
                 # Pronoun must refer to a single object, not whichever target
                 # the LLM happens to choose. New physical steps take priority
                 # over older conversational focus.
-                recent = mentioned_targets(message[:start])
-                if previous_target:
+                recent_named = _latest_named_target(message[:start])
+                if recent_named:
+                    if target != recent_named:
+                        raise PlanRejected("Pronoun differs from nearest named player target")
+                elif previous_target:
                     if target != previous_target:
                         raise PlanRejected("Pronoun does not match earlier queued target")
-                elif len(recent) == 1:
-                    if target not in recent:
-                        raise PlanRejected("Pronoun differs from current-turn referent")
-                elif recent:
-                    raise PlanRejected("Ambiguous pronoun")
                 elif target != referent:
                     # A held object is a stronger physical referent than a
                     # stale conversational focus. "You're already holding it.
