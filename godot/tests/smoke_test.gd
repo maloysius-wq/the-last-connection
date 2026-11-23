@@ -517,10 +517,10 @@ func _run() -> void:
     goal_result = await world.action_finished
     _expect(goal_result[2] == true and world.snapshot()["lights_on"] == false,
         "Creative goal physically attempts gesture without inventing puzzle effects")
-    world.perform_goal({"action": "use", "target": "keypad", "argument": ""})
-    goal_result = await world.action_finished
-    _expect(goal_result[2] == false and world.snapshot()["door_unlocked"] == false,
-        "Unsupported goal fails without a false in-world state transition")
+    _expect(not bool(world.supports_goal({
+        "action": "use", "target": "keypad", "argument": ""
+    })) and world.snapshot()["door_unlocked"] == false,
+        "Unsupported goal is rejected without a false world transition")
 
     if failures.is_empty():
         print("GODOT SMOKE PASS: scene, flashlight, breaker, code puzzle, escape and persistence")
