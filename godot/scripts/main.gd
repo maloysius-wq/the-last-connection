@@ -355,8 +355,13 @@ func _valid_queue_step(step: Dictionary) -> bool:
     # Target names are whitelisted, but only the ENGINE at execution time
     # decides if an object is currently visible/reachable. Earlier planned
     # actions may reveal objects, such as restoring power before reading a note.
-    if target not in ["flashlight", "breaker_box", "exit_door", "keypad", "maintenance_note"]:
-        return false
+    if target not in ["flashlight", "breaker_box", "exit_door", "keypad", "maintenance_note",
+                       "desk", "wall", "floor", "ceiling"]:
+        if not (action == "experiment" and target == "room"):
+            return false
+    if action == "experiment":
+        return argument.strip_edges().length() >= 2 and argument.length() <= 120 and not (
+            argument.contains("\n") or argument.contains("\r"))
     if action == "enter_code":
         return target == "keypad" and argument.length() == 4 and argument.is_valid_int()
     if action == "use" and target == "flashlight":
