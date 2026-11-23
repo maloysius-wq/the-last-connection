@@ -343,6 +343,11 @@ class Agent:
             "opened something unless the CURRENT WORLD and CONFIRMED RESULTS "
             "prove that event happened. Separate what you remember, what you "
             "can see across the room, and what you stand directly beside. "
+            "Walking to a visible reachable object before opening, using, "
+            "inspecting or entering a code is AUTOMATIC in this room. Do "
+            "not claim you cannot reach it or ask for separate walking "
+            "permission. An unlocked door remains physically CLOSED until "
+            "you actually open it and leave; green keypad is not escape. "
             "The world fields actor_at and last_observation are authoritative; "
             "a nearby object is not the same as an object across the room. "
             "Do not reveal concealed puzzle information from object IDs or "
@@ -380,6 +385,14 @@ class Agent:
         # explicitly authorized action plan. Legacy deterministic parsing is
         # retained only for old test doubles and explicitly scripted mock mode.
         self.semantic_system = (personality["system_prompt"] + SEMANTIC_INSTRUCTIONS +
+            "\nWhen given a direct physical instruction, the game automatically "
+            "walks you to the visible object before acting. 'Try opening the "
+            "door now' means use/exit_door, NOT a demand to separately "
+            "move_to first or ask whether you can reach it. 'Can you open' "
+            "is usually a request, not a question about ability. Code words "
+            "like 'that code' can refer to an engine-CONFIRMED inspected "
+            "note, but only the validator chooses which code is allowed. "
+            "An unlocked door is still closed until physically opened. "
             "\nLIVE CONVERSATION: React to the operator's immediate subject, "
             "especially joking or roleplay. Do not prompt the operator with a "
             "list of your own room's visible puzzle props. You can see your "
@@ -847,6 +860,9 @@ class Agent:
             "question ONLY if essential. Do not use stock phrases such as "
             "'I didn't understand' or 'say that again'. Don't discuss schemas, "
             "parsers, reviewers or software. Never invent a physical outcome. "
+            "If a visible object is not nearby, you can walk over as "
+            "part of using it; do not invent a reachability problem. "
+            "An unlocked door is not open until you physically open it. "
             "If you know something helpful from what you see, say it naturally. "
             f"INTERNAL REASON FOR CAUTION (not spoken): {issue[:260]}. "
             f"OPERATOR'S EXACT WORDS: {player_text}"
@@ -960,6 +976,12 @@ class Agent:
                 r"\b(?:flashlight(?:'s| is)\s+(?:on|working)|switched\s+it\s+on)\b",
                 verified, re.I):
             return ""
+        if not world.get("escaped", False) and re.search(
+                r"\b(?:the\s+)?door(?:['’]s|\s+is|\s+was)\s+"
+                r"(?:already\s+)?open\b|"
+                r"\b(?:door\s+(?:has\s+)?opened|opened\s+the\s+door)\b",
+                verified, re.I):
+            return ""
         if "knock" in verified.lower() and not world.get("heard_knocks", False):
             return ""
         return verified
@@ -994,6 +1016,61 @@ class Agent:
             if grounded:
                 return grounded
         return ""
+
+    @staticmethod
+    def _confirmed_keypad_code(state: dict[str, Any]) -> str:
+        """Code legitimately learned by Eli, never a model-suggested number."""
+        for fact in reversed(state.get("facts", [])):
+            if not isinstance(fact, dict) or fact.get("success") is not True:
+                continue
+            if fact.get("action") != "inspect" or fact.get("target") != "maintenance_note":
+                continue
+            found = re.search(r"\bRESET SEQUENCE\s+([0-9]{4})\b",
+                              str(fact.get("description", "")), re.I)
+            if found:
+                return found.group(1)
+        return ""
+
+    def _recover_single_grounded_step(self, first: Any, audit: Any,
+                                      player_text: str, world: dict[str, Any],
+                                      state: dict[str, Any], referent: str) -> Decision | None:
+        """Discard hallucinated extra reviewer steps for ONE clear command.
+
+        Complex/compound requests never partially execute. Every recovered
+        operation must independently pass the same current-turn quote, target,
+        code, negation and world checks as normal plans.
+        """
+        named = mentioned_targets(player_text)
+        explicit_target = next(iter(named)) if len(named) == 1 else (
+            referent if not named else "")
+        if not explicit_target:
+            return None
+        candidates: dict[tuple[str, str, str], dict[str, str]] = {}
+        for source in (first, audit):
+            if not isinstance(source, dict) or source.get("kind") != "action":
+                continue
+            source_steps = source.get("steps", [])
+            if not isinstance(source_steps, list):
+                continue
+            for raw in source_steps:
+                if not isinstance(raw, dict) or raw.get("target") != explicit_target:
+                    continue
+                # Reject partial execution of actual compound requests.
+                if needs_action_review(player_text, [raw]):
+                    return None
+                try:
+                    verified = validated_steps(
+                        [raw], player_text, world, referent,
+                        self._confirmed_keypad_code(state))
+                except PlanRejected:
+                    continue
+                only = verified[0]
+                candidates[(only["action"], only["target"], only["argument"])] = only
+        if len(candidates) != 1:
+            return None
+        only = next(iter(candidates.values()))
+        return Decision("", only["action"], only["target"], "cautious",
+                        only["argument"], (only,))
 
     def _reviewed_semantic_decision(self, first: Any, audit: Any,
                                     player_text: str, world: dict[str, Any],
@@ -1040,6 +1117,9 @@ class Agent:
                     # three-goal sequence, nor authorize its invented extras.
                     chosen = original
 
+        if chosen is None or chosen.action == "wait":
+            chosen = self._recover_single_grounded_step(
+                first, audit, player_text, world, state, referent)
         if chosen is None or chosen.action == "wait":
             return self._model_clarification(
                 player_text, world, state,
@@ -1175,7 +1255,9 @@ class Agent:
                 "The model expressed uncertainty without a specific, useful explanation.")
 
         try:
-            verified = validated_steps(steps, player_text, world, referent)
+            verified = validated_steps(
+                steps, player_text, world, referent,
+                self._confirmed_keypad_code(state))
         except PlanRejected as exc:
             if not speak:
                 return Decision("", "wait")
@@ -1646,6 +1728,15 @@ class Agent:
                 continue
             # The camera cannot teach Eli that his plainly visible door exists.
             if Agent._asks_remote_about_obvious_prop(clause, world):
+                removed = True
+                continue
+            # The real escape is a different Godot event from code entry.
+            # The model must not turn green keypad lights into an open door.
+            if not world.get("escaped", False) and re.search(
+                    r"\b(?:the\s+)?door(?:['’]s|\s+is|\s+was)\s+"
+                    r"(?:already\s+)?open\b|"
+                    r"\b(?:door\s+(?:has\s+)?opened|opened\s+the\s+door)\b",
+                    clause, re.I):
                 removed = True
                 continue
             # An autobiographical 'I used to...' isn't an action in this room.

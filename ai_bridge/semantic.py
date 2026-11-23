@@ -93,7 +93,15 @@ def contains_explicit_action_request(message: str) -> bool:
     # interpretation. This gate is never itself permission to act.
     invitations = ("please try ", "try to ", "do a ", "go ahead and ",
                    "let's try ", "could you try ")
-    return any((bool(mentioned_targets(part)) and DIRECT_COMMAND.match(part))
+    # A polite physical question is a request, unlike "Can you see the door?"
+    # This only enables review; it never authorizes a physical step.
+    polite_physical = re.compile(
+        r"^\s*(?:eli[,\s]+)?(?:can|could|would|will)\s+you\s+"
+        r"(?:please\s+)?(?:go|walk|move|pick|grab|take|flip|turn|"
+        r"switch|open|use|enter|type|input|press|inspect|read|try\s+to)\b",
+        re.I)
+    return any((bool(mentioned_targets(part)) and
+                (DIRECT_COMMAND.match(part) or polite_physical.match(part)))
                or part.lower().startswith(invitations) for part in clauses)
 
 
@@ -178,7 +186,9 @@ INSTRUCTIONS = (
     "uncertain instruction requires kind=clarify, steps=[] and a natural "
     "question. A clearly requested action uses kind=action. For flashlight "
     "use argument=on/off when specified, else empty. Enter_code needs the "
-    "user's explicitly stated four digits; no guessed codes. For breaker_box "
+    "user's explicitly stated four digits OR an engine-confirmed note's "
+    "four digits when they clearly say to use that code. Never guess digits. "
+    "For breaker_box "
     "and exit_door use, argument is empty. Experiment argument is the short "
     "physical attempt. Other arguments "
     "are empty. Do not append helpful extra actions. Never report physical "
@@ -239,8 +249,9 @@ REVIEW_INSTRUCTIONS = (
     "for opening the door use an empty argument; do not encode switch "
     "directions or operation labels in argument. "
     "Other action arguments empty, except freeform experiments and keypad's "
-    "four digits given "
-    "explicitly in the user message. Do not infer a code. "
+    "four digits typed by the operator or already confirmed by an "
+    "engine-reported reading of the note when the operator explicitly "
+    "refers to that code. Never guess digits. "
     "Do not treat a question about an imagined action, a negated instruction, "
     "or mere mention of an object as permission to touch it. "
     "If the user was only discussing possibilities, or action targets are "
@@ -357,7 +368,7 @@ def _non_command_context(message: str, start: int, evidence: str) -> bool:
 
 
 def validated_steps(raw: Any, message: str, world: dict[str, Any],
-                    referent: str = "") -> tuple[dict[str, str], ...]:
+                    referent: str = "", known_code: str = "") -> tuple[dict[str, str], ...]:
     """Return whole authorized plan or raise PlanRejected. Never partial-plan."""
     if not isinstance(raw, list) or not 1 <= len(raw) <= MAX_STEPS:
         raise PlanRejected("Invalid number of action steps")
@@ -406,13 +417,34 @@ def validated_steps(raw: Any, message: str, world: dict[str, Any],
                     not 2 <= len(argument.strip()) <= 120 or
                     re.search(r"[\r\n\x00-\x1f]", argument)):
                 raise PlanRejected("Invalid creative action")
+            # The small GGUF sometimes calls code entry "use keypad" with
+            # a four-digit argument. Translate to the ONLY supported engine
+            # operation before validating user permission for those digits.
+            if action == "use" and target == "keypad" and re.fullmatch(r"[0-9]{4}", argument):
+                action = "enter_code"
             if action == "use" and target not in USABLE:
                 raise PlanRejected("Object cannot be activated")
             if action == "enter_code":
                 if target != "keypad" or not re.fullmatch(r"[0-9]{4}", argument):
                     raise PlanRejected("Keypad needs four specific digits")
-                if argument not in message or argument not in quote:
-                    raise PlanRejected("Code was not explicitly provided by the player")
+                typed = set(re.findall(r"(?<![0-9])[0-9]{4}(?![0-9])", message))
+                if typed:
+                    # Explicit CURRENT-TURN digits take precedence. Preserve
+                    # the same-quote rule so unrelated numbers don't leak.
+                    if argument not in typed or argument not in quote:
+                        raise PlanRejected("Code differs from the player's stated digits")
+                else:
+                    # Only a confirmed physical read of the note may supply
+                    # a code. Prior MODEL prose and hidden snapshots are not
+                    # evidence. This still requires a fresh request to enter.
+                    code_reference = bool(re.search(r"\b(?:code|sequence)\b", evidence_here, re.I))
+                    pointed_entry = bool(
+                        re.search(r"\b(?:press|enter|type|input|submit|key)\b", evidence_here, re.I)
+                        and (referent == "keypad" or "keypad" in mentioned_targets(message))
+                    )
+                    if not (known_code and argument == known_code and
+                            (code_reference or pointed_entry)):
+                        raise PlanRejected("No confirmed code authorized by this request")
             elif action == "use" and target == "flashlight":
                 if argument not in ("", "on", "off"):
                     raise PlanRejected("Invalid flashlight mode")
