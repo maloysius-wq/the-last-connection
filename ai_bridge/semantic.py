@@ -14,9 +14,9 @@ from typing import Any
 from .intent import mentioned_targets
 
 MAX_STEPS = 5
-ACTIONS = frozenset(("move_to", "inspect", "take", "use", "enter_code", "survey"))
+ACTIONS = frozenset(("move_to", "inspect", "take", "use", "enter_code", "survey", "experiment"))
 TARGETS = frozenset(("flashlight", "breaker_box", "keypad",
-                     "exit_door", "maintenance_note"))
+                     "exit_door", "maintenance_note", "desk", "wall", "floor", "ceiling"))
 USABLE = frozenset(("flashlight", "breaker_box", "exit_door"))
 # These are sentence-level safety checks for non-commands, NOT a dictionary of
 # how to express physical instructions.
@@ -146,9 +146,15 @@ INSTRUCTIONS = (
     "merely held. A bare take action cannot satisfy a switch-ON request. "
     "Translate natural phrasing, indirect but clear requests and "
     "references to known objects into ordered steps, at most five. Use only "
-    "action verbs move_to,inspect,take,use,enter_code,survey. Use only targets "
-    "flashlight,breaker_box,keypad,exit_door,maintenance_note,room; room only "
-    "for survey. 'Tell me what you see' after a survey is its spoken result, "
+    "action verbs move_to,inspect,take,use,enter_code,survey,experiment. Use only targets "
+    "flashlight,breaker_box,keypad,exit_door,maintenance_note,desk,wall,floor,ceiling,room; room only "
+    "for survey or an in-place experiment. Experiment is for novel "
+    "physical attempts like knocking, dancing, shouting, shaking, pushing, "
+    "or investigating unusual details. Its argument describes the attempt "
+    "in Eli's natural words (120 characters maximum). The engine may "
+    "simulate it without changing puzzle state. Do not substitute "
+    "experiment for a normal physical task that the engine already supports. "
+    "'Tell me what you see' after a survey is its spoken result, "
     "not a separate physical step. Do not invent prerequisites as separate "
     "steps: the engine handles necessary approach and flashlight pickup. "
     "For EVERY proposed physical step set evidence to the exact, shortest "
@@ -213,9 +219,11 @@ REVIEW_INSTRUCTIONS = (
     "not the whole player sentence for every step. An instruction like "
     "'grab that flashlight, turn it on and look around' has evidence "
     "'grab that flashlight', 'turn it on', 'look around'. "
-    "Only actions: move_to, inspect, take, use, "
-    "enter_code, survey. Valid targets: flashlight, breaker_box, keypad, "
-    "exit_door, maintenance_note, room (survey only). "
+    "Only actions: move_to, inspect, take, use, enter_code, survey, experiment. "
+    "Valid targets: flashlight, breaker_box, keypad, exit_door, "
+    "maintenance_note, desk, wall, floor, ceiling, room (survey or "
+    "in-place experiment only). For experiments use a short natural "
+    "argument of the attempted behavior; never claim puzzle progress. "
     "Flashlight switch ON requires argument=on; switch OFF uses argument=off. "
     "Other action arguments empty, except keypad requires four digits given "
     "explicitly in the user message. Do not infer a code. "
@@ -325,6 +333,9 @@ def validated_steps(raw: Any, message: str, world: dict[str, Any],
         if action == "survey":
             if target != "room" or argument:
                 raise PlanRejected("Survey is only valid for the visible room")
+        elif action == "experiment" and target == "room":
+            if not 2 <= len(argument.strip()) <= 120 or re.search(r"[\r\n\x00-\x1f]", argument):
+                raise PlanRejected("Invalid creative action")
         else:
             if target not in TARGETS:
                 raise PlanRejected("Unknown physical target")
@@ -337,6 +348,10 @@ def validated_steps(raw: Any, message: str, world: dict[str, Any],
                 raise PlanRejected("The target is not visible or obtainable yet")
             if action == "take" and target != "flashlight":
                 raise PlanRejected("Object cannot be carried")
+            if action == "experiment" and (
+                    not 2 <= len(argument.strip()) <= 120 or
+                    re.search(r"[\r\n\x00-\x1f]", argument)):
+                raise PlanRejected("Invalid creative action")
             if action == "use" and target not in USABLE:
                 raise PlanRejected("Object cannot be activated")
             if action == "enter_code":
@@ -362,7 +377,7 @@ def validated_steps(raw: Any, message: str, world: dict[str, Any],
                 if re.fullmatch(r"(?:turn|switch)\s+(?:on|off)\s+(?:the\s+)?light", quote, re.I):
                     if previous_target != "flashlight" and referent != "flashlight":
                         raise PlanRejected("Ambiguous room light versus handheld flashlight")
-            elif argument:
+            elif argument and action != "experiment":
                 raise PlanRejected("Unrequested action argument")
             names = mentioned_targets(quote)
             if names and (len(names) != 1 or target not in names):
