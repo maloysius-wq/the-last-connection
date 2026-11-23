@@ -663,8 +663,10 @@ class Agent:
                                   emotion, first["argument"], actions)
                 # An object named by a validated action is a safe follow-up
                 # reference; do not derive it from conversational prose.
-                state["goal_focus"] = actions[-1]["target"]
-                state["referent"] = actions[-1]["target"]
+                # Only /api/outcome can promote a goal target to CONFIRMED
+                # focus. A failed or interrupted plan cannot impersonate
+                # successful movement or discovery.
+                state["requested_goal_target"] = actions[-1]["target"]
             else:
                 speech = self._ground_dialogue(
                     candidate, world, state, player_text, allow_fallback=False)
