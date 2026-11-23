@@ -1028,7 +1028,13 @@ class Agent:
                 compatible = (self._ordered_subset(comparison_a, comparison_b) or
                               self._ordered_subset(comparison_b, comparison_a))
                 if compatible:
-                    chosen = reviewed if len(b) > len(a) else original
+                    # A "use breaker" goal includes its implied approach,
+                    # whereas "move to breaker" alone does not switch power.
+                    # Compare *engine outcomes*, not raw step counts: both
+                    # can be one model step but only one completes the user's
+                    # requested physical result.
+                    chosen = (reviewed if len(comparison_b) > len(comparison_a)
+                              else original)
                 elif len(a) >= 3:
                     # The review may not veto an independently verified full
                     # three-goal sequence, nor authorize its invented extras.
