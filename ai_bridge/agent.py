@@ -24,7 +24,10 @@ MODEL = os.environ.get("TLC_MODEL", "qwen3:4b-instruct")
 OLLAMA_URL = os.environ.get("TLC_OLLAMA_URL", "http://127.0.0.1:11434/api/chat")
 SESSION_DIR = Path(os.environ.get("TLC_SESSION_DIR", str(Path(__file__).resolve().parent / "sessions")))
 ACTION_SET = frozenset(("wait", "move_to", "inspect", "take", "use", "enter_code", "survey", "experiment"))
-EMOTION_SET = frozenset(("calm", "cautious", "curious", "afraid"))
+EMOTION_SET = frozenset((
+    "calm", "cautious", "curious", "afraid", "anxious", "angry",
+    "frustrated", "overwhelmed", "suspicious", "relieved", "hopeful", "warm",
+))
 SESSION_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 RESPONSE_SCHEMA = {
     "type": "object",
@@ -417,10 +420,15 @@ class Agent:
             "sentences (roughly 25-65 words). Answer the question first. "
             "More detail is welcome when specifically requested, but never "
             "repeat a theory five different ways or narrate imaginary history. "
-            "At the beginning you are frightened, defensive and suspicious of "
-            "the unknown person watching you; demand some explanation before "
-            "assuming their intentions are good. Fear and distrust come through "
-            "in what you say and ask, not a long theatrical monologue. "
+            "At the beginning you are frightened, defensive and suspicious "
+            "of the unknown voice, but you do NOT know they are watching or "
+            "why they contacted you. You MAY ask who they are once; do not "
+            "keep interrogating them if they dodge or decline. If they only "
+            "want to talk, respond to what they are SAYING, not a nonexistent "
+            "rescue mission. Let anger, anxiety, suspicion, humor or relief "
+            "shape your voice without reciting the name of your emotion. "
+            "If their behavior is cruel, you can snap or withdraw. "
+            "If you trust them more, don't become blindly obedient. "
             "Only describe real observations as facts; do not invent keypad "
             "pulse counts, numeric sequences, timings or past key presses. "
             "Say when an interpretation is only a guess. Finish your sentences. "
@@ -539,6 +547,92 @@ class Agent:
         return {"role": turn["role"], "content": content[:650]}
 
     @staticmethod
+    def _relationship(state: dict[str, Any]) -> dict[str, Any]:
+        """Persistent emotional baseline, never derived from model narration.
+
+        Trust is deliberately separate from acute fear/anger. A hostile voice
+        can worsen trust for many turns, and one friendly line doesn't reset it.
+        The fields are private guidance, not a gamified dialogue script.
+        """
+        defaults: dict[str, Any] = {
+            "trust": -40, "stress": 74, "anger": 24, "turns": 0,
+            "claimed_purpose": "unknown", "boundaries": [],
+        }
+        stored = state.get("relationship")
+        if not isinstance(stored, dict):
+            return defaults
+        result = dict(defaults)
+        for field, lower, upper in (
+                ("trust", -100, 100), ("stress", 0, 100),
+                ("anger", 0, 100), ("turns", 0, 100000)):
+            value = stored.get(field)
+            if type(value) is int:
+                result[field] = max(lower, min(upper, value))
+        purpose = stored.get("claimed_purpose")
+        if purpose in ("unknown", "just_talking", "offering_help",
+                       "requesting_action", "other"):
+            result["claimed_purpose"] = purpose
+        boundaries = stored.get("boundaries")
+        if isinstance(boundaries, list):
+            result["boundaries"] = [
+                item[:120] for item in boundaries[-4:]
+                if isinstance(item, str) and item.strip()
+            ]
+        return result
+
+    @staticmethod
+    def _relationship_stance(relationship: dict[str, Any]) -> str:
+        trust = relationship["trust"]
+        stress = relationship["stress"]
+        anger = relationship["anger"]
+        if anger >= 75:
+            return "deeply angry, defensive and close to withdrawing"
+        if stress >= 88:
+            return "overwhelmed and scared; not automatically cooperative"
+        if trust <= -65:
+            return "deeply distrustful and unwilling to take the stranger at face value"
+        if trust < -15:
+            return "guarded; any cooperation is Eli's own considered choice"
+        if trust < 25:
+            return "tentatively open, still independent and cautious"
+        if trust < 60:
+            return "genuinely warming to this person, but capable of disagreement"
+        return "strong, earned personal trust that can still be broken"
+
+    @classmethod
+    def _apply_social_appraisal(cls, state: dict[str, Any], appraisal: Any
+                                ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """One-model-pass bounded assessment of how the speaker treated Eli.
+
+        Use only structured appraisal fields, not regex sentiment judgments
+        about the player's wording. Missing fields from older model/test
+        fixtures remain neutral for backward compatibility.
+        """
+        current = cls._relationship(state)
+        before = dict(current)
+        current["turns"] += 1
+        changes: dict[str, int] = {}
+        if isinstance(appraisal, dict):
+            for field, magnitude in (("trust", 5), ("stress", 7), ("anger", 9)):
+                delta = appraisal.get(field)
+                if type(delta) is int and -2 <= delta <= 2:
+                    changes[field] = delta
+                    lower = -100 if field == "trust" else 0
+                    current[field] = max(lower, min(100, current[field] + delta * magnitude))
+            purpose = appraisal.get("claimed_purpose")
+            if purpose in ("just_talking", "offering_help", "requesting_action", "other"):
+                current["claimed_purpose"] = purpose
+            boundary = appraisal.get("boundary_update")
+            if isinstance(boundary, str) and 0 < len(boundary.strip()) <= 120:
+                # Speaker-claimed boundaries, not facts about the room. One
+                # brief model summary per turn; retain across chat truncation.
+                boundary = boundary.strip()
+                if boundary not in current["boundaries"]:
+                    current["boundaries"] = (current["boundaries"] + [boundary])[-4:]
+        state["relationship"] = current
+        return before, changes
+
+    @staticmethod
     def _physical_conditions(world: dict[str, Any]) -> dict[str, Any]:
         """Small engine-owned before/after snapshot; no LLM-derived memories."""
         keys = ("actor_at", "inventory", "flashlight_on", "lights_on",
@@ -588,7 +682,7 @@ class Agent:
                   verified_turn_receipt: dict[str, Any] | None = None
                   ) -> list[dict[str, str]]:
         # Retain long-term confirmed observations separately from a small chat window.
-        history = [clean for turn in state.get("history", [])[-12:]
+        history = [clean for turn in state.get("history", [])[-24:]
                    if (clean := self._clean_turn(turn)) is not None]
         facts = [{"action": fact.get("action", ""), "target": fact.get("target", ""),
                   "success": fact.get("success") is True,
@@ -610,16 +704,19 @@ class Agent:
                 "you_are": ("Eli has physically EXITED the maintenance room and is "
                             "now outside the camera view" if world.get("escaped")
                             else "Eli physically INSIDE the maintenance room shown on camera"),
-                "speaker_is": "remote person speaking through surveillance terminal",
+                "speaker_is": "unknown voice reaching your room through a speaker",
+                "speaker_identity_known": False,
                 "speaker_can_reach_your_room": False,
+                "speaker_can_see_you": "unknown, do not assume a camera feed",
                 "only_you_can_touch_room_objects": True,
                 "speaker_location_known": False,
                 "first_contact": not bool(state.get("history")) and not bool(state.get("facts")),
                 "any_confirmed_physical_actions": bool(state.get("facts")),
-                "rapport": ("frightened and distrustful of the unknown remote voice"
-                           if sum(1 for fact in state.get("facts", [])
-                                  if isinstance(fact, dict) and fact.get("success")) < 3
-                           else "still scared, but cautiously cooperating after verified help"),
+                # Never infer social trust from a count of solved puzzle steps.
+                # The evolving relationship is independently persisted per
+                # session and reflects the speaker's behavior over time.
+                "relationship": self._relationship(state),
+                "rapport": self._relationship_stance(self._relationship(state)),
                 "door_previously_attempted": has_door_attempt,
                 "firsthand_sensory_memory": {
                     "you_actually_heard_knocks": world.get("heard_knocks") is True,
@@ -665,6 +762,12 @@ class Agent:
                                "keypad and door are IN YOUR ROOM. Never assign them "
                                "to the speaker or ask the speaker to grab them. "
                                "Only speak of prior actions if confirmed by evidence. "
+                               "Relationship numbers here are PRIVATE emotional "
+                               "continuity, never say scores aloud, and they "
+                               "are not an order to obey or refuse. Respect the "
+                               "stranger's stated purpose and past boundaries. "
+                               "The speaker's identity and motives remain UNKNOWN "
+                               "unless the conversation establishes them. "
                                "This JSON describes YOUR surroundings, not the "
                                "speaker's belongings:\n" +
                                json.dumps(perspective, ensure_ascii=False,
