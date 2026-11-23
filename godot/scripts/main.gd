@@ -431,6 +431,15 @@ func _valid_queue_step(step: Dictionary) -> bool:
     return bool(world.supports_goal(step))
 
 
+func _requires_exit_confirmation(step: Dictionary) -> bool:
+    # Pure engine-state capability guard. Headless tests can verify it
+    # without invoking platform-specific native modal behavior.
+    return (str(step.get("action", "")) == "use"
+        and str(step.get("target", "")) == "exit_door"
+        and world.door_unlocked and not world.escaped
+        and not exit_authorized)
+
+
 func _start_queued_action() -> void:
     if queue_index >= queued_actions.size():
         _idle()
@@ -440,9 +449,7 @@ func _start_queued_action() -> void:
         _message("SYSTEM", "Eli is outside the camera view. No more room actions can run.")
         _idle()
         return
-    if (str(step.get("action", "")) == "use"
-            and str(step.get("target", "")) == "exit_door"
-            and world.door_unlocked and not exit_authorized):
+    if _requires_exit_confirmation(step):
         request_stage = "confirm_exit"
         status.text = "Confirm opening the unlocked exit..."
         exit_dialog.popup_centered()
