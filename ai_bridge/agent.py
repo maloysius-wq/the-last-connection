@@ -762,8 +762,13 @@ class Agent:
         for i, step in enumerate(steps):
             act, target, arg = step["action"], step["target"], step["argument"]
             if (act == "move_to" and i + 1 < len(steps) and
-                    steps[i + 1]["target"] == target and
-                    steps[i + 1]["action"] in ("inspect", "take", "use", "enter_code")):
+                    steps[i + 1]["action"] in ("inspect", "take", "use", "enter_code") and
+                    (steps[i + 1]["target"] == target or
+                     (target == "desk" and steps[i + 1]["target"] in
+                      ("flashlight", "maintenance_note")))):
+                # Godot automatically approaches the desk before manipulating
+                # either object on it. A second review that omits a redundant
+                # 'walk to the desk' is not contradicting the requested outcome.
                 continue
             if act == "use" and target == "flashlight" and arg == "on":
                 if not result or result[-1] != ("take", "flashlight", ""):
