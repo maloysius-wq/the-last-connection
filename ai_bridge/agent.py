@@ -929,9 +929,9 @@ class Agent:
         must not cancel all of them. A lone potentially incomplete action still
         fails closed if its completeness review cannot finish.
         """
-        fallback = Decision(
-            "I heard part of that, but couldn't confirm the full sequence. "
-            "Could you say which steps you want first?", "wait", "", "cautious")
+        fallback = self._model_clarification(
+            player_text, world, state,
+            "The two readings did not confirm a complete, compatible sequence.")
         original = self._semantic_decision(
             first, player_text, world, state, referent)
         a = self._plan_goals(original.actions) if original.action != "wait" else ()
@@ -1032,35 +1032,36 @@ class Agent:
         limited to hard safety invariants and world-truth enforcement.
         """
         if not isinstance(raw, dict):
-            return Decision("Sorry, I didn't quite follow that. Could you say it again?",
-                            "wait", "", "cautious")
+            return self._model_clarification(
+                player_text, world, state, "The interpretation was not a structured object.")
         kind = raw.get("kind")
         steps = raw.get("steps")
         emotion = raw.get("emotion", "cautious")
         if not isinstance(emotion, str) or emotion not in EMOTION_SET:
             emotion = "cautious"
         if kind not in ("conversation", "action", "clarify") or not isinstance(steps, list):
-            return Decision("Hang on. Could you tell me that again?",
-                            "wait", "", "cautious")
+            return self._model_clarification(
+                player_text, world, state, "The interpretation was malformed.")
         if kind != "action":
             if steps:
                 # A model saying "conversation" is never permission to act.
-                return Decision("Wait, are you asking me to do something, or just thinking out loud?",
-                                "wait", "", "cautious")
-            speech = self._ground_dialogue(str(raw.get("speech", "")), world, state, player_text)
-            return Decision(speech, "wait", "", emotion)
+                return self._model_clarification(
+                    player_text, world, state,
+                    "Dialogue classification included unapproved physical steps.")
+            speech = self._ground_dialogue(
+                str(raw.get("speech", "")), world, state, player_text,
+                allow_fallback=False)
+            if speech and not self._stock_clarification(speech):
+                return Decision(speech, "wait", "", emotion)
+            return self._model_clarification(
+                player_text, world, state,
+                "The model expressed uncertainty without a specific, useful explanation.")
 
         try:
             verified = validated_steps(steps, player_text, world, referent)
         except PlanRejected as exc:
-            if "Code" in str(exc) or "Keypad" in str(exc):
-                return Decision("Which four digits do you want me to try?",
-                                "wait", "", "cautious")
-            if "not visible" in str(exc):
-                return Decision("I can't see that clearly yet. What should I look for?",
-                                "wait", "", "cautious")
-            return Decision("I'm not completely sure which actions you mean. "
-                            "Could you clarify before I move?", "wait", "", "cautious")
+            return self._model_clarification(
+                player_text, world, state, str(exc))
 
         # Always announce intent, never use generated claims that might say a
         # physical event already happened. The model does not get to invent
@@ -1071,14 +1072,12 @@ class Agent:
             step["argument"] if step["action"] == "enter_code" else "")
             for step in verified)
         first = verified[0]
-        speech = (self._sequence_phrase(commands) if len(commands) > 1 else
-                  self._plan_phrase(commands[0], world))
-        # Model dialogue is safe only as a future-tense introduction. The
-        # actual result must still come from Godot's action_finished signal.
-        natural = self._safe_live_action_acknowledgment(
-            raw.get("speech"), verified)
-        if natural:
-            speech = natural
+        # The engine validates only physical actions. Eli supplies the voice.
+        # If the model's first preamble claims completion or adds instructions,
+        # ask that same local model for a grounded rewrite. Never swap in a
+        # fixed "I'll try that" phrase in production.
+        speech = self._model_action_intro(
+            player_text, world, state, verified, raw.get("speech"))
         return Decision(speech, first["action"], first["target"],
                         emotion, first["argument"], verified)
 
@@ -1486,7 +1485,8 @@ class Agent:
 
     @staticmethod
     def _ground_dialogue(raw: str, world: dict[str, Any], state: dict[str, Any],
-                         player_text: str = "") -> str:
+                         player_text: str = "", *,
+                         allow_fallback: bool = True) -> str:
         """Preserve Eli's real conversation; remove only unsupported room-action claims.
 
         Older versions discarded the ENTIRE answer as soon as one sentence
@@ -1497,7 +1497,7 @@ class Agent:
         speech = re.sub(r"^(?:Eli|Assistant)\s*:\s*", "", speech, flags=re.I)
         speech = Agent._correct_room_perspective(speech[:6000].strip(), world, state)
         if not speech:
-            return Agent._conversational_fallback(player_text, world)
+            return Agent._conversational_fallback(player_text, world) if allow_fallback else ""
         # Scene and inventory claims belong to Godot. Resolve pronouns against
         # the unique prop named in the same answer, if any.
         visible_mentions = {item for item in mentioned_targets(speech)
@@ -1583,6 +1583,11 @@ class Agent:
                 continue
             safe.append(clause)
         reply = " ".join(safe).strip()
+        if not allow_fallback and (not reply or re.fullmatch(
+                r"(?:i\s+(?:haven't|have not)\s+(?:touched|done)\s+anything\s+new[.!]?\s*)?"
+                r"(?:what\s+(?:would you like|should i)\s+(?:me\s+)?(?:to\s+)?do(?:\s+next)?\??)?",
+                reply, re.I)):
+            return ""
         if (not reply or re.fullmatch(
                 r"(?:i\s+(?:haven't|have not)\s+(?:touched|done)\s+anything\s+new[.!]?\s*)?"
                 r"(?:what\s+(?:would you like|should i)\s+(?:me\s+)?(?:to\s+)?do(?:\s+next)?\??)?",
@@ -1604,6 +1609,8 @@ class Agent:
         finished = Agent._finish_spoken_reply(reply, detailed=detailed)
         if finished:
             return finished
+        if not allow_fallback:
+            return ""
         if keypad_context:
             return "I don't know for sure. The keypad's light worries me, but I might be reading too much into it."
         return Agent._conversational_fallback(player_text, world)
