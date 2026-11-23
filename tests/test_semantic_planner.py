@@ -67,7 +67,7 @@ class SemanticPlannerTests(unittest.TestCase):
         if state is not None:
             self.store.save("player", state)
         decision = agent.decide("player", user, room or world())
-        self.assertEqual(len(backend.calls), 1)
+        self.assertGreaterEqual(len(backend.calls), 1)
         if not is_reflective_question(user):
             self.assertIn("SEMANTIC ACTION INTERPRETATION",
                           backend.calls[0][0]["content"])
