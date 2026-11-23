@@ -347,6 +347,13 @@ func _on_http_completed(result: int, response_code: int, _headers: PackedStringA
         _idle()
         return
 
+    # Engine capability/data failures are SYSTEM diagnostics, not fabricated
+    # objections coming from Eli. His model didn't necessarily refuse.
+    if request_stage == "decide":
+        var goal_status := str(response.get("status", "")).strip_edges()
+        if not goal_status.is_empty():
+            _message("SYSTEM", goal_status.left(320))
+
     # No synthetic spoken placeholder when the local model couldn't
     # ground a reply. The authoritative OBSERVATION still remains visible.
     var eli_reply := str(response.get("speech", ""))
@@ -396,28 +403,9 @@ func _on_http_completed(result: int, response_code: int, _headers: PackedStringA
 
 
 func _valid_queue_step(step: Dictionary) -> bool:
-    var action: String = str(step.get("action", ""))
-    var target: String = str(step.get("target", ""))
-    var argument: String = str(step.get("argument", ""))
-    if action not in ["move_to", "inspect", "take", "use", "enter_code", "survey", "experiment"]:
-        return false
-    if action == "survey":
-        return target == "room" and argument.is_empty()
-    # Target names are whitelisted, but only the ENGINE at execution time
-    # decides if an object is currently visible/reachable. Earlier planned
-    # actions may reveal objects, such as restoring power before reading a note.
-    if target not in ["flashlight", "breaker_box", "exit_door", "keypad", "maintenance_note",
-                       "desk", "wall", "floor", "ceiling"]:
-        if not (action == "experiment" and target == "room"):
-            return false
-    if action == "experiment":
-        return argument.strip_edges().length() >= 2 and argument.length() <= 120 and not (
-            argument.contains("\n") or argument.contains("\r"))
-    if action == "enter_code":
-        return target == "keypad" and argument.length() == 4 and argument.is_valid_int()
-    if action == "use" and target == "flashlight":
-        return argument in ["", "on", "off"]
-    return argument.is_empty()
+    # The room owns the goal capabilities; the interface does NOT maintain
+    # a second, competing action vocabulary or player-phrase whitelist.
+    return bool(world.supports_goal(step))
 
 
 func _start_queued_action() -> void:
@@ -430,8 +418,7 @@ func _start_queued_action() -> void:
     status.text = ("Eli is performing step " + str(queue_index + 1) + "/" +
         str(step_total) + "...") if step_total > 1 else "Eli is moving..."
     action_context = step.duplicate()
-    world.perform_action(str(step["action"]), str(step["target"]),
-                         str(step.get("argument", "")))
+    world.perform_goal(step)
 
 
 func _on_world_action_finished(action: String, target: String, success: bool, description: String) -> void:
