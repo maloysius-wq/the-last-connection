@@ -463,7 +463,7 @@ func _on_world_action_finished(action: String, target: String, success: bool, de
     # Intermediate steps only record truth. Eli speaks naturally after the
     # last successful step or immediately after a failure, avoiding repeated
     # slow GGUF calls and canned replies for each queued movement.
-    var should_speak := not success or world.escaped or queue_index + 1 >= queued_actions.size()
+    var should_speak: bool = not success or world.escaped or queue_index + 1 >= queued_actions.size()
     var body := {"session_id": session_id, "action": action, "target": target,
         "success": success, "description": description, "world": world.snapshot(),
         "speak": should_speak}
