@@ -977,9 +977,9 @@ class Agent:
                 verified, re.I):
             return ""
         if not world.get("escaped", False) and re.search(
-                r"\\b(?:the\\s+)?door(?:['’]s|\\s+is|\\s+was)\\s+"
-                r"(?:already\\s+)?open\\b|"
-                r"\\b(?:door\\s+(?:has\\s+)?opened|opened\\s+the\\s+door)\\b",
+                r"\b(?:the\s+)?door(?:['’]s|\s+is|\s+was)\s+"
+                r"(?:already\s+)?open\b|"
+                r"\b(?:door\s+(?:has\s+)?opened|opened\s+the\s+door)\b",
                 verified, re.I):
             return ""
         if "knock" in verified.lower() and not world.get("heard_knocks", False):
@@ -1025,7 +1025,7 @@ class Agent:
                 continue
             if fact.get("action") != "inspect" or fact.get("target") != "maintenance_note":
                 continue
-            found = re.search(r"\\bRESET SEQUENCE\\s+([0-9]{4})\\b",
+            found = re.search(r"\bRESET SEQUENCE\s+([0-9]{4})\b",
                               str(fact.get("description", "")), re.I)
             if found:
                 return found.group(1)
@@ -1049,7 +1049,10 @@ class Agent:
         for source in (first, audit):
             if not isinstance(source, dict) or source.get("kind") != "action":
                 continue
-            for raw in source.get("steps", []):
+            source_steps = source.get("steps", [])
+            if not isinstance(source_steps, list):
+                continue
+            for raw in source_steps:
                 if not isinstance(raw, dict) or raw.get("target") != explicit_target:
                     continue
                 # Reject partial execution of actual compound requests.
@@ -1730,9 +1733,9 @@ class Agent:
             # The real escape is a different Godot event from code entry.
             # The model must not turn green keypad lights into an open door.
             if not world.get("escaped", False) and re.search(
-                    r"\\b(?:the\\s+)?door(?:['’]s|\\s+is|\\s+was)\\s+"
-                    r"(?:already\\s+)?open\\b|"
-                    r"\\b(?:door\\s+(?:has\\s+)?opened|opened\\s+the\\s+door)\\b",
+                    r"\b(?:the\s+)?door(?:['’]s|\s+is|\s+was)\s+"
+                    r"(?:already\s+)?open\b|"
+                    r"\b(?:door\s+(?:has\s+)?opened|opened\s+the\s+door)\b",
                     clause, re.I):
                 removed = True
                 continue
