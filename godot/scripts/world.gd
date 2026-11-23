@@ -204,12 +204,12 @@ func supports_goal(goal: Dictionary) -> bool:
         return target == "room" and argument.is_empty()
     if action == "experiment" and target == "room":
         return argument.strip_edges().length() >= 2 and argument.length() <= 120 and not (
-            argument.contains("\\n") or argument.contains("\\r"))
+            argument.contains("\n") or argument.contains("\r"))
     if not object_positions.has(target):
         return false
     if action == "experiment":
         return argument.strip_edges().length() >= 2 and argument.length() <= 120 and not (
-            argument.contains("\\n") or argument.contains("\\r"))
+            argument.contains("\n") or argument.contains("\r"))
     if action == "move_to" or action == "inspect":
         return argument.is_empty()
     if action == "take":
