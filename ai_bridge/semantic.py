@@ -52,8 +52,10 @@ REFLECTIVE_QUESTION = re.compile(
     r"^\s*(?:why(?!\s+don['’]?t\s+you\b)|"
     r"what|which|who|where|when|"
     r"how(?!\s+about\b)|"
-    r"do\s+you\s+(?:think|remember|know)|"
-    r"does\s+it|is\s+it|are\s+you|were\s+you|"
+    r"do\s+you\s+(?:think|remember|know|see|notice|hear)|"
+    r"can\s+you\s+(?:see|hear|tell)|"
+    r"does\s+it|is\s+it|is\s+there|are\s+there|"
+    r"are\s+you|were\s+you|"
     r"would\s+it|should\s+(?:we|i)|what\s+if)\b", re.I)
 
 
