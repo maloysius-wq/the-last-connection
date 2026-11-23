@@ -376,7 +376,7 @@ class Agent:
         )
         # The production planner no longer calls the legacy two-pass semantic
         # action reviewer or its verbatim-evidence quote parser.
-        self.goal_system = personality["system_prompt"] + "\\n" + GOAL_INSTRUCTIONS
+        self.goal_system = personality["system_prompt"] + "\n" + GOAL_INSTRUCTIONS
         self.conversation_system = personality["system_prompt"] + (
             "\nYou are having a live private conversation with someone over the "
             "maintenance room's speaker. Answer their ACTUAL question in warm, "
