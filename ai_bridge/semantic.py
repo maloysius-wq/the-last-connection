@@ -43,7 +43,7 @@ SUGGESTION_REQUEST = re.compile(
 # validator still approves every proposed act. This prevents a second small-
 # model review from vetoing a simple, fully grounded one-step request.
 DIRECT_COMMAND = re.compile(
-    r"^\s*(?:eli[,!]?s+)?(?:(?:please|just)\s+)?(?:go|walk|head|move|come|"
+    r"^\s*(?:eli[,]?\s+)?(?:(?:please|just)\s+)?(?:go|walk|head|move|come|"
     r"pick|grab|take|bring|fetch|switch|turn|toggle|flip|"
     r"look|check|examine|inspect|read|survey|open|unlock|"
     r"enter|type|punch|try|use|activate|stop\s+by)\b", re.I)
@@ -68,7 +68,7 @@ def is_reflective_question(message: str) -> bool:
     """
     if not isinstance(message, str) or not message.strip().endswith("?"):
         return False
-    clauses = [re.sub(r"^\s*eli[,!]?s+", "", part.strip(), flags=re.I)
+    clauses = [re.sub(r"^\s*eli[,]?\s+", "", part.strip(), flags=re.I)
                for part in re.split(r"[.!?]+", message) if part.strip()]
     if not clauses or not REFLECTIVE_QUESTION.match(clauses[-1]):
         return False
