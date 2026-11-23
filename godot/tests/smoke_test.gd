@@ -481,6 +481,9 @@ func _run() -> void:
         "action": "use", "target": "keypad", "argument": ""
     })), "Generic keypad use without a valid code is not an engine capability")
     _expect(not bool(world.supports_goal({
+        "action": "enter_code", "target": "keypad", "argument": "-123"
+    })), "Engine rejects signed numbers posing as a four-digit code")
+    _expect(not bool(world.supports_goal({
         "action": "take", "target": "breaker_box", "argument": ""
     })), "Breaker cannot be carried even if a model invents that goal")
     _expect(bool(app.call("_valid_queue_step", {
