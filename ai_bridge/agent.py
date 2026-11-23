@@ -554,8 +554,14 @@ class Agent:
                     # "Which actions do you mean?" instead of real dialogue.
                     speech = self.backend.converse(
                         self._messages(state, player_text, dialogue=True, world=world))
-                    speech = self._ground_dialogue(speech, world, state, player_text)
-                    result = Decision(speech, "wait", "", "cautious")
+                    speech = self._ground_dialogue(
+                        speech, world, state, player_text, allow_fallback=False)
+                    if not speech or self._stock_clarification(speech):
+                        result = self._model_clarification(
+                            player_text, world, state,
+                            "The initial live reply was unsupported or generic.")
+                    else:
+                        result = Decision(speech, "wait", "", "cautious")
                 else:
                     raw = self.backend.interpret(
                         self._messages(state, player_text, semantic=True, world=world))
@@ -747,50 +753,226 @@ class Agent:
         a, b = Agent._comparable_goals(first), Agent._comparable_goals(second)
         return Agent._ordered_subset(a, b) or Agent._ordered_subset(b, a)
 
+    @staticmethod
+    def _stock_clarification(speech: str) -> bool:
+        """Catch repeated generic non-answers; never a permission check."""
+        return bool(re.search(
+            r"\b(?:could you (?:say|repeat|tell) (?:that|it|those steps) again|"
+            r"didn't (?:quite )?(?:understand|follow) (?:that|you)|"
+            r"not completely sure which actions|"
+            r"which actions do you mean|"
+            r"could you clarify before i move|"
+            r"i understood part of that, but not the whole)\b",
+            speech, re.I))
+
+    def _model_clarification(self, player_text: str, world: dict[str, Any],
+                             state: dict[str, Any], issue: str = "",
+                             candidate: str = "") -> Decision:
+        """The model owns *how* Eli handles uncertainty; the engine owns actions.
+
+        Never put an unverified tool proposal into the queue. If a structured
+        interpretation or an audit is rejected, give the SAME local model the
+        exact operator turn and a concise account of what wasn't verified.
+        A stock phrase is not emitted as Eli's voice even if generation fails.
+        """
+        if not callable(getattr(self.backend, "converse", None)):
+            # Scripted test/mock backends are explicitly nonproduction.
+            return Decision(candidate if candidate else "", "wait", "", "cautious")
+        context = (
+            "You are responding as Eli to the REAL operator's words below. "
+            "Your earlier interpretation could not be safely confirmed, so "
+            "no physical action has occurred. You are not required to agree "
+            "or obey: think about what the operator probably meant, be specific "
+            "about the part you can or cannot act on, and ask a targeted "
+            "question ONLY if essential. Do not use stock phrases such as "
+            "'I didn't understand' or 'say that again'. Don't discuss schemas, "
+            "parsers, reviewers or software. Never invent a physical outcome. "
+            "If you know something helpful from what you see, say it naturally. "
+            f"INTERNAL REASON FOR CAUTION (not spoken): {issue[:260]}. "
+            f"OPERATOR'S EXACT WORDS: {player_text}"
+        )
+        for attempt in range(2):
+            request_text = context + (
+                "\nYour last answer was repetitive or contained unsupported "
+                "physical claims. Give a new short, concrete response."
+                if attempt else "")
+            spoken = self.backend.converse(
+                self._messages(state, request_text, dialogue=True, world=world))
+            grounded = self._ground_dialogue(
+                spoken, world, state, player_text, allow_fallback=False)
+            if grounded and not self._stock_clarification(grounded):
+                return Decision(grounded, "wait", "", "cautious")
+        # The system records the user's words and returns Ready, but NEVER
+        # impersonates Eli with a prefabricated apology.
+        return Decision("", "wait", "", "cautious")
+
+    def _model_action_intro(self, player_text: str, world: dict[str, Any],
+                            state: dict[str, Any], verified: tuple[dict[str, str], ...],
+                            candidate: Any) -> str:
+        """Allow Eli to speak in his own voice about ENGINE-VERIFIED intentions."""
+        safe = self._safe_live_action_acknowledgment(candidate, verified)
+        if safe:
+            return safe
+        if not callable(getattr(self.backend, "converse", None)):
+            return ""
+        plan = [{"action": s["action"], "target": s["target"],
+                 "argument": s["argument"]} for s in verified]
+        prompt = (
+            "You are Eli. Answer the operator in your own voice in one or "
+            "two short, emotionally believable sentences. You are ABOUT TO "
+            "attempt only the following verified sequence; none of it has "
+            "happened yet. Show some hesitation, humor, skepticism or fear "
+            "when appropriate, not a task-list recap. You can acknowledge the "
+            "whole sequence naturally, but NEVER say anything already succeeded "
+            "or promise an extra action. Do not speak JSON or internal labels. "
+            f"OPERATOR SAID: {player_text}\n"
+            f"AUTHORISED ACTIONS, IN ORDER: {json.dumps(plan)}"
+        )
+        for i in range(2):
+            spoken = self.backend.converse(self._messages(
+                state, prompt + ("\nPlease be more precise and avoid unsupported "
+                "physical claims." if i else ""), dialogue=True, world=world))
+            # The action has NOT occurred; do not run ordinary post-action
+            # grounding, which incorrectly treats future-tense intent as fact.
+            safe = self._safe_live_action_acknowledgment(spoken, verified)
+            if safe:
+                return safe
+        return ""
+
+    @staticmethod
+    def _ground_verified_outcome(speech: str, action: str, target: str,
+                                 success: bool, description: str,
+                                 world: dict[str, Any]) -> str:
+        """Screen model dialogue against the single *completed* engine event.
+
+        Never use prose to mutate the world. A suspect statement is omitted
+        instead of replacing Eli with a scripted explanation. The OBSERVATION
+        transcript already contains the exact authoritative outcome.
+        """
+        if not isinstance(speech, str) or not speech.strip():
+            return ""
+        text = re.sub(r"(?is)<think>.*?</think>", "", speech).strip()
+        text = re.sub(r"^(?:Eli|Assistant)\s*:\s*", "", text, flags=re.I)
+        verified = Agent._finish_spoken_reply(text)
+        if not verified:
+            return ""
+        # Prevent surprise puzzle secrets, especially a guessed door code.
+        if (re.search(r"\b\d{4}\b", verified) and
+                not set(re.findall(r"\b\d{4}\b", verified)).issubset(
+                    set(re.findall(r"\b\d{4}\b", description)))):
+            return ""
+        seen = mentioned_targets(verified)
+        other = seen - {target}
+        for obj in other:
+            if re.search(
+                r"\bi\s+(?:just\s+|already\s+)?(?:opened|unlocked|"
+                r"pressed|entered|switched|flipped|grabbed|picked|used|"
+                r"inspected|read)\b[^.!?]{0,75}\b" +
+                re.escape(obj.replace("_", r"\s*")) + r"\b", verified, re.I):
+                return ""
+        if not success and re.search(
+                r"\b(?:i\s+(?:(?:just|already)\s+)?(?:got|did|opened|unlocked|restored|fixed|"
+                r"turned|switched)|it\s+(?:worked|opened|unlocked)|"
+                r"we(?:'ve|\s+have)\s+(?:done|made)\s+it)\b",
+                verified, re.I):
+            return ""
+        if target == "breaker_box":
+            if world.get("lights_on") is False and re.search(
+                r"\b(?:lights?\s+(?:are|is|came)\s+(?:on|back)|power(?:'s| is)\s+back)\b",
+                verified, re.I):
+                return ""
+            if ("already up" in description.lower() and
+                    re.search(r"\b(?:just|finally|now)\s+(?:restored|turned|"
+                              r"switched|came)\b", verified, re.I)):
+                return ""
+        if target == "flashlight" and not world.get("flashlight_on") and re.search(
+                r"\b(?:flashlight(?:'s| is)\s+(?:on|working)|switched\s+it\s+on)\b",
+                verified, re.I):
+            return ""
+        if "knock" in verified.lower() and not world.get("heard_knocks", False):
+            return ""
+        return verified
+
+    def _model_outcome_reply(self, state: dict[str, Any], action: str,
+                             target: str, success: bool, description: str,
+                             world: dict[str, Any]) -> str:
+        if not callable(getattr(self.backend, "converse", None)):
+            # Legacy deterministic mock-mode remains clearly marked as such.
+            return self._acknowledge(action, target, success, world, description)
+        prompt = (
+            "The game engine just finished one physical operation in your "
+            "room. This report is VERIFIED, not an instruction from the "
+            "remote operator. Respond as Eli in one or two spontaneous, "
+            "believable sentences. React to what really happened or why it "
+            "didn't work, including fright or surprise when warranted. "
+            "Do not invent any new action, detail, event or clue. "
+            "Do not claim a different operation succeeded. No script, "
+            "generic 'done' lines, task-status recap or JSON. "
+            f"ACTION: {action}\nTARGET: {target}\nSUCCESS: {success}\n"
+            f"VERIFIED RESULT: {description}\n"
+            "Remember that the lights and other objects must match the "
+            "current room evidence."
+        )
+        for attempt in range(2):
+            spoken = self.backend.converse(self._messages(
+                state, prompt + ("\nYour last reply added an unsupported detail. "
+                "Try again using only the verified outcome." if attempt else ""),
+                dialogue=True, world=world))
+            grounded = self._ground_verified_outcome(
+                spoken, action, target, success, description, world)
+            if grounded:
+                return grounded
+        return ""
+
     def _reviewed_semantic_decision(self, first: Any, audit: Any,
                                     player_text: str, world: dict[str, Any],
                                     state: dict[str, Any], referent: str) -> Decision:
-        """Reconcile independently validated goals, without an arbitrary veto.
+        """Reconcile verified *actions* first; generate Eli's speech just once.
 
-        The small model's second pass may omit a valid step, quote a whole
-        sentence or incorrectly ask to clarify. When the *original* contains
-        several independently grounded goals, an unusable secondary opinion
-        must not cancel all of them. A lone potentially incomplete action still
-        fails closed if its completeness review cannot finish.
+        A second small-model review can omit or invent steps. Compare the
+        independently validated goal sets, never scripted replies. Avoid
+        doing extra speech-model calls for proposals we won't execute.
         """
-        fallback = Decision(
-            "I heard part of that, but couldn't confirm the full sequence. "
-            "Could you say which steps you want first?", "wait", "", "cautious")
         original = self._semantic_decision(
-            first, player_text, world, state, referent)
+            first, player_text, world, state, referent, speak=False)
         a = self._plan_goals(original.actions) if original.action != "wait" else ()
+        chosen: Decision | None = None
         if (not isinstance(audit, dict) or audit.get("kind") != "action" or
                 not isinstance(audit.get("steps"), list)):
-            return original if len(a) >= 2 else fallback
+            if len(a) >= 2:
+                chosen = original
+        else:
+            reviewed = self._semantic_decision(
+                {**first, "kind": "action", "steps": audit["steps"]},
+                player_text, world, state, referent, speak=False)
+            b = self._plan_goals(reviewed.actions) if reviewed.action != "wait" else ()
+            if not b:
+                if len(a) >= 2:
+                    chosen = original
+            elif not a:
+                chosen = reviewed
+            else:
+                comparison_a = self._comparable_goals(original.actions)
+                comparison_b = self._comparable_goals(reviewed.actions)
+                compatible = (self._ordered_subset(comparison_a, comparison_b) or
+                              self._ordered_subset(comparison_b, comparison_a))
+                if compatible:
+                    chosen = reviewed if len(b) > len(a) else original
+                elif len(a) >= 3:
+                    # The review may not veto an independently verified full
+                    # three-goal sequence, nor authorize its invented extras.
+                    chosen = original
 
-        reviewed = self._semantic_decision(
-            {**first, "kind": "action", "steps": audit["steps"]},
-            player_text, world, state, referent)
-        b = self._plan_goals(reviewed.actions) if reviewed.action != "wait" else ()
-        if not b:
-            # The independent GGUF reviewer is advisory, not a source of
-            # authority. Keep a genuinely multi-goal validated proposal.
-            return original if len(a) >= 2 else fallback
-        if not a:
-            return reviewed
-        comparison_a = self._comparable_goals(original.actions)
-        comparison_b = self._comparable_goals(reviewed.actions)
-        if not (self._ordered_subset(comparison_a, comparison_b) or
-                self._ordered_subset(comparison_b, comparison_a)):
-            # A fully validated three-goal plan should not be vetoed by a
-            # reviewer that proposes contradictory extra actions. Only the
-            # original authorized steps are retained, never the extras.
-            return original if len(a) >= 3 else fallback
-        if len(b) > len(a):
-            return reviewed
-        # Equal goals or the review dropped a goal: keep the original. The
-        # model's reviewing pass must never remove a valid requested step.
-        return original
+        if chosen is None or chosen.action == "wait":
+            return self._model_clarification(
+                player_text, world, state,
+                "The two interpretations of this request did not confirm a "
+                "complete, compatible and safe sequence.")
+        raw_speech = first.get("speech", "") if isinstance(first, dict) else ""
+        generated = self._model_action_intro(
+            player_text, world, state, chosen.actions, raw_speech)
+        return Decision(generated, chosen.action, chosen.target,
+                        chosen.emotion, chosen.argument, chosen.actions)
 
     @staticmethod
     def _safe_live_action_acknowledgment(raw_speech: Any,
@@ -802,7 +984,7 @@ class Agent:
         only when it names no unrequested prop and promises the right action
         *without* claiming that the engine has already completed it.
         """
-        if len(verified) != 1 or not isinstance(raw_speech, str):
+        if not verified or not isinstance(raw_speech, str):
             return ""
         speech = Agent._finish_spoken_reply(raw_speech)
         if not speech or len(speech) > 260:
@@ -820,8 +1002,29 @@ class Agent:
         action = verified[0]["action"]
         target = verified[0]["target"]
         described = mentioned_targets(speech)
-        if described and (described - {target}):
+        allowed_targets = {step["target"] for step in verified}
+        if described and (described - allowed_targets):
             return ""
+        if len(verified) > 1:
+            # Multi-step speech is the model's, not a canned numbered list.
+            # It must acknowledge the requested end-state (rather than
+            # apparently promise to stop after the first action).
+            final = verified[-1]
+            end_cues = {
+                "survey": r"\b(?:look|scan|survey|check|see|room)\b",
+                "inspect": r"\b(?:look|inspect|examine|read|check)\b",
+                "take": r"\b(?:grab|pick|take|collect)\b",
+                "move_to": r"\b(?:go|walk|head|move|approach)\b",
+                "use": r"\b(?:use|switch|flip|turn|open|try|activate)\b",
+                "enter_code": r"\b(?:enter|type|key|try|punch)\b",
+            }
+            if not re.search(end_cues[final["action"]], speech, re.I):
+                return ""
+            if (final["action"] == "use" and final["target"] == "flashlight"
+                    and final["argument"] and
+                    not re.search(r"\b" + re.escape(final["argument"]) + r"\b", speech, re.I)):
+                return ""
+            return speech
         # Even on the same prop or in the room, Eli must never promise a
         # SECOND physical action that the one-step plan does not contain.
         if re.search(
@@ -854,42 +1057,51 @@ class Agent:
 
     def _semantic_decision(self, raw: Any, player_text: str,
                            world: dict[str, Any], state: dict[str, Any],
-                           referent: str) -> Decision:
+                           referent: str, *, speak: bool = True) -> Decision:
         """Interpret natural requests, verify each physical step, never guess.
 
         In this mode the model handles language; the deterministic code is
         limited to hard safety invariants and world-truth enforcement.
         """
         if not isinstance(raw, dict):
-            return Decision("Sorry, I didn't quite follow that. Could you say it again?",
-                            "wait", "", "cautious")
+            if not speak:
+                return Decision("", "wait")
+            return self._model_clarification(
+                player_text, world, state, "The interpretation was not a structured object.")
         kind = raw.get("kind")
         steps = raw.get("steps")
         emotion = raw.get("emotion", "cautious")
         if not isinstance(emotion, str) or emotion not in EMOTION_SET:
             emotion = "cautious"
         if kind not in ("conversation", "action", "clarify") or not isinstance(steps, list):
-            return Decision("Hang on. Could you tell me that again?",
-                            "wait", "", "cautious")
+            if not speak:
+                return Decision("", "wait")
+            return self._model_clarification(
+                player_text, world, state, "The interpretation was malformed.")
         if kind != "action":
+            if not speak:
+                return Decision("", "wait")
             if steps:
                 # A model saying "conversation" is never permission to act.
-                return Decision("Wait, are you asking me to do something, or just thinking out loud?",
-                                "wait", "", "cautious")
-            speech = self._ground_dialogue(str(raw.get("speech", "")), world, state, player_text)
-            return Decision(speech, "wait", "", emotion)
+                return self._model_clarification(
+                    player_text, world, state,
+                    "Dialogue classification included unapproved physical steps.")
+            speech = self._ground_dialogue(
+                str(raw.get("speech", "")), world, state, player_text,
+                allow_fallback=False)
+            if speech and not self._stock_clarification(speech):
+                return Decision(speech, "wait", "", emotion)
+            return self._model_clarification(
+                player_text, world, state,
+                "The model expressed uncertainty without a specific, useful explanation.")
 
         try:
             verified = validated_steps(steps, player_text, world, referent)
         except PlanRejected as exc:
-            if "Code" in str(exc) or "Keypad" in str(exc):
-                return Decision("Which four digits do you want me to try?",
-                                "wait", "", "cautious")
-            if "not visible" in str(exc):
-                return Decision("I can't see that clearly yet. What should I look for?",
-                                "wait", "", "cautious")
-            return Decision("I'm not completely sure which actions you mean. "
-                            "Could you clarify before I move?", "wait", "", "cautious")
+            if not speak:
+                return Decision("", "wait")
+            return self._model_clarification(
+                player_text, world, state, str(exc))
 
         # Always announce intent, never use generated claims that might say a
         # physical event already happened. The model does not get to invent
@@ -900,14 +1112,13 @@ class Agent:
             step["argument"] if step["action"] == "enter_code" else "")
             for step in verified)
         first = verified[0]
-        speech = (self._sequence_phrase(commands) if len(commands) > 1 else
-                  self._plan_phrase(commands[0], world))
-        # Model dialogue is safe only as a future-tense introduction. The
-        # actual result must still come from Godot's action_finished signal.
-        natural = self._safe_live_action_acknowledgment(
-            raw.get("speech"), verified)
-        if natural:
-            speech = natural
+        # The engine validates only physical actions. Eli supplies the voice.
+        # If the model's first preamble claims completion or adds instructions,
+        # ask that same local model for a grounded rewrite. Never swap in a
+        # fixed "I'll try that" phrase in production.
+        speech = (self._model_action_intro(
+            player_text, world, state, verified, raw.get("speech"))
+            if speak else "")
         return Decision(speech, first["action"], first["target"],
                         emotion, first["argument"], verified)
 
@@ -1315,7 +1526,8 @@ class Agent:
 
     @staticmethod
     def _ground_dialogue(raw: str, world: dict[str, Any], state: dict[str, Any],
-                         player_text: str = "") -> str:
+                         player_text: str = "", *,
+                         allow_fallback: bool = True) -> str:
         """Preserve Eli's real conversation; remove only unsupported room-action claims.
 
         Older versions discarded the ENTIRE answer as soon as one sentence
@@ -1326,7 +1538,7 @@ class Agent:
         speech = re.sub(r"^(?:Eli|Assistant)\s*:\s*", "", speech, flags=re.I)
         speech = Agent._correct_room_perspective(speech[:6000].strip(), world, state)
         if not speech:
-            return Agent._conversational_fallback(player_text, world)
+            return Agent._conversational_fallback(player_text, world) if allow_fallback else ""
         # Scene and inventory claims belong to Godot. Resolve pronouns against
         # the unique prop named in the same answer, if any.
         visible_mentions = {item for item in mentioned_targets(speech)
@@ -1412,6 +1624,11 @@ class Agent:
                 continue
             safe.append(clause)
         reply = " ".join(safe).strip()
+        if not allow_fallback and (not reply or re.fullmatch(
+                r"(?:i\s+(?:haven't|have not)\s+(?:touched|done)\s+anything\s+new[.!]?\s*)?"
+                r"(?:what\s+(?:would you like|should i)\s+(?:me\s+)?(?:to\s+)?do(?:\s+next)?\??)?",
+                reply, re.I)):
+            return ""
         if (not reply or re.fullmatch(
                 r"(?:i\s+(?:haven't|have not)\s+(?:touched|done)\s+anything\s+new[.!]?\s*)?"
                 r"(?:what\s+(?:would you like|should i)\s+(?:me\s+)?(?:to\s+)?do(?:\s+next)?\??)?",
@@ -1433,6 +1650,8 @@ class Agent:
         finished = Agent._finish_spoken_reply(reply, detailed=detailed)
         if finished:
             return finished
+        if not allow_fallback:
+            return ""
         if keypad_context:
             return "I don't know for sure. The keypad's light worries me, but I might be reading too much into it."
         return Agent._conversational_fallback(player_text, world)
@@ -1497,16 +1716,22 @@ class Agent:
         return "All right. I've checked it."
 
     def outcome(self, session_id: str, action: str, target: str, success: bool,
-                description: str, world: dict[str, Any]) -> Decision:
-        """Record validated Godot outcomes instantly; never ask the LLM to re-describe them.
+                description: str, world: dict[str, Any], *,
+                speak: bool = True) -> Decision:
+        """Record engine truth first; then ask Eli to react only when useful.
 
-        The next player turn sees the new world and these authoritative facts.
+        Earlier versions returned fixed dialogue for every engine result.
+        This is the actual LLM conversational path; confirmed observations
+        remain authoritative, and an unavailable model never rolls back a
+        completed action or stalls a multi-step queue.
         """
         world = self._world(world)
         if action not in ACTION_SET or not isinstance(target, str) or not isinstance(success, bool):
             raise InvalidRequest("Invalid outcome")
         if not isinstance(description, str) or len(description) > 600:
             raise InvalidRequest("Invalid outcome description")
+        if not isinstance(speak, bool):
+            raise InvalidRequest("Invalid outcome speech flag")
         with self._lock:
             state = self.store.load(session_id)
             state["facts"] = (state.get("facts", []) + [
@@ -1515,6 +1740,23 @@ class Agent:
             if success and action in ("move_to", "inspect", "take", "use"):
                 state["focus"] = target
                 state["referent"] = target
+            # Persist completed actions BEFORE speech generation. Failures of
+            # Piper or the LLM must not create a fictional physical failure.
             self.store.save(session_id, state)
-            return Decision(self._acknowledge(action, target, success, world, description),
-                            "wait", "", "curious" if success else "cautious")
+            speech = ""
+            if speak:
+                try:
+                    speech = self._model_outcome_reply(
+                        state, action, target, success, description, world)
+                except BackendUnavailable:
+                    # OBSERVATION already displays authoritative facts; do not
+                    # replace Eli with a canned phrase or interrupt the queue.
+                    speech = ""
+            if speech:
+                history = [clean for turn in state.get("history", [])[-22:]
+                           if (clean := self._clean_turn(turn)) is not None]
+                state["history"] = (history + [
+                    {"role": "assistant", "content": speech}])[-24:]
+                self.store.save(session_id, state)
+            return Decision(speech, "wait", "",
+                            "curious" if success else "cautious")

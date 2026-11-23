@@ -132,14 +132,15 @@ class TestGroundedConversation(unittest.TestCase):
         self.assertEqual(len(backend.calls), 1)
         after = world(at="breaker_box", observation="Eli walked to the breaker box.")
         acknowledgment = agent.outcome(
-            "turn", "move_to", "breaker_box", True, "Eli walked to the breaker box.", after)
+            "turn", "move_to", "breaker_box", True, "Eli walked to the breaker box.", after,
+            speak=False)
         self.assertEqual(acknowledgment.action, "wait")
         self.assertEqual(len(backend.calls), 1)
 
     def test_confirmed_position_updates_conversation_focus(self):
         backend = SplitBackend(dialogue="I can see the lever on the breaker.")
         agent = self.agent(backend)
-        agent.outcome("focus", "move_to", "breaker_box", True, "Eli reached the breaker.", world(at="breaker_box"))
+        agent.outcome("focus", "move_to", "breaker_box", True, "Eli reached the breaker.", world(at="breaker_box"), speak=False)
         self.assertEqual(self.store.load("focus").get("focus"), "breaker_box")
         result = agent.decide("focus", "What do you think of it?", world(at="breaker_box"))
         self.assertEqual(result.action, "wait")

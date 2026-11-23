@@ -124,12 +124,12 @@ class TestNaturalScreenshotResponses(unittest.TestCase):
         self.assertNotIn("keypad", location.speech)
 
     def test_flashlight_acknowledgment_does_not_repeat_observation(self):
-        agent = self.agent(DialogueBackend("ignored"))
+        agent = self.agent(DialogueBackend("Okay, the flashlight helps. I can see the table better now."))
         actual = room()
         confirmed = agent.outcome(
             "ack", "use", "flashlight", True,
             "Eli picked up the flashlight from the desk and switched it on.", actual)
-        self.assertIn("see a little better", confirmed.speech)
+        self.assertIn("table better now", confirmed.speech)
         self.assertNotIn("picked it up and switched it on", confirmed.speech)
 
     def test_truthful_flashlight_state_is_allowed_in_conversation(self):

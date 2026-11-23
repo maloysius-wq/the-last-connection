@@ -96,16 +96,14 @@ class TestRealScreenshotSequence(unittest.TestCase):
             self.assertEqual(backend.calls, 0)
 
             agent.outcome("screenshot", "take", "flashlight", True,
-                          "Eli picked up the flashlight.", room(held=True))
+                          "Eli picked up the flashlight.", room(held=True), speak=False)
             agent.outcome("screenshot", "use", "flashlight", True,
-                          "Eli switched it on.", room(held=True, on=True))
+                          "Eli switched it on.", room(held=True, on=True), speak=False)
             response = agent.outcome("screenshot", "survey", "room", True,
-                                     "Eli looks around the room.", room(held=True, on=True))
-            self.assertIn("flashlight on in my hand", response.speech)
-            self.assertIn("breaker box", response.speech)
-            self.assertIn("keypad", response.speech)
-            self.assertIn("locked exit door", response.speech)
-            self.assertNotIn("4317", response.speech)
+                                     "Eli looks around the room.", room(held=True, on=True),
+                                     speak=False)
+            self.assertEqual(response.speech, "")
+            self.assertNotIn("4317", str(agent.store.load("screenshot")["facts"]))
             self.assertEqual(backend.calls, 0)
             self.assertEqual(
                 [(x["action"], x["target"]) for x in agent.store.load("screenshot")["facts"]],

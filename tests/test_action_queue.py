@@ -166,13 +166,14 @@ class TestDecisionQueue(unittest.TestCase):
         self.agent.decide("events", SCREENSHOT, room())
         first = self.agent.outcome(
             "events", "take", "flashlight", True, "Eli picked it up.",
-            room(flashlight=True))
+            room(flashlight=True), speak=False)
         second = self.agent.outcome(
             "events", "use", "flashlight", True, "Eli switched it on.",
-            room(flashlight=True))
+            room(flashlight=True), speak=False)
         third = self.agent.outcome(
             "events", "survey", "room", True,
-            "Eli looks around. The door is locked.", room(flashlight=True))
+            "Eli looks around. The door is locked.", room(flashlight=True),
+            speak=False)
         self.assertEqual((first.action, second.action, third.action),
                          ("wait", "wait", "wait"))
         self.assertEqual(self.backend.respond_calls + self.backend.converse_calls, 0)
