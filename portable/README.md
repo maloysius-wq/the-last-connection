@@ -111,7 +111,9 @@ Each archive contains:
 - `conversation_state.json` and `current_room.json`: conversation state plus the exact room flags/items when exported
 - `export_manifest.json` and `README.txt`: session identifier and how to interpret the export
 
-The ZIP is **created locally only after clicking the button**, is never automatically uploaded, and excludes the GGUF file, other saved conversations, microphone recordings, passwords and API credentials. Its contents can include everything you typed and Eli said, so review the ZIP before sharing it. The diagnostic event trail begins after upgrading to this version; the transcript also includes older messages that remain visible in the terminal.
+The ZIP is **created locally only after clicking the button**, is never automatically uploaded, and excludes the GGUF file, other saved conversations, microphone recordings, passwords and API credentials. Its contents can include everything you typed and Eli said, so review the ZIP before sharing it.
+
+The game also appends displayed conversation lines (YOU, ELI, OBSERVATION and SYSTEM) to `user_data/<session_id>.transcript.txt` as they happen. When reopening the game, it restores that session's visible conversation without replaying Eli's voice or duplicating saved lines. **NEW SESSION / RESET ROOM** starts a separate transcript, leaving the previous session's text file available for investigation. Like save files, these private local transcripts are retained by the in-game updater; you can remove old transcript files manually after you no longer need them. This update cannot reconstruct dialogue that disappeared during restarts **before** transcript persistence was installed. Neither the text files nor the diagnostics are sent to any external service.
 
 ## Experimental actions
 
