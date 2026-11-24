@@ -547,7 +547,25 @@ class Agent:
         return {"role": turn["role"], "content": content[:650]}
 
     @staticmethod
-    def _relationship(state: dict[str, Any]) -> dict[str, Any]:
+    def _real_boundary(value: Any) -> bool:
+        """Only actual boundaries belong in long-term speaker memory.
+
+        Some local models emit literal 'None set' instead of the requested
+        empty string. Never promote those placeholders to relationship facts.
+        Also clean them out of already-existing saves at load time.
+        """
+        if not isinstance(value, str):
+            return False
+        normalized = re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
+        return bool(normalized) and normalized not in {
+            "none", "none set", "nothing", "no boundaries", "no boundary",
+            "no explicit boundary", "no explicit boundaries",
+            "no explicit boundary set", "no explicit boundaries set",
+            "not specified", "not set", "n a", "na", "unknown",
+        }
+
+    @classmethod
+    def _relationship(cls, state: dict[str, Any]) -> dict[str, Any]:
         """Persistent emotional baseline, never derived from model narration.
 
         Trust is deliberately separate from acute fear/anger. A hostile voice
@@ -575,9 +593,9 @@ class Agent:
         boundaries = stored.get("boundaries")
         if isinstance(boundaries, list):
             result["boundaries"] = [
-                item[:120] for item in boundaries[-4:]
-                if isinstance(item, str) and item.strip()
-            ]
+                item[:120] for item in boundaries[-8:]
+                if isinstance(item, str) and cls._real_boundary(item)
+            ][-4:]
         return result
 
     @staticmethod
@@ -623,7 +641,7 @@ class Agent:
             if purpose in ("just_talking", "offering_help", "requesting_action", "other"):
                 current["claimed_purpose"] = purpose
             boundary = appraisal.get("boundary_update")
-            if isinstance(boundary, str) and 0 < len(boundary.strip()) <= 120:
+            if isinstance(boundary, str) and len(boundary.strip()) <= 120 and cls._real_boundary(boundary):
                 # Speaker-claimed boundaries, not facts about the room. One
                 # brief model summary per turn; retain across chat truncation.
                 boundary = boundary.strip()
