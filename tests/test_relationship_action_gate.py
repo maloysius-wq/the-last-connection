@@ -125,7 +125,10 @@ class RelationshipAgency(unittest.TestCase):
         ], motive="self_preservation", speech="I'll grab that and switch it on."),
             spoken="I'll turn on the flashlight so I can see better. "
                    "Don't mistake that for me trusting you.")
-        agent = self.agent("own_choice", model, trust=-70, anger=60, stress=80)
+        # The actual uploaded fourth-turn post-appraisal state was
+        # trust=-75, anger=69. That is tense enough to need an authentic
+        # self-directed acknowledgment, without being too angry to act.
+        agent = self.agent("own_choice", model, trust=-75, anger=69, stress=80)
         result = agent.decide("own_choice",
                               "Get that flashlight and turn it on.", world())
         self.assertEqual(result.actions, (
