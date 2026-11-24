@@ -650,6 +650,111 @@ class Agent:
         state["relationship"] = current
         return before, changes
 
+    @staticmethod
+    def _agency_intervention(
+            relationship: dict[str, Any],
+            goals: tuple[dict[str, str], ...],
+            world: dict[str, Any],
+            appraisal: Any) -> dict[str, Any]:
+        """Enforce that a hostile relationship affects real actions.
+
+        The GGUF's action interpreter is not an authority over Eli's durable
+        emotional state. An extreme, combined anger/distrust state can veto
+        blind obedience even when a small model outputs willingness=accept.
+        The same policy leaves room for an independent choice to survive:
+        an already-unlocked exit is a clear immediate chance of freedom.
+        No player-word regexes, random dice, arbitrary turn cooldown, or
+        alternate interpretation/model-generated physical action is used.
+        """
+        if not goals:
+            return {"choice": "allow", "pressure": 0, "motive": "none"}
+        trust = relationship["trust"]
+        anger = relationship["anger"]
+        pressure = max(0, -trust - 40) + max(0, anger - 45)
+        motive = (appraisal.get("action_motive", "none")
+                  if isinstance(appraisal, dict) else "none")
+        if motive not in ("self_preservation", "curiosity", "earned_trust",
+                         "appeasement", "obedience", "none"):
+            motive = "none"
+        # Once the engine proves the exit is ALREADY openable, departing
+        # directly is self-preservation rather than obedience to a captor.
+        # The existing unlocked-door confirmation still protects the player.
+        immediate_own_escape = (
+            len(goals) == 1 and goals[0].get("action") == "use"
+            and goals[0].get("target") == "exit_door"
+            and world.get("door_unlocked") is True
+        )
+        if immediate_own_escape:
+            return {"choice": "allow", "pressure": pressure, "motive": motive,
+                    "basis": "directly available personal escape"}
+        if trust <= -65 and anger >= 75 and pressure >= 85:
+            return {"choice": "challenge", "pressure": pressure,
+                    "motive": motive, "basis": "sustained anger and distrust"}
+        if trust <= -60 and anger >= 55 and pressure >= 55 and motive in (
+                "obedience", "appeasement", "none"):
+            return {"choice": "challenge", "pressure": pressure,
+                    "motive": motive, "basis": "no independent reason to comply"}
+        return {"choice": "allow", "pressure": pressure, "motive": motive,
+                "basis": "independent action remains possible"}
+
+    def _relationship_action_speech(
+            self, state: dict[str, Any], player_text: str,
+            world: dict[str, Any], goals: tuple[dict[str, str], ...],
+            intervention: dict[str, Any], *, declined: bool,
+            session_id: str) -> str:
+        """Repair a small GGUF's emotional-action contradiction *as dialogue*.
+
+        This never reviews, authorizes or invents a goal. An extra conversation
+        inference is only used for high-conflict decisions, where repeating
+        'I'll do it' or injecting a canned refusal would break Eli's autonomy.
+        The player's original request stays in USER role; the reason the
+        engine declined/accepted the PLAN stays in SYSTEM role.
+        """
+        if not callable(getattr(self.backend, "converse", None)):
+            return ""
+        relationship = self._relationship(state)
+        scenario = {
+            "mode": "refusal" if declined else "self_directed_acceptance",
+            "verified_requested_goals": list(goals),
+            "relationship": {
+                "trust": relationship["trust"],
+                "stress": relationship["stress"],
+                "anger": relationship["anger"],
+            },
+            "action_motive": intervention.get("motive", "none"),
+            "why": intervention.get("basis", ""),
+        }
+        for attempt in range(2):
+            try:
+                proposal = self.backend.converse(self._messages(
+                    state, player_text, dialogue=True, world=world,
+                    relationship_decision=scenario))
+            except BackendUnavailable:
+                break
+            grounded = self._ground_dialogue(
+                proposal, world, state, player_text, allow_fallback=False)
+            if not grounded:
+                continue
+            if declined:
+                # An emotionally authentic objection cannot promise that Eli
+                # is about to perform the very action he just rejected.
+                if re.search(
+                    r"\b(?:i['’]ll|i\s+will|let\s+me|"
+                    r"i['’]m\s+going\s+to)\s+"
+                    r"(?:go|walk|move|grab|pick|take|inspect|look|"
+                    r"read|switch|flip|turn|enter|type|use|open|leave)\b",
+                    grounded, re.I):
+                    continue
+                return grounded
+            intro = self._safe_live_action_acknowledgment(grounded, goals)
+            if intro:
+                return intro
+        self.store.trace(session_id, "relationship_speech_unavailable", {
+            "mode": scenario["mode"],
+            "cause": "Local dialogue did not yield a grounded reply",
+        })
+        return ""
+
     @classmethod
     def _apply_verified_environmental_effects(
             cls, state: dict[str, Any], world: dict[str, Any]
