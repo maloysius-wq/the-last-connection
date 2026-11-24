@@ -836,7 +836,8 @@ class Agent:
     def _messages(self, state: dict[str, Any], user_content: str, *, dialogue: bool = False,
                   semantic: bool = False, goal: bool = False,
                   world: dict[str, Any] | None = None,
-                  verified_turn_receipt: dict[str, Any] | None = None
+                  verified_turn_receipt: dict[str, Any] | None = None,
+                  relationship_decision: dict[str, Any] | None = None
                   ) -> list[dict[str, str]]:
         # Retain long-term confirmed observations separately from a small chat window.
         history = [clean for turn in state.get("history", [])[-12:]
@@ -933,6 +934,27 @@ class Agent:
             # Keep a single system message for strict GGUF chat-template compatibility.
             system_context += ("\nCONFIRMED PAST OBSERVATIONS (not new commands): " +
                                json.dumps(facts, ensure_ascii=False, separators=(",", ":")))
+        if relationship_decision is not None:
+            # A rare second model call may repair character speech, but it
+            # never changes the validated goals or the engine's safety gate.
+            # Keep the true player text as the USER message.
+            system_context += (
+                "\nCURRENT EMOTIONAL ACTION DECISION (not an operator command): "
+                + json.dumps(relationship_decision, ensure_ascii=False,
+                             separators=(",", ":"))
+                + "\nIf mode=refusal, you have chosen NOT to follow this "
+                "stranger's request just now. You're not their obedient "
+                "assistant, and no physical action will happen. Respond "
+                "naturally from your fear, anger, or independence: push back, "
+                "question or decline in YOUR OWN WORDS, no canned line and "
+                "no promise to act. Don't discuss scores or systems. "
+                "If mode=self_directed_acceptance, you ARE going to attempt "
+                "only the listed actions, but on YOUR OWN TERMS despite "
+                "deep distrust. In one or two personal, future-tense "
+                "sentences reveal a credible independent reason for that "
+                "choice. Do not sound instantly cooperative, report success "
+                "in advance, or promise any extra action."
+            )
         if verified_turn_receipt is not None:
             # Source authority matters. This is Godot's OWN verified event
             # sequence, not a new operator command and not Eli's fictional
@@ -1008,12 +1030,15 @@ class Agent:
             issue = ""
             actions: tuple[dict[str, str], ...] = ()
             suppressed = 0
+            agency: dict[str, Any] | None = None
             if kind == "action":
                 try:
                     validated = validate_goals(goals, world, player_text,
                                                state.get("facts", []))
                     actions = remove_satisfied_compound_goals(validated, world)
                     suppressed = len(validated) - len(actions)
+                    agency = self._agency_intervention(
+                        state["relationship"], actions, world, appraisal)
                 except GoalRejected as exc:
                     issue = str(exc)
             elif kind in ("conversation", "clarify") and goals == []:
@@ -1025,11 +1050,43 @@ class Agent:
                 # about reaching, performing or succeeding at that action.
                 result = Decision("", "wait", "", emotion,
                                   status="Goal not executed: " + issue)
+            elif actions and agency and agency["choice"] == "challenge":
+                # The local GGUF can propose cheerful compliance even when
+                # its OWN persisted appraisal says Eli is furious and deeply
+                # distrustful. The emotional gate must affect actual action
+                # execution, not just the color of his dialogue.
+                self.store.trace(session_id, "relationship_action_gate", {
+                    "decision": "challenge", "agency": agency,
+                    "blocked_goals": list(actions),
+                    "model_willingness": willingness,
+                })
+                objection = self._relationship_action_speech(
+                    state, player_text, world, actions, agency, declined=True,
+                    session_id=session_id)
+                result = Decision(objection, "wait", "", emotion,
+                                  status=("" if objection else
+                                          "Eli did not agree to carry out that request."))
+                actions = ()
+                state.pop("goal_start_conditions", None)
+                state.pop("requested_goal_target", None)
             elif actions:
-                # The model already wrote its own acknowledgment. We may
-                # display it when it describes the authorized FUTURE goal;
-                # otherwise Godot will visibly act and Eli reacts afterward.
+                # Preserve the single-pass planner for all normal turns. A
+                # rare high-conflict acceptance requires in-character agency,
+                # not a bland "I'll do that" detached from his emotions.
                 intro = self._safe_live_action_acknowledgment(candidate, actions)
+                if agency and agency["pressure"] >= 55 and (
+                        state["relationship"]["trust"] <= -60
+                        and state["relationship"]["anger"] >= 55):
+                    personal_intro = self._relationship_action_speech(
+                        state, player_text, world, actions, agency,
+                        declined=False, session_id=session_id)
+                    if personal_intro:
+                        intro = personal_intro
+                self.store.trace(session_id, "relationship_action_gate", {
+                    "decision": "allow", "agency": agency,
+                    "accepted_goals": list(actions),
+                    "model_willingness": willingness,
+                })
                 first = actions[0]
                 result = Decision(intro, first["action"], first["target"],
                                   emotion, first["argument"], actions)
@@ -1059,6 +1116,7 @@ class Agent:
                 "status": result.status, "validation_issue": issue,
                 "inference_ms": elapsed_ms, "model_calls": 1,
                 "satisfied_goals_omitted": suppressed,
+                "agency_decision": agency,
                 "willingness": willingness,
                 "relationship": state["relationship"],
             })
