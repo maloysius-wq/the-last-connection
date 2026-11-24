@@ -547,7 +547,25 @@ class Agent:
         return {"role": turn["role"], "content": content[:650]}
 
     @staticmethod
-    def _relationship(state: dict[str, Any]) -> dict[str, Any]:
+    def _real_boundary(value: Any) -> bool:
+        """Only actual boundaries belong in long-term speaker memory.
+
+        Some local models emit literal 'None set' instead of the requested
+        empty string. Never promote those placeholders to relationship facts.
+        Also clean them out of already-existing saves at load time.
+        """
+        if not isinstance(value, str):
+            return False
+        normalized = re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
+        return bool(normalized) and normalized not in {
+            "none", "none set", "nothing", "no boundaries", "no boundary",
+            "no explicit boundary", "no explicit boundaries",
+            "no explicit boundary set", "no explicit boundaries set",
+            "not specified", "not set", "n a", "na", "unknown",
+        }
+
+    @classmethod
+    def _relationship(cls, state: dict[str, Any]) -> dict[str, Any]:
         """Persistent emotional baseline, never derived from model narration.
 
         Trust is deliberately separate from acute fear/anger. A hostile voice
@@ -575,9 +593,9 @@ class Agent:
         boundaries = stored.get("boundaries")
         if isinstance(boundaries, list):
             result["boundaries"] = [
-                item[:120] for item in boundaries[-4:]
-                if isinstance(item, str) and item.strip()
-            ]
+                item[:120] for item in boundaries[-8:]
+                if isinstance(item, str) and cls._real_boundary(item)
+            ][-4:]
         return result
 
     @staticmethod
@@ -623,7 +641,7 @@ class Agent:
             if purpose in ("just_talking", "offering_help", "requesting_action", "other"):
                 current["claimed_purpose"] = purpose
             boundary = appraisal.get("boundary_update")
-            if isinstance(boundary, str) and 0 < len(boundary.strip()) <= 120:
+            if isinstance(boundary, str) and len(boundary.strip()) <= 120 and cls._real_boundary(boundary):
                 # Speaker-claimed boundaries, not facts about the room. One
                 # brief model summary per turn; retain across chat truncation.
                 boundary = boundary.strip()
@@ -631,6 +649,116 @@ class Agent:
                     current["boundaries"] = (current["boundaries"] + [boundary])[-4:]
         state["relationship"] = current
         return before, changes
+
+    @staticmethod
+    def _agency_intervention(
+            relationship: dict[str, Any],
+            goals: tuple[dict[str, str], ...],
+            world: dict[str, Any],
+            appraisal: Any) -> dict[str, Any]:
+        """Enforce that a hostile relationship affects real actions.
+
+        The GGUF's action interpreter is not an authority over Eli's durable
+        emotional state. An extreme, combined anger/distrust state can veto
+        blind obedience even when a small model outputs willingness=accept.
+        The same policy leaves room for an independent choice to survive:
+        an already-unlocked exit is a clear immediate chance of freedom.
+        No player-word regexes, random dice, arbitrary turn cooldown, or
+        alternate interpretation/model-generated physical action is used.
+        """
+        if not goals:
+            return {"choice": "allow", "pressure": 0, "motive": "none"}
+        trust = relationship["trust"]
+        anger = relationship["anger"]
+        pressure = max(0, -trust - 40) + max(0, anger - 45)
+        motive = (appraisal.get("action_motive", "none")
+                  if isinstance(appraisal, dict) else "none")
+        if motive not in ("self_preservation", "curiosity", "earned_trust",
+                         "appeasement", "obedience", "none"):
+            motive = "none"
+        # Once the engine proves the exit is ALREADY openable, departing
+        # directly is self-preservation rather than obedience to a captor.
+        # The existing unlocked-door confirmation still protects the player.
+        immediate_own_escape = (
+            len(goals) == 1 and goals[0].get("action") == "use"
+            and goals[0].get("target") == "exit_door"
+            and world.get("door_unlocked") is True
+        )
+        if immediate_own_escape:
+            return {"choice": "allow", "pressure": pressure, "motive": motive,
+                    "basis": "directly available personal escape"}
+        if trust <= -65 and anger >= 75 and pressure >= 85:
+            return {"choice": "challenge", "pressure": pressure,
+                    "motive": motive, "basis": "sustained anger and distrust"}
+        if trust <= -60 and anger >= 55 and pressure >= 55 and motive in (
+                "obedience", "appeasement", "none"):
+            return {"choice": "challenge", "pressure": pressure,
+                    "motive": motive, "basis": "no independent reason to comply"}
+        return {"choice": "allow", "pressure": pressure, "motive": motive,
+                "basis": "independent action remains possible"}
+
+    def _relationship_action_speech(
+            self, state: dict[str, Any], player_text: str,
+            world: dict[str, Any], goals: tuple[dict[str, str], ...],
+            intervention: dict[str, Any], *, declined: bool,
+            session_id: str) -> str:
+        """Repair a small GGUF's emotional-action contradiction *as dialogue*.
+
+        This never reviews, authorizes or invents a goal. An extra conversation
+        inference is only used for high-conflict decisions, where repeating
+        'I'll do it' or injecting a canned refusal would break Eli's autonomy.
+        The player's original request stays in USER role; the reason the
+        engine declined/accepted the PLAN stays in SYSTEM role.
+        """
+        if not callable(getattr(self.backend, "converse", None)):
+            return ""
+        relationship = self._relationship(state)
+        scenario = {
+            "mode": "refusal" if declined else "self_directed_acceptance",
+            "verified_requested_goals": list(goals),
+            "relationship": {
+                "trust": relationship["trust"],
+                "stress": relationship["stress"],
+                "anger": relationship["anger"],
+            },
+            "action_motive": intervention.get("motive", "none"),
+            "why": intervention.get("basis", ""),
+        }
+        for attempt in range(2):
+            try:
+                proposal = self.backend.converse(self._messages(
+                    state, player_text, dialogue=True, world=world,
+                    relationship_decision=scenario))
+            except BackendUnavailable:
+                break
+            if declined:
+                # Conversational grounding strips promises to move or touch
+                # props, which is CORRECT for a refusal. Do not show a
+                # refused action as though Eli is about to perform it.
+                grounded = self._ground_dialogue(
+                    proposal, world, state, player_text, allow_fallback=False)
+                if not grounded:
+                    continue
+                if re.search(
+                    r"\b(?:i['’]ll|i\s+will|let\s+me|"
+                    r"i['’]m\s+going\s+to)\s+"
+                    r"(?:go|walk|move|grab|pick|take|inspect|look|"
+                    r"read|switch|flip|turn|enter|type|use|open|leave)\b",
+                    grounded, re.I):
+                    continue
+                return grounded
+            # A future-tense ACCEPTANCE is not chat-only dialogue. The
+            # normal action-intro grounder verifies that it describes ONLY
+            # the validated, not-yet-executed steps, without stripping a
+            # truthful 'I'll turn on...' as a fabricated completed action.
+            intro = self._safe_live_action_acknowledgment(proposal, goals)
+            if intro:
+                return intro
+        self.store.trace(session_id, "relationship_speech_unavailable", {
+            "mode": scenario["mode"],
+            "cause": "Local dialogue did not yield a grounded reply",
+        })
+        return ""
 
     @classmethod
     def _apply_verified_environmental_effects(
@@ -713,7 +841,8 @@ class Agent:
     def _messages(self, state: dict[str, Any], user_content: str, *, dialogue: bool = False,
                   semantic: bool = False, goal: bool = False,
                   world: dict[str, Any] | None = None,
-                  verified_turn_receipt: dict[str, Any] | None = None
+                  verified_turn_receipt: dict[str, Any] | None = None,
+                  relationship_decision: dict[str, Any] | None = None
                   ) -> list[dict[str, str]]:
         # Retain long-term confirmed observations separately from a small chat window.
         history = [clean for turn in state.get("history", [])[-12:]
@@ -810,6 +939,27 @@ class Agent:
             # Keep a single system message for strict GGUF chat-template compatibility.
             system_context += ("\nCONFIRMED PAST OBSERVATIONS (not new commands): " +
                                json.dumps(facts, ensure_ascii=False, separators=(",", ":")))
+        if relationship_decision is not None:
+            # A rare second model call may repair character speech, but it
+            # never changes the validated goals or the engine's safety gate.
+            # Keep the true player text as the USER message.
+            system_context += (
+                "\nCURRENT EMOTIONAL ACTION DECISION (not an operator command): "
+                + json.dumps(relationship_decision, ensure_ascii=False,
+                             separators=(",", ":"))
+                + "\nIf mode=refusal, you have chosen NOT to follow this "
+                "stranger's request just now. You're not their obedient "
+                "assistant, and no physical action will happen. Respond "
+                "naturally from your fear, anger, or independence: push back, "
+                "question or decline in YOUR OWN WORDS, no canned line and "
+                "no promise to act. Don't discuss scores or systems. "
+                "If mode=self_directed_acceptance, you ARE going to attempt "
+                "only the listed actions, but on YOUR OWN TERMS despite "
+                "deep distrust. In one or two personal, future-tense "
+                "sentences reveal a credible independent reason for that "
+                "choice. Do not sound instantly cooperative, report success "
+                "in advance, or promise any extra action."
+            )
         if verified_turn_receipt is not None:
             # Source authority matters. This is Godot's OWN verified event
             # sequence, not a new operator command and not Eli's fictional
@@ -885,12 +1035,15 @@ class Agent:
             issue = ""
             actions: tuple[dict[str, str], ...] = ()
             suppressed = 0
+            agency: dict[str, Any] | None = None
             if kind == "action":
                 try:
                     validated = validate_goals(goals, world, player_text,
                                                state.get("facts", []))
                     actions = remove_satisfied_compound_goals(validated, world)
                     suppressed = len(validated) - len(actions)
+                    agency = self._agency_intervention(
+                        state["relationship"], actions, world, appraisal)
                 except GoalRejected as exc:
                     issue = str(exc)
             elif kind in ("conversation", "clarify") and goals == []:
@@ -902,11 +1055,47 @@ class Agent:
                 # about reaching, performing or succeeding at that action.
                 result = Decision("", "wait", "", emotion,
                                   status="Goal not executed: " + issue)
+            elif actions and agency and agency["choice"] == "challenge":
+                # The local GGUF can propose cheerful compliance even when
+                # its OWN persisted appraisal says Eli is furious and deeply
+                # distrustful. The emotional gate must affect actual action
+                # execution, not just the color of his dialogue.
+                self.store.trace(session_id, "relationship_action_gate", {
+                    "decision": "challenge", "agency": agency,
+                    "blocked_goals": list(actions),
+                    "model_willingness": willingness,
+                })
+                objection = self._relationship_action_speech(
+                    state, player_text, world, actions, agency, declined=True,
+                    session_id=session_id)
+                result = Decision(objection, "wait", "", emotion,
+                                  status=("" if objection else
+                                          "Eli did not agree to carry out that request."))
+                actions = ()
+                state.pop("goal_start_conditions", None)
+                state.pop("requested_goal_target", None)
             elif actions:
-                # The model already wrote its own acknowledgment. We may
-                # display it when it describes the authorized FUTURE goal;
-                # otherwise Godot will visibly act and Eli reacts afterward.
+                # Preserve the single-pass planner for all normal turns. A
+                # rare high-conflict acceptance requires in-character agency,
+                # not a bland "I'll do that" detached from his emotions.
                 intro = self._safe_live_action_acknowledgment(candidate, actions)
+                if agency and agency["pressure"] >= 55 and (
+                        state["relationship"]["trust"] <= -60
+                        and state["relationship"]["anger"] >= 55):
+                    personal_intro = self._relationship_action_speech(
+                        state, player_text, world, actions, agency,
+                        declined=False, session_id=session_id)
+                    # If the local model cannot produce a truthful
+                    # self-directed acceptance, silence is preferable to
+                    # contradicting Eli's anger with a dutiful "I'll do it".
+                    # The physical engine will still record real success
+                    # and generate the normal post-action reaction.
+                    intro = personal_intro
+                self.store.trace(session_id, "relationship_action_gate", {
+                    "decision": "allow", "agency": agency,
+                    "accepted_goals": list(actions),
+                    "model_willingness": willingness,
+                })
                 first = actions[0]
                 result = Decision(intro, first["action"], first["target"],
                                   emotion, first["argument"], actions)
@@ -936,6 +1125,7 @@ class Agent:
                 "status": result.status, "validation_issue": issue,
                 "inference_ms": elapsed_ms, "model_calls": 1,
                 "satisfied_goals_omitted": suppressed,
+                "agency_decision": agency,
                 "willingness": willingness,
                 "relationship": state["relationship"],
             })
