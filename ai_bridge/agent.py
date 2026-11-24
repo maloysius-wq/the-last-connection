@@ -697,6 +697,28 @@ class Agent:
         return {"choice": "allow", "pressure": pressure, "motive": motive,
                 "basis": "independent action remains possible"}
 
+    @staticmethod
+    def _unperformed_action_commitment(speech: str) -> bool:
+        """Catch model promises that would contradict a non-action decision.
+
+        This examines Eli's proposed SPEECH, never the player's words, and
+        never authorizes any goal. An unwilling Eli may discuss possibilities,
+        but must not announce that he is about to execute a withheld plan.
+        """
+        if not speech:
+            return False
+        return bool(re.search(
+            r"\b(?:i['’]ll|i\s+will|i['’]m\s+going\s+to|"
+            r"i['’]m\s+(?:about|ready)\s+to|let\s+me|i\s+can)\s+"
+            r"(?:(?:just|now|actually|finally|go\s+ahead)\s+){0,2}"
+            r"(?:go|walk|move|grab|pick|take|inspect|look|read|"
+            r"switch|flip|turn|enter|type|use|open|leave|"
+            r"check|do|handle|operate|test|try|power)\b|"
+            r"\b(?:i['’]m\s+(?:doing\s+it|on\s+it)|"
+            r"(?:okay|fine|alright),?\s*(?:doing\s+it|on\s+it))\b",
+            speech, re.I
+        ))
+
     def _relationship_action_speech(
             self, state: dict[str, Any], player_text: str,
             world: dict[str, Any], goals: tuple[dict[str, str], ...],
@@ -739,12 +761,7 @@ class Agent:
                     proposal, world, state, player_text, allow_fallback=False)
                 if not grounded:
                     continue
-                if re.search(
-                    r"\b(?:i['’]ll|i\s+will|let\s+me|"
-                    r"i['’]m\s+going\s+to)\s+"
-                    r"(?:go|walk|move|grab|pick|take|inspect|look|"
-                    r"read|switch|flip|turn|enter|type|use|open|leave)\b",
-                    grounded, re.I):
+                if self._unperformed_action_commitment(grounded):
                     continue
                 return grounded
             # A future-tense ACCEPTANCE is not chat-only dialogue. The
@@ -1022,7 +1039,12 @@ class Agent:
                            else appraisal.get("willingness", "consider"))
             if willingness not in ("accept", "consider", "decline"):
                 willingness = "consider"
-            if kind == "action" and willingness != "accept":
+            # Model consent and command recognition are separate. A small
+            # GGUF may emit an action plan with willingness=consider/decline
+            # and an incompatible future-tense promise to execute it.
+            withheld_consent = kind == "action" and willingness != "accept"
+            withheld_goals = goals if withheld_consent and isinstance(goals, list) else []
+            if withheld_consent:
                 kind, goals = "conversation", []
             self.store.trace(session_id, "relationship_turn", {
                 "before": before_relationship,
@@ -1111,7 +1133,28 @@ class Agent:
                 state.pop("goal_start_conditions", None)
                 speech = self._ground_dialogue(
                     candidate, world, state, player_text, allow_fallback=False)
-                result = Decision(speech, "wait", "", emotion)
+                if withheld_consent:
+                    if self._unperformed_action_commitment(speech):
+                        speech = ""
+                    # Only the rare contradictory or unusable first reply
+                    # needs another local inference. It can supply dialogue
+                    # but NEVER reverse the model's withheld consent.
+                    if not speech:
+                        speech = self._relationship_action_speech(
+                            state, player_text, world, (),
+                            {"choice": "challenge", "motive": "none",
+                             "basis": "Eli has not agreed to act yet"},
+                            declined=True, session_id=session_id)
+                    self.store.trace(session_id, "relationship_action_gate", {
+                        "decision": "withheld_consent",
+                        "model_willingness": willingness,
+                        "blocked_model_goals": withheld_goals,
+                        "speech_available": bool(speech),
+                    })
+                result = Decision(
+                    speech, "wait", "", emotion,
+                    status=("Eli has not agreed to act on that request."
+                            if withheld_consent and not speech else ""))
             prior = [clean for turn in state.get("history", [])[-22:]
                      if (clean := self._clean_turn(turn)) is not None]
             entries = [{"role": "user", "content": player_text.strip()}]
