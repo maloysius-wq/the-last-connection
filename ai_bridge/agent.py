@@ -731,13 +731,14 @@ class Agent:
                     relationship_decision=scenario))
             except BackendUnavailable:
                 break
-            grounded = self._ground_dialogue(
-                proposal, world, state, player_text, allow_fallback=False)
-            if not grounded:
-                continue
             if declined:
-                # An emotionally authentic objection cannot promise that Eli
-                # is about to perform the very action he just rejected.
+                # Conversational grounding strips promises to move or touch
+                # props, which is CORRECT for a refusal. Do not show a
+                # refused action as though Eli is about to perform it.
+                grounded = self._ground_dialogue(
+                    proposal, world, state, player_text, allow_fallback=False)
+                if not grounded:
+                    continue
                 if re.search(
                     r"\b(?:i['’]ll|i\s+will|let\s+me|"
                     r"i['’]m\s+going\s+to)\s+"
@@ -746,7 +747,11 @@ class Agent:
                     grounded, re.I):
                     continue
                 return grounded
-            intro = self._safe_live_action_acknowledgment(grounded, goals)
+            # A future-tense ACCEPTANCE is not chat-only dialogue. The
+            # normal action-intro grounder verifies that it describes ONLY
+            # the validated, not-yet-executed steps, without stripping a
+            # truthful 'I'll turn on...' as a fabricated completed action.
+            intro = self._safe_live_action_acknowledgment(proposal, goals)
             if intro:
                 return intro
         self.store.trace(session_id, "relationship_speech_unavailable", {
