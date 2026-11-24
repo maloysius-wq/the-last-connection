@@ -1085,8 +1085,12 @@ class Agent:
                     personal_intro = self._relationship_action_speech(
                         state, player_text, world, actions, agency,
                         declined=False, session_id=session_id)
-                    if personal_intro:
-                        intro = personal_intro
+                    # If the local model cannot produce a truthful
+                    # self-directed acceptance, silence is preferable to
+                    # contradicting Eli's anger with a dutiful "I'll do it".
+                    # The physical engine will still record real success
+                    # and generate the normal post-action reaction.
+                    intro = personal_intro
                 self.store.trace(session_id, "relationship_action_gate", {
                     "decision": "allow", "agency": agency,
                     "accepted_goals": list(actions),
