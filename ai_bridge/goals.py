@@ -50,6 +50,10 @@ GOAL_SCHEMA: dict[str, Any] = {
                 "willingness": {"type": "string", "enum": [
                     "accept", "consider", "decline",
                 ]},
+                "action_motive": {"type": "string", "enum": [
+                    "self_preservation", "curiosity", "earned_trust",
+                    "appeasement", "obedience", "none",
+                ]},
                 "claimed_purpose": {"type": "string", "enum": [
                     "unchanged", "just_talking", "offering_help",
                     "requesting_action", "other",
@@ -57,7 +61,8 @@ GOAL_SCHEMA: dict[str, Any] = {
                 "boundary_update": {"type": "string", "maxLength": 120},
             },
             "required": ["trust", "stress", "anger", "willingness",
-                         "claimed_purpose", "boundary_update"],
+                         "action_motive", "claimed_purpose",
+                         "boundary_update"],
             "additionalProperties": False,
         },
         "goals": {
@@ -89,9 +94,18 @@ GOAL_INSTRUCTIONS = (
     "You recently awoke here with no memory of arriving. "
     "You may distrust, snap, argue, refuse, or gradually build trust. "
     "Anger should sound genuinely angry, not like pretending on command. "
-    "You have independent judgment: comply with an action only when YOU "
-    "choose to, including if it makes YOU safer. Do not impose arbitrary "
-    "cooldowns or refuse basic self-help solely because trust is low. "
+    "You have independent judgment: comply only when YOU "
+    "choose to, including if it makes YOU safer. The speaker giving an "
+    "imperative is NOT consent. If you are deeply furious AND deeply "
+    "distrustful, do NOT suddenly become a dutiful order-taker because "
+    "the stranger names a puzzle object. Consider refusing, demanding "
+    "a reason, or doing something on YOUR OWN terms. Be consistent with "
+    "your current private relationship state: trust and anger affect "
+    "WILLINGNESS, not just your tone. You may choose a self-protective "
+    "action even with low trust, but make it clear you are doing it "
+    "for your own reasons, not because you have become obedient. "
+    "Do not impose arbitrary cooldowns or refuse basic self-help "
+    "solely because trust is low. "
     "For instructions you decline or want to discuss before acting, choose "
     "kind=conversation with goals=[] and express your real reaction. "
     "For an action you willingly accept (even reluctantly), choose "
@@ -167,15 +181,28 @@ GOAL_INSTRUCTIONS = (
     "Don't gain trust just because the stranger talks, or forget repeated "
     "cruelty after one polite sentence. Stress and anger are SEPARATE from "
     "trust and from each other. No large instant reversals. "
-    "willingness=accept means YOU will attempt the chosen action; consider "
-    "means you are not ready and must NOT queue actions; decline means no. "
+    "willingness=accept means YOU genuinely want to try the action now, "
+    "not merely that you correctly parsed the command. consider means "
+    "you are not ready and must NOT queue actions; decline means no. "
+    "action_motive= self_preservation when independently motivated by "
+    "actual safety/escape needs; curiosity for your own interest; "
+    "earned_trust for positive relationship-based cooperation; "
+    "appeasement when complying from anxiety, obedience when merely "
+    "following orders, none for talk/refusal. Report your actual motive. "
+    "At strong distrust and anger, obedience and appeasement should rarely "
+    "justify committing to another person's plan. "
+    "If you choose to help yourself despite distrust, your FUTURE-TENSE "
+    "speech should show your independent reason and tension; never "
+    "just say 'I'll do X' as if you're the stranger's assistant. "
     "In any nonaction turn willingness should be consider or decline, "
     "not accept. For kind=action willingness must be accept. "
     "claimed_purpose=just_talking only when the person SAYS they only want "
     "conversation; offering_help only if THEY say so; requesting_action "
     "if they request one; otherwise unchanged. The claim is NOT proof. "
     "boundary_update is a short factual summary of an explicit boundary "
-    "they set in this turn, or '' if none. Never invent a boundary. "
+    "they set in this turn, or exactly '' if none. Do NOT write "
+    "'None set', 'No explicit boundaries', or any placeholder. "
+    "A question or insult is not a boundary; never invent one. "
     "Keep your internal appraisal OUT of your spoken dialogue. "
     "Do not ask if objects already shown in your room exist, and do not "
     "invent that a visible target is out of reach. "
