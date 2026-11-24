@@ -107,7 +107,11 @@ class RelationshipAgency(unittest.TestCase):
            motive="self_preservation"),
             spoken="I'm not following another order from you. I need to think.")
         agent = self.agent("code", model, trust=-95, anger=100,
-                           stress=100)
+                           stress=100, facts=[{
+                               "action": "inspect", "target": "maintenance_note",
+                               "success": True,
+                               "description": "The maintenance note reads: RESET SEQUENCE 4317.",
+                           }])
         scene = world(note=True)
         scene["lights_on"] = True
         response = agent.decide("code", "Put in that code and leave.", scene)
@@ -119,7 +123,7 @@ class RelationshipAgency(unittest.TestCase):
         model = TestModel(plan([
             goal("take", "flashlight"), goal("use", "flashlight", "on"),
         ], motive="self_preservation", speech="I'll grab that and switch it on."),
-            spoken="I'll turn on the flashlight because I want to see this room. "
+            spoken="I'll turn on the flashlight so I can see better. "
                    "Don't mistake that for me trusting you.")
         agent = self.agent("own_choice", model, trust=-70, anger=60, stress=80)
         result = agent.decide("own_choice",
