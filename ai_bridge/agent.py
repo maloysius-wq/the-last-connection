@@ -754,6 +754,10 @@ class Agent:
             except BackendUnavailable:
                 break
             if declined:
+                # Check the UNFILTERED proposal too: grounding can drop
+                # "I'll flip the breaker" but leave a misleading "Fine."
+                if self._unperformed_action_commitment(proposal):
+                    continue
                 # Conversational grounding strips promises to move or touch
                 # props, which is CORRECT for a refusal. Do not show a
                 # refused action as though Eli is about to perform it.
@@ -1134,7 +1138,10 @@ class Agent:
                 speech = self._ground_dialogue(
                     candidate, world, state, player_text, allow_fallback=False)
                 if withheld_consent:
-                    if self._unperformed_action_commitment(speech):
+                    # Inspect the original message before grounding has
+                    # removed only its false-commitment sentence.
+                    if (self._unperformed_action_commitment(candidate)
+                            or self._unperformed_action_commitment(speech)):
                         speech = ""
                     # Only the rare contradictory or unusable first reply
                     # needs another local inference. It can supply dialogue
