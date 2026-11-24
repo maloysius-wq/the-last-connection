@@ -141,6 +141,20 @@ class RelationshipAgency(unittest.TestCase):
         gate = next(t for t in traces if t["kind"] == "relationship_action_gate")
         self.assertEqual(gate["details"]["decision"], "allow")
 
+    def test_high_tension_never_falls_back_to_obedient_speech_when_rewrite_fails(self):
+        model = TestModel(plan([
+            goal("take", "flashlight"), goal("use", "flashlight", "on"),
+        ], motive="self_preservation", speech="I'll do whatever you say."),
+            spoken="I already switched the flashlight on.")
+        agent = self.agent("inconsistent_voice", model, trust=-75,
+                           anger=69, stress=80)
+        result = agent.decide("inconsistent_voice",
+                              "Get that flashlight and turn it on.", world())
+        self.assertEqual(result.actions, (
+            goal("take", "flashlight"), goal("use", "flashlight", "on")))
+        self.assertEqual(result.speech, "")
+        self.assertEqual(len(model.converse_calls), 2)
+
     def test_hostility_refuses_obedience_even_before_anger_peaks(self):
         model = TestModel(plan([goal("use", "breaker_box")],
                                motive="obedience"),
