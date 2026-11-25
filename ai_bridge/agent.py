@@ -202,7 +202,7 @@ class OllamaBackend:
         except (OSError, error.URLError, ValueError, KeyError, TypeError) as exc:
             raise BackendUnavailable("Local action completeness review failed") from exc
 
-    def converse(self, messages: list[dict[str, str]]) -> str:
+    def converse(self, messages: list[dict[str, str]], *, timeout=None) -> str:
         """Natural dialogue, without a forced tool-call JSON envelope."""
         payload = {"model": self.model, "stream": False, "think": False,
                    "options": {"temperature": 0.55, "num_predict": 384},
@@ -210,7 +210,7 @@ class OllamaBackend:
         req = request.Request(self.endpoint, json.dumps(payload).encode("utf-8"),
                               {"Content-Type": "application/json"}, method="POST")
         try:
-            with request.urlopen(req, timeout=90) as res:
+            with request.urlopen(req, timeout=timeout if timeout is not None else 90) as res:
                 answer = json.loads(res.read(1_000_000))["message"]["content"]
             if not isinstance(answer, str) or not answer.strip():
                 raise ValueError("Empty dialogue response")
@@ -287,14 +287,14 @@ class LlamaCppBackend:
         except (OSError, error.URLError, ValueError, KeyError, TypeError, IndexError) as exc:
             raise BackendUnavailable("Local action completeness review failed") from exc
 
-    def converse(self, messages: list[dict[str, str]]) -> str:
+    def converse(self, messages: list[dict[str, str]], *, timeout=None) -> str:
         """Unconstrained natural speech for conversational turns."""
         payload = {"model": self.model, "messages": messages, "stream": False,
                    "temperature": 0.55, "max_tokens": 384}
         req = request.Request(self.endpoint, json.dumps(payload).encode("utf-8"),
                               {"Content-Type": "application/json"}, method="POST")
         try:
-            with request.urlopen(req, timeout=300) as res:
+            with request.urlopen(req, timeout=timeout if timeout is not None else 300) as res:
                 response = json.loads(res.read(1_000_000))
             answer = response["choices"][0]["message"]["content"]
             if not isinstance(answer, str) or not answer.strip():
@@ -1122,21 +1122,24 @@ class Agent:
                         "or two short sentences; no physical actions, no promises to act. "
                         "Do not force agreement or apologize unless natural.")
                     try:
-                        revised = converse(messages)
+                        revised = (converse(messages, timeout=60)
+                                   if isinstance(self.backend, (OllamaBackend, LlamaCppBackend))
+                                   else converse(messages))
                         grounded = self._ground_dialogue(revised, world, state, player_text, allow_fallback=False)
                         if grounded and not self._repeated_conversation(grounded, state) and not self._unperformed_action_commitment(grounded):
                             candidate = grounded
                             self.store.trace(session_id, "conversation_loop_repair", {"accepted": True})
-                            # Do not ratchet emotions based on a discarded looping draft.
-                            if isinstance(appraisal, dict):
-                                appraisal = dict(appraisal, trust=0, stress=0, anger=0,
-                                                 boundary_update="", claimed_purpose="unchanged")
                         else:
                             candidate = ""
                             self.store.trace(session_id, "conversation_loop_repair", {"accepted": False})
                     except BackendUnavailable as exc:
                         candidate = ""
                         self.store.trace(session_id, "conversation_loop_repair", {"accepted": False, "error": str(exc)})
+                    # The discarded draft is not new social evidence, even if
+                    # the repair failed. Preserve existing emotions/consent.
+                    if isinstance(appraisal, dict):
+                        appraisal = dict(appraisal, trust=0, stress=0, anger=0,
+                                         boundary_update="", claimed_purpose="unchanged")
             before_relationship, social_changes = self._apply_social_appraisal(
                 state, appraisal)
             # The single-pass model can REFUSE or pause before a physical
