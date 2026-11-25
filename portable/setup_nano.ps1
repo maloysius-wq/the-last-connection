@@ -36,6 +36,10 @@ if (!(Test-Path $uv)) {
 Check-Native
 $venv = Join-Path $root 'venv'
 $python = Join-Path $venv 'Scripts\python.exe'
+if (Test-Path $python) {
+    & $python --version
+    if ($LASTEXITCODE -ne 0) { Remove-Item $venv -Recurse -Force }
+}
 if (!(Test-Path $python)) {
     & $uv venv --managed-python --python 3.11 $venv
     Check-Native
@@ -52,7 +56,7 @@ if (!(Test-Path (Join-Path $source 'pyproject.toml'))) {
 }
 $project = Join-Path $source 'pyproject.toml'
 $metadata = Get-Content $project -Raw
-$metadata = $metadata.Replace('git+https://github.com/resemble-ai/Perth.git@master', 'https://codeload.github.com/resemble-ai/Perth/zip/ff1c8ac55a976971245cdd53c18d6131ca00d993')
+$metadata = $metadata.Replace('git+https://github.com/resemble-ai/Perth.git@master', 'https://github.com/resemble-ai/Perth/archive/ff1c8ac55a976971245cdd53c18d6131ca00d993.zip')
 Set-Content -Path $project -Value $metadata -Encoding ASCII
 & $uv pip install --python $python --index 'https://download.pytorch.org/whl/cpu' 'torch==2.6.0+cpu' 'torchaudio==2.6.0+cpu' $source
 Check-Native
