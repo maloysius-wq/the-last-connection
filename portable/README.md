@@ -163,3 +163,21 @@ and continuity. This is sentence buffering, not true model-token streaming.
 The worker logs model load, inference time, audio duration and CPU threads to
 logs/nano-voice.log. Game logs contain time to playable audio. Nano's first
 custom reference can take longer; conditionals are cached in memory.
+
+### Native Chatterbox Nano Q8 (experimental, CPU)
+Close the game and run `SETUP_NATIVE_NANO.cmd` from its portable folder.
+The optional download is about 653 MB: pinned audio.cpp v0.9.4-jv.7 Windows
+CPU portable runtime and MIT Nano Q8 GGUF conversion. Both downloads are
+SHA256-checked. Setup starts the actual local C++ server and generates two
+samples before writing the activation marker; no cloud speech inference.
+Restart and open VOICE STUDIO, select Native Nano Q8, and compare previews
+with the original Nano. Existing Joe/custom reference profiles work with
+the native engine. The server loads once and remains resident until the
+game closes, engine switches, or CPU thread count changes. The first preview
+can include startup; compare subsequent previews. The UI identifies which
+engine actually generated audio (including fallback). CPU speed and clone
+quality depend on hardware; native is experimental, not guaranteed faster.
+If native fails, official Nano and then Piper remain available. Models and
+reference files stay in models/ and survive in-game updates.
+Sources: https://github.com/delebash/audio.cpp and
+https://huggingface.co/delebash/chatterbox-nano-GGUF .
