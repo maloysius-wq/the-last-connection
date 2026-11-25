@@ -126,7 +126,7 @@ class ChronologyRegressions(unittest.TestCase):
             "Eli opened the unlocked door and stepped out of camera view.",
             room)
         system = self.backend.inputs[-1][0]["content"]
-        self.assertIn("outside the camera view", system)
+        self.assertIn("now beyond its doorway", system)
         self.assertIn('"escaped":true', system)
 
     def _production_replay(self, session, text, plan, initial, reaction):

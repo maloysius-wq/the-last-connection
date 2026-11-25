@@ -108,6 +108,7 @@ class LocalVoiceService:
         self.native = NativeNano(self.base)
         self.native_vulkan = NativeNano(self.base, backend="vulkan")
         self.last_engine = ""
+        self.startup_report = None
         self.whisper = self.base / "runtime" / "voice" / "whisper" / "whisper-cli.exe"
         self.stt_model = self.base / "runtime" / "voice" / "whisper" / "ggml-tiny.en-q5_1.bin"
         self.piper = self.base / "runtime" / "voice" / "piper" / "piper.exe"
@@ -138,6 +139,7 @@ class LocalVoiceService:
                              self.native_vulkan.last_metrics if self.last_engine == "native_vulkan" else
                              self.native.last_metrics if self.last_engine == "native" else self.nano.last_metrics),
             "last_engine": self.last_engine,
+            "startup_voice": self.startup_report,
         }
 
     def profiles(self):
@@ -251,11 +253,21 @@ class LocalVoiceService:
             raise VoiceError("Voice threads must be between 0 and 32.")
         if engine not in ("auto", "piper", "native", "native_vulkan", "nano_cuda"):
             raise VoiceError("Unknown local voice engine.")
-        if warmup_only and engine not in ("auto", "nano_cuda"):
-            raise VoiceError("Only official Nano supports persistent startup warmup.")
+        if warmup_only and engine not in ("auto", "nano_cuda", "native", "native_vulkan"):
+            raise VoiceError("Only persistent Nano engines support startup warmup.")
         if warmup_only:
             # Startup preflight must not warm another engine, disable the
             # selected one for gameplay, or change the saved preference.
+            if engine in ("native", "native_vulkan"):
+                target = self.native_vulkan if engine == "native_vulkan" else self.native
+                if not target.installed():
+                    raise VoiceUnavailable("Selected native voice is not installed.")
+                try:
+                    audio = target.synthesize(clean, emotion, reference=self._reference(profile), threads=threads)
+                    self.last_engine = engine
+                    return audio
+                except (RuntimeError, ValueError, OSError, wave.Error, subprocess.TimeoutExpired) as exc:
+                    raise VoiceUnavailable("Selected native voice warmup failed; see local voice log.") from exc
             target = self.nano_cuda if engine == "nano_cuda" else self.nano
             if not target.installed() or target.failed:
                 raise VoiceUnavailable("Selected Nano engine is not ready; normal speech remains available.")

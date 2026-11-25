@@ -1,13 +1,15 @@
 """Portable setup, location and local llama.cpp transport tests."""
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from io import BytesIO
 import json
 import unittest
 
 from ai_bridge.agent import BackendUnavailable, LlamaCppBackend
-from portable.launcher import PortableSetupError, find_gguf_candidates, select_model, warm_dialogue
+from portable.launcher import (PortableSetupError, find_gguf_candidates, select_model, warm_dialogue,
+                               read_voice_settings, warm_selected_voice, run_startup_voice)
+from ai_bridge.voice import VoiceUnavailable
 
 
 class FakeHTTPResponse:
@@ -99,6 +101,44 @@ class TestPortable(unittest.TestCase):
                 self.assertEqual(warm_dialogue()["status"], "failed")
         with patch("portable.launcher.request.urlopen", side_effect=TimeoutError):
             self.assertEqual(warm_dialogue()["status"], "failed")
+
+    def test_saved_voice_settings_are_read_without_modifying_save(self):
+        path = self.root / "tlc_save.cfg"
+        content = '[world]\nstate={\n"engine": "wrong"\n}\n[voice]\nengine="nano_cuda"\nprofile="ref:eli"\nthreads=8\nmuted=false\ntext_only=false\n[other]\nengine="piper"\n'
+        path.write_text(content)
+        self.assertEqual(read_voice_settings(path), {"engine": "nano_cuda", "profile": "ref:eli",
+            "threads": 8, "muted": False, "text_only": False})
+        self.assertEqual(path.read_text(), content)
+
+    def test_prelaunch_uses_selected_voice_and_actual_synthesis(self):
+        voice = Mock()
+        voice.status.return_value = {"nano_ready": True, "piper_ready": True, "tts_ready": True}
+        voice.last_engine = "nano_cuda"
+        settings = dict(read_voice_settings(self.root / "missing"), engine="nano_cuda", threads=8)
+        report = run_startup_voice(voice, settings, lambda message: None)
+        self.assertEqual(report["status"], "ready")
+        voice.synthesize.assert_called_once_with("I'm listening.", "calm", warmup_only=True,
+                                                engine="nano_cuda", profile="default", threads=8)
+
+    def test_muted_voice_never_initializes(self):
+        voice = Mock()
+        settings = dict(read_voice_settings(self.root / "missing"), muted=True)
+        self.assertEqual(warm_selected_voice(voice, settings)["status"], "skipped")
+        voice.synthesize.assert_not_called()
+
+    def test_failed_prelaunch_voice_retries_or_explicitly_disables(self):
+        voice = Mock()
+        voice.status.return_value = {"nano_ready": True, "piper_ready": True, "tts_ready": True}
+        voice.last_engine = "nano_cuda"
+        voice.synthesize.side_effect = [VoiceUnavailable("timed out"), b"audio"]
+        settings = dict(read_voice_settings(self.root / "missing"), engine="nano_cuda")
+        choice = Mock(return_value="retry")
+        self.assertEqual(run_startup_voice(voice, settings, lambda message: None, choose=choice)["status"], "ready")
+        self.assertEqual(voice.synthesize.call_count, 2)
+        voice.synthesize.side_effect = VoiceUnavailable("timed out")
+        self.assertEqual(run_startup_voice(voice, settings, lambda message: None,
+                         choose=lambda *args: "without_speech")["status"], "disabled")
+        self.assertEqual(settings["engine"], "nano_cuda")
 
     def test_llama_cpp_invalid_response_fails_without_fake_success(self):
         fake = FakeHTTPResponse({"choices": [{"message": {"content": "not json"}}]})

@@ -59,9 +59,21 @@ class ConversationLoopTests(unittest.TestCase):
         self.assertIn("somewhere else", result.speech)
         self.assertEqual(len(model.reactions), 0)
         system = model.requests[0][0]["content"]
-        self.assertIn("unknown, do not assume a camera feed", system)
-        self.assertIn("screen in ANOTHER room", system)
+        self.assertIn('"speaker_can_see_you":"unknown"', system)
+        self.assertIn("describes elsewhere need not exist in your room", system)
+        self.assertNotIn("shown on camera", system)
         self.assertIn("Understand a claim BEFORE", system)
+
+    def test_greeting_has_no_privileged_camera_or_screen_context(self):
+        model = Model(plan("Who are you?"))
+        agent = Agent(model, self.store, PERSONA)
+        answer = agent.decide("greeting", "What's up homie dog G", world())
+        self.assertEqual(answer.actions, ())
+        system = model.requests[0][0]["content"].lower()
+        self.assertNotIn("camera", system)
+        self.assertNotIn("screen", system)
+        self.assertIn('"speaker_can_see_you":"unknown"', system)
+        self.assertEqual(len(model.requests), 1)
 
     def test_failed_repair_does_not_repeat_or_act(self):
         self.seed()

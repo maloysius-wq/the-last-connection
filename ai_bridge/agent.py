@@ -469,7 +469,7 @@ class Agent:
             "want to talk, respond to what they are SAYING, not a nonexistent "
             "rescue mission. Let anger, anxiety, suspicion, humor or relief "
             "shape your voice without reciting the name of your emotion. "
-            "Understand remote-room claims without believing them; a screen elsewhere need not be visible here. "
+            "Understand claims about another location without treating them as proof. "
             "If they clarify, move on rather than repeating the same objection. "
             "If their behavior is cruel, you can snap or withdraw. "
             "If you trust them more, don't become blindly obedient. "
@@ -934,12 +934,12 @@ class Agent:
             )
             perspective = {
                 "you_are": ("Eli has physically EXITED the maintenance room and is "
-                            "now outside the camera view" if world.get("escaped")
-                            else "Eli physically INSIDE the maintenance room shown on camera"),
+                            "now beyond its doorway" if world.get("escaped")
+                            else "Eli physically INSIDE the maintenance room"),
                 "speaker_is": "unknown voice reaching your room through a speaker",
                 "speaker_identity_known": False,
                 "speaker_can_reach_your_room": False,
-                "speaker_can_see_you": "unknown, do not assume a camera feed",
+                "speaker_can_see_you": "unknown",
                 "only_you_can_touch_room_objects": True,
                 "speaker_location_known": False,
                 "first_contact": not bool(state.get("history")) and not bool(state.get("facts")),
@@ -1086,8 +1086,8 @@ class Agent:
             })
             begin = time.monotonic()
             try:
-                raw = self.backend.plan_goals(
-                    self._messages(state, player_text, goal=True, world=world))
+                messages = self._messages(state, player_text, goal=True, world=world)
+                raw = self.backend.plan_goals(messages)
             except BackendUnavailable as exc:
                 self.store.trace(session_id, "goal_model_error", {
                     "category": exc.category, "detail": exc.detail,
@@ -1098,6 +1098,8 @@ class Agent:
             elapsed_ms = round((time.monotonic() - begin) * 1000)
             self.store.trace(session_id, "goal_model_proposal", {
                 "proposal": raw, "inference_ms": elapsed_ms,
+                "prompt_chars": sum(len(message["content"]) for message in messages),
+                "prompt_messages": len(messages),
             })
             if not isinstance(raw, dict):
                 raw = {}

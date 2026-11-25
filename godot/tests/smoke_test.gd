@@ -141,6 +141,15 @@ func _run() -> void:
     app.call("_start_voice_warmup", {"nano_cuda_ready": true, "nano_ready": true})
     _expect(not bool(app.get("voice_warmup_active")), "Muted startup does not synthesize")
     app.set("voice_muted", false)
+    app.set("voice_warmup_checked", false)
+    app.set("tts_ready", true)
+    app.call("_start_voice_warmup", {"startup_voice": {"status": "ready", "engine": "nano_cuda"},
+        "nano_cuda_ready": true})
+    _expect(not bool(app.get("voice_warmup_active")) and not bool(app.get("tts_pending")),
+        "Launcher readiness does not trigger duplicate in-game synthesis")
+    app.set("voice_warmup_checked", false)
+    app.call("_start_voice_warmup", {"startup_voice": {"status": "disabled"}})
+    _expect(not bool(app.get("tts_ready")), "Explicit launch without speech is respected")
     var engine_control: OptionButton = app.get("voice_engine_control")
     _expect(engine_control != null and engine_control.item_count == 5,
         "Voice Studio includes CPU and Vulkan native Nano, official Nano, and Piper")

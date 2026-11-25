@@ -896,6 +896,9 @@ func _on_voice_status(result: int, code: int, _headers: PackedStringArray, body:
         if typeof(data) == TYPE_DICTIONARY:
             stt_ready = bool(data.get("stt_ready", false))
             tts_ready = bool(data.get("tts_ready", false))
+            var prelaunch: Variant = data.get("startup_voice", null)
+            if typeof(prelaunch) == TYPE_DICTIONARY and str(prelaunch.get("status", "")) == "disabled":
+                tts_ready = false
             voice_name = str(data.get("voice", "local voice"))
             voice_status_data = data
             _refresh_voice_profiles()
@@ -913,6 +916,21 @@ func _start_voice_warmup(data: Dictionary) -> void:
     if voice_warmup_checked:
         return
     voice_warmup_checked = true
+    # Portable launcher has already completed the selected preflight using
+    # the same service instance. Never issue a second in-game warmup.
+    var startup: Variant = data.get("startup_voice", null)
+    if typeof(startup) == TYPE_DICTIONARY:
+        var startup_status := str(startup.get("status", ""))
+        if startup_status == "ready" and not text_only and not voice_muted:
+            var actual := str(startup.get("engine", ""))
+            voice_warmup_label.text = "Eli\u0027s CUDA voice warmed up." if actual == "nano_cuda" else "Eli\u0027s voice warmed up."
+            voice_warmup_label.show()
+        elif startup_status == "disabled":
+            tts_ready = false
+            voice_warmup_label.text = "Speech disabled for this launch. Subtitles available."
+            voice_warmup_label.show()
+        print("[Voice] Pre-launch warmup: " + JSON.stringify(startup))
+        return
     # Only the persistent official Nano engines benefit from this warmup.
     # Do not automatically activate the experimental native installations.
     if text_only or voice_muted or not tts_ready or tts_pending:

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 from pathlib import Path
 import subprocess
@@ -17,7 +18,7 @@ from urllib import request, error
 
 from ai_bridge.agent import Agent, LlamaCppBackend, SessionStore
 from ai_bridge.server import create_handler
-from ai_bridge.voice import LocalVoiceService
+from ai_bridge.voice import LocalVoiceService, VoiceError, VoiceUnavailable
 from portable.runtime import (RuntimeSetupError, download_default_model, runtime_candidates,
                               start_model_server, MODEL_FILENAME)
 from portable.update_service import UpdateService, TAG_RE
@@ -131,6 +132,101 @@ def warm_dialogue() -> dict:
     return state
 
 
+def read_voice_settings(path: Path) -> dict:
+    """Read only scalar [voice] settings from Godot's ConfigFile, never rewrite saves."""
+    settings = {"engine": "auto", "profile": "default", "threads": 0,
+                "muted": False, "text_only": False}
+    if not path.is_file():
+        return settings
+    section = ""
+    for line in path.read_text(encoding="utf-8-sig").splitlines():
+        line = line.strip()
+        if re.fullmatch(r"\[[A-Za-z0-9_]+\]", line):
+            section = line[1:-1]
+        elif section == "voice" and "=" in line:
+            key, value = (part.strip() for part in line.split("=", 1))
+            if key not in settings:
+                continue
+            try:
+                parsed = json.loads(value)
+            except ValueError:
+                continue
+            if type(parsed) is type(settings[key]):
+                settings[key] = parsed
+    settings["threads"] = max(0, min(32, settings["threads"]))
+    return settings
+
+
+def warm_selected_voice(service, settings: dict) -> dict:
+    """Exercise the saved persistent voice in the same service used by the bridge."""
+    started = time.monotonic()
+    engine = settings["engine"]
+    options = {key: settings[key] for key in ("engine", "profile", "threads")}
+    report = {"settings": options, "status": "skipped", "engine": engine}
+    try:
+        if settings["muted"] or settings["text_only"]:
+            report["reason"] = "speech disabled by saved preference"
+        else:
+            available = service.status()
+            if engine == "piper" or (engine == "auto" and not available["nano_ready"]
+                                      and available["piper_ready"]):
+                # Piper and Whisper are per-request CLI processes, not persistent
+                # models: no retained inference state to warm before launch.
+                if not available["piper_ready"]:
+                    raise VoiceUnavailable("Piper is not installed.")
+                report.update(status="not_required", engine="piper")
+            elif engine == "auto" and not available["nano_ready"] and not available["tts_ready"]:
+                report["reason"] = "optional voice not installed"
+            else:
+                service.synthesize("I'm listening.", "calm", warmup_only=True, **options)
+                expected = "nano" if engine == "auto" else engine
+                if service.last_engine != expected:
+                    raise VoiceUnavailable("Selected voice did not report readiness.")
+                report.update(status="ready", engine=expected)
+    except (VoiceError, VoiceUnavailable, OSError, RuntimeError, ValueError) as exc:
+        report.update(status="failed", reason=str(exc)[:300])
+    report["seconds"] = round(time.monotonic() - started, 3)
+    return report
+
+
+def choose_startup_voice_failure(report: dict, splash) -> str:
+    """No hidden fallback or in-game cold start after a failed preflight."""
+    if sys.platform != "win32":
+        return "quit"
+    from tkinter import messagebox
+    choice = messagebox.askyesnocancel(
+        "Eli's voice did not initialize",
+        str(report.get("reason", "See voice log.")) +
+        "\n\nYes: retry before entering the game.\n"
+        "No: enter with speech disabled for this launch.\n"
+        "Cancel: close the game.",
+        parent=splash)
+    return "retry" if choice is True else "without_speech" if choice is False else "quit"
+
+
+def run_startup_voice(service, settings, progress, splash=None, choose=choose_startup_voice_failure):
+    """Wait for the bounded worker to finish, keeping the loading window responsive."""
+    while True:
+        result = {}
+        def run():
+            result.update(warm_selected_voice(service, settings))
+        worker = threading.Thread(target=run, daemon=True)
+        started = time.monotonic()
+        worker.start()
+        while worker.is_alive():
+            progress("Initializing Eli's voice (" + str(int(time.monotonic() - started)) + "s)")
+            worker.join(timeout=0.1)
+        report = result or {"status": "failed", "reason": "Voice warmup did not return."}
+        if report["status"] != "failed":
+            return report
+        choice = choose(report, splash)
+        if choice == "retry":
+            continue
+        if choice == "without_speech":
+            return dict(report, status="disabled")
+        return dict(report, status="cancelled")
+
+
 def _available_port(port: int) -> bool:
     import socket
     with socket.socket() as sock:
@@ -148,11 +244,14 @@ def make_loading_window():
     import tkinter
     window = tkinter.Tk()
     window.title("The Last Connection")
-    window.geometry("420x135")
+    window.geometry("470x155")
     window.resizable(False, False)
     tkinter.Label(window, text="Establishing connection with Eli...", font=("Segoe UI", 12, "bold")).pack(pady=(20, 5))
-    tkinter.Label(window, text="Loading your model locally. No cloud inference.",
+    window.stage_label = tkinter.Label(window, text="Loading local AI...", font=("Segoe UI", 10), wraplength=440)
+    window.stage_label.pack(pady=(0, 6))
+    tkinter.Label(window, text="The game opens after initialization. No cloud inference.",
                   font=("Segoe UI", 9)).pack(pady=(0, 12))
+    window.protocol("WM_DELETE_WINDOW", lambda: None)
     window.update()
     return window
 
@@ -288,6 +387,7 @@ def main() -> int:
         def loading_notice(message: str) -> None:
             if splash:
                 splash.title("The Last Connection | " + message)
+                splash.stage_label.config(text=message)
                 splash.update()
 
         # Voice warmup runs after the dialogue model is resident, using the
@@ -315,13 +415,24 @@ def main() -> int:
         model_log.flush()
         if server_proc.poll() is not None:
             raise PortableSetupError("Dialogue server exited during startup. See logs/llama-server.log.")
+        voice_settings = read_voice_settings(saves / "tlc_save.cfg")
+        voice_report = run_startup_voice(voice_service, voice_settings, loading_notice, splash)
+        voice_service.startup_report = voice_report
+        model_log.write("\n[The Last Connection] Voice startup: " + json.dumps(voice_report) + "\n")
+        model_log.flush()
         (logs / "runtime-status.json").write_text(json.dumps({
             "dialogue_warmup": dialogue_warmup,
+            "voice_warmup": voice_report,
             "acceleration": acceleration,
             "gpu_active": acceleration.startswith("vulkan"),
             "failed_attempts": failed_attempts,
         }, indent=2), encoding="utf-8")
 
+        if voice_report["status"] == "cancelled":
+            return 1
+        if server_proc.poll() is not None:
+            raise PortableSetupError("Dialogue server exited during voice initialization. See logs/llama-server.log.")
+        loading_notice("Opening the game...")
         if splash:
             splash.destroy()
             splash = None
