@@ -83,6 +83,50 @@ GOAL_SCHEMA: dict[str, Any] = {
     "additionalProperties": False,
 }
 
+# Compact wire format is private to the portable llama.cpp backend. Keep the
+# canonical goal schema and all engine-side validation unchanged.
+def _short_fields(schema, names):
+    return {**schema,
+            "properties": {short: schema["properties"][long] for short, long in names.items()},
+            "required": list(names)}
+
+
+_COMPACT_TOP = {"e": "emotion", "s": "speech", "k": "kind", "g": "goals", "a": "appraisal"}
+_COMPACT_GOAL = {"a": "action", "t": "target", "v": "argument"}
+_COMPACT_APPRAISAL = {"t": "trust", "s": "stress", "a": "anger", "w": "willingness",
+                      "m": "action_motive", "p": "claimed_purpose", "b": "boundary_update"}
+COMPACT_GOAL_SCHEMA = _short_fields(GOAL_SCHEMA, _COMPACT_TOP)
+COMPACT_GOAL_SCHEMA["properties"]["g"] = {
+    **GOAL_SCHEMA["properties"]["goals"],
+    "items": _short_fields(GOAL_SCHEMA["properties"]["goals"]["items"], _COMPACT_GOAL),
+}
+COMPACT_GOAL_SCHEMA["properties"]["a"] = _short_fields(
+    GOAL_SCHEMA["properties"]["appraisal"], _COMPACT_APPRAISAL)
+COMPACT_INSTRUCTIONS = (
+    "OUTPUT FORMAT: use the compact JSON field names only, in this order: "
+    "e=emotion, s=speech, k=kind, g=goals, a=appraisal. "
+    "Each goal: a=action, t=target, v=argument. "
+    "Appraisal: t=trust, s=stress, a=anger, w=willingness, m=action_motive, "
+    "p=claimed_purpose, b=boundary_update. Values and meaning are unchanged. "
+    "Return exactly these fields; no long-name duplicates. "
+    "Use normal short dialogue, never abbreviate spoken words. "
+)
+
+
+def expand_compact_goal(raw):
+    """Reject incomplete or ambiguous wire objects, then expand for validation."""
+    def expand(value, names):
+        if not isinstance(value, dict) or set(value) != set(names):
+            raise ValueError("Incomplete or unexpected compact goal fields")
+        return {long: value[short] for short, long in names.items()}
+    result = expand(raw, _COMPACT_TOP)
+    if not isinstance(result["goals"], list) or len(result["goals"]) > MAX_GOALS:
+        raise ValueError("Invalid compact goal list")
+    result["goals"] = [expand(item, _COMPACT_GOAL) for item in result["goals"]]
+    result["appraisal"] = expand(result["appraisal"], _COMPACT_APPRAISAL)
+    return result
+
+
 GOAL_INSTRUCTIONS = (
     "YOU ARE ELI. Understand the stranger's actual intent and respond naturally, "
     "not as a puzzle guide or obedient assistant. Keep your private relationship "

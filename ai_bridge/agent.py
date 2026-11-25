@@ -13,6 +13,7 @@ from typing import Any, Protocol
 
 from .intent import PlayerIntent, classify, mentioned_targets, plan_actions
 from .goals import (GOAL_SCHEMA, GOAL_INSTRUCTIONS, GoalRejected,
+                    COMPACT_GOAL_SCHEMA, COMPACT_INSTRUCTIONS, expand_compact_goal,
                     validate_goals, known_code_context, observed_code, remove_satisfied_compound_goals)
 from .semantic import (SCHEMA as SEMANTIC_SCHEMA, INSTRUCTIONS as SEMANTIC_INSTRUCTIONS,
                        REVIEW_SCHEMA, PlanRejected, review_messages, validated_steps,
@@ -64,7 +65,96 @@ def _goal_transport_error(exc):
     return BackendUnavailable("Local dialogue model request failed", category=category, detail=detail)
 
 
-def _request_goal_json(endpoint, payload, *, ollama=False):
+def _completed_json_fields(text):
+    """Read only complete top-level values; never mistake escaped speech for a key."""
+    decoder = json.JSONDecoder()
+    pos = 0
+    fields = {}
+    while pos < len(text) and text[pos].isspace():
+        pos += 1
+    if text[pos:pos+1] != "{":
+        return fields
+    pos += 1
+    while pos < len(text):
+        while pos < len(text) and text[pos].isspace():
+            pos += 1
+        try:
+            key, pos = decoder.raw_decode(text, pos)
+            if not isinstance(key, str) or key in fields:
+                break
+            while pos < len(text) and text[pos].isspace():
+                pos += 1
+            if text[pos:pos+1] != ":":
+                break
+            pos += 1
+            while pos < len(text) and text[pos].isspace():
+                pos += 1
+            value, pos = decoder.raw_decode(text, pos)
+            fields[key] = value
+            while pos < len(text) and text[pos].isspace():
+                pos += 1
+            if text[pos:pos+1] != ",":
+                break
+            pos += 1
+        except ValueError:
+            break
+    return fields
+
+
+def _read_goal_stream(response, deadline, on_speech=None):
+    """Consume local SSE deltas. Audio preparation is private until validation."""
+    content = ""
+    finish = ""
+    done = False
+    offered = False
+    first_token = None
+    start = time.monotonic()
+    timings = {}
+    while True:
+        if time.monotonic() >= deadline:
+            raise TimeoutError("Local dialogue stream deadline exceeded")
+        line = response.readline(1_000_001)
+        if not line:
+            break
+        if len(line) > 1_000_000:
+            raise ValueError("Oversized dialogue stream event")
+        line = line.decode("utf-8").strip()
+        if not line.startswith("data:"):
+            continue
+        data = line[5:].strip()
+        if data == "[DONE]":
+            done = True
+            break
+        event = json.loads(data)
+        if isinstance(event.get("timings"), dict):
+            timings = event["timings"]
+        for choice in event.get("choices", []):
+            delta = choice.get("delta", {}).get("content")
+            if isinstance(delta, str) and delta:
+                if first_token is None:
+                    first_token = round((time.monotonic()-start)*1000)
+                content += delta
+                if len(content) > 100_000:
+                    raise ValueError("Oversized dialogue completion")
+                if on_speech is not None and not offered:
+                    fields = _completed_json_fields(content)
+                    if isinstance(fields.get("s"), str) and fields.get("e") in EMOTION_SET:
+                        offered = True
+                        try:
+                            on_speech(fields["s"], fields["e"])
+                        except Exception:
+                            # Speculative audio cannot break dialogue.
+                            pass
+            if choice.get("finish_reason"):
+                finish = str(choice["finish_reason"])
+    if not done or finish != "stop":
+        raise ValueError("Incomplete dialogue stream: " + finish)
+    print("[Dialogue stream] " + json.dumps({"first_token_ms": first_token,
+          "total_ms": round((time.monotonic()-start)*1000), "timings": timings}))
+    return content, finish
+
+
+def _request_goal_json(endpoint, payload, *, ollama=False, compact=False, on_speech=None):
     """One normal call; retry only malformed structured output, within one deadline."""
     deadline = time.monotonic() + (120 if ollama else 290)
     for attempt in range(2):
@@ -73,15 +163,17 @@ def _request_goal_json(endpoint, payload, *, ollama=False):
             raise BackendUnavailable("Local dialogue model timed out", category="timeout")
         req = request.Request(endpoint, json.dumps(payload).encode("utf-8"),
                               {"Content-Type": "application/json"}, method="POST")
-        try:
-            with request.urlopen(req, timeout=remaining) as res:
-                body = res.read(1_000_000)
-        except (OSError, error.URLError) as exc:
-            raise _goal_transport_error(exc) from exc
         finish = ""
         try:
-            reply = json.loads(body)
-            if ollama:
+            with request.urlopen(req, timeout=remaining) as res:
+                if payload.get("stream") and not ollama:
+                    content, finish = _read_goal_stream(res, deadline, on_speech)
+                    reply = None
+                else:
+                    reply = json.loads(res.read(1_000_000))
+            if payload.get("stream") and not ollama:
+                pass
+            elif ollama:
                 finish = str(reply.get("done_reason", ""))
                 content = reply["message"]["content"]
             else:
@@ -91,7 +183,9 @@ def _request_goal_json(endpoint, payload, *, ollama=False):
             parsed = json.loads(content)
             if not isinstance(parsed, dict):
                 raise ValueError("Expected a goal object")
-            return parsed
+            return expand_compact_goal(parsed) if compact else parsed
+        except (OSError, error.URLError) as exc:
+            raise _goal_transport_error(exc) from exc
         except (ValueError, KeyError, TypeError, IndexError, AttributeError) as exc:
             detail = f"{type(exc).__name__}; finish_reason={finish or 'unknown'}; attempt={attempt+1}"
             if attempt == 1 or time.monotonic() >= deadline - 5:
@@ -110,6 +204,9 @@ def _request_goal_json(endpoint, payload, *, ollama=False):
                 payload["options"] = dict(payload["options"], num_predict=800)
             else:
                 payload["max_tokens"] = 800
+                # Malformed streaming output gets one complete non-streaming
+                # retry; never replay a partial action or speculative voice.
+                payload["stream"] = False
     raise AssertionError("unreachable")
 
 
@@ -224,8 +321,18 @@ class LlamaCppBackend:
 
     The launcher starts the server; this class never downloads or copies weights.
     """
-    def __init__(self, endpoint: str = "http://127.0.0.1:8877/v1/chat/completions", model: str = "tlc-eli") -> None:
+    def __init__(self, endpoint: str = "http://127.0.0.1:8877/v1/chat/completions", model: str = "tlc-eli",
+                 *, compact=False, streaming=True, cache_reuse=64) -> None:
         self.endpoint, self.model = endpoint, model
+        self.compact, self.streaming = compact, streaming
+        self.cache_reuse = cache_reuse
+
+    def prepare_goal_messages(self, messages):
+        if not self.compact:
+            return messages
+        result = [dict(message) for message in messages]
+        result[0]["content"] = COMPACT_INSTRUCTIONS + "\n" + result[0]["content"]
+        return result
 
     def respond(self, messages: list[dict[str, str]]) -> dict[str, Any]:
         payload = {
@@ -263,12 +370,17 @@ class LlamaCppBackend:
         except (OSError, error.URLError, ValueError, KeyError, TypeError, IndexError) as exc:
             raise BackendUnavailable("Local model could not interpret the request") from exc
 
-    def plan_goals(self, messages: list[dict[str, str]]) -> dict[str, Any]:
-        """Production: ONE constrained GGUF request for goals and Eli speech."""
-        payload = {"model": self.model, "messages": messages, "stream": False,
+    def plan_goals(self, messages: list[dict[str, str]], *, on_speech=None) -> dict[str, Any]:
+        """Single inference; portable backend uses compact schema and local SSE."""
+        payload = {"model": self.model, "messages": self.prepare_goal_messages(messages),
+                   "stream": self.compact and self.streaming,
                    "temperature": 0.1, "max_tokens": 620,
-                   "response_format": {"type": "json_schema", "schema": GOAL_SCHEMA}}
-        return _request_goal_json(self.endpoint, payload)
+                   "response_format": {"type": "json_schema",
+                                       "schema": COMPACT_GOAL_SCHEMA if self.compact else GOAL_SCHEMA}}
+        if self.compact:
+            # Pinned b12551 supports prefix caching and n_cache_reuse KV shifts.
+            payload.update(cache_prompt=True, n_cache_reuse=self.cache_reuse)
+        return _request_goal_json(self.endpoint, payload, compact=self.compact, on_speech=on_speech)
 
     def review(self, messages: list[dict[str, str]]) -> dict[str, Any]:
         """Independently audit physical action coverage, no second model."""
@@ -547,17 +659,17 @@ class Agent:
         """
         return {
             "room": world.get("room", ""),
+            "objects": {key: {"description": value.get("description", ""),
+                             "held": key in world.get("inventory", []),
+                             "can_take": value.get("can_take") is True}
+                        for key, value in sorted(world["objects"].items())
+                        if isinstance(value, dict) and value.get("visible") is True},
             "actor_at": world.get("actor_at", "room_center"),
             "last_observation": str(world.get("last_observation", ""))[:400],
             "inventory": world.get("inventory", []),
             "conditions": {key: world[key] for key in
                            ("lights_on", "flashlight_on", "door_unlocked", "escaped", "heard_knocks")
                            if key in world},
-            "objects": {key: {"description": value.get("description", ""),
-                             "held": key in world.get("inventory", []),
-                             "can_take": value.get("can_take") is True}
-                        for key, value in world["objects"].items()
-                        if isinstance(value, dict) and value.get("visible") is True},
         }
 
     @staticmethod
@@ -942,6 +1054,7 @@ class Agent:
                 "speaker_can_see_you": "unknown",
                 "only_you_can_touch_room_objects": True,
                 "speaker_location_known": False,
+                "your_current_room": self._perceived_world(world),
                 "first_contact": not bool(state.get("history")) and not bool(state.get("facts")),
                 "any_confirmed_physical_actions": bool(state.get("facts")),
                 # Never infer social trust from a count of solved puzzle steps.
@@ -954,7 +1067,6 @@ class Agent:
                     "you_actually_heard_knocks": world.get("heard_knocks") is True,
                     "source": "Godot room event, not inference from conversation",
                 },
-                "your_current_room": self._perceived_world(world),
                 "verified_action_memory": self._confirmed_event_ledger(
                     state.get("facts", [])),
             }
@@ -1118,7 +1230,7 @@ class Agent:
         return ""
 
     def _decide_goals(self, session_id: str, player_text: str,
-                      world: dict[str, Any]) -> Decision:
+                      world: dict[str, Any], *, on_speech=None) -> Decision:
         """Production path: a single semantic plan, engine-only verification.
 
         No independent LLM reviewer, phrase regex permissions, quote-citation
@@ -1142,7 +1254,10 @@ class Agent:
             begin = time.monotonic()
             try:
                 messages = self._messages(state, player_text, goal=True, world=world)
-                raw = self.backend.plan_goals(messages)
+                if isinstance(self.backend, LlamaCppBackend) and self.backend.compact:
+                    raw = self.backend.plan_goals(messages, on_speech=on_speech)
+                else:
+                    raw = self.backend.plan_goals(messages)
             except BackendUnavailable as exc:
                 self.store.trace(session_id, "goal_model_error", {
                     "category": exc.category, "detail": exc.detail,
@@ -1352,12 +1467,12 @@ class Agent:
             })
             return result
 
-    def decide(self, session_id: str, player_text: str, world: dict[str, Any]) -> Decision:
+    def decide(self, session_id: str, player_text: str, world: dict[str, Any], *, on_speech=None) -> Decision:
         if not isinstance(player_text, str) or not (1 <= len(player_text.strip()) <= 600):
             raise InvalidRequest("Message must contain 1-600 characters")
         world = self._world(world)
         if callable(getattr(self.backend, "plan_goals", None)):
-            return self._decide_goals(session_id, player_text, world)
+            return self._decide_goals(session_id, player_text, world, on_speech=on_speech)
         # Legacy mock and scripted fixtures only; shipped local backends
         # always take the goal path above.
         with self._lock:

@@ -110,17 +110,21 @@ def _ready(url: str) -> bool:
         return False
 
 
-def warm_dialogue() -> dict:
+def warm_dialogue(messages=None) -> dict:
     """Exercise actual local token generation, never a player/session turn."""
     started = time.monotonic()
     payload = {"model": "tlc-eli", "messages": [
         {"role": "user", "content": "Reply with one word: ready."}],
         "max_tokens": 2, "temperature": 0, "stream": False, "cache_prompt": False}
+    if messages:
+        # Prime the actual production static prefix instead of a tiny unrelated
+        # greeting. A discarded token never enters player conversation history.
+        payload.update(messages=messages, cache_prompt=True, n_cache_reuse=64)
     req = request.Request("http://127.0.0.1:8877/v1/chat/completions",
                           json.dumps(payload).encode("utf-8"),
                           {"Content-Type": "application/json"}, method="POST")
     try:
-        with request.urlopen(req, timeout=20) as response:
+        with request.urlopen(req, timeout=60 if messages else 20) as response:
             reply = json.loads(response.read(64_000))
         if not reply.get("choices") or int(reply.get("usage", {}).get("completion_tokens", 0)) < 1:
             raise ValueError("No generated token confirmed")
@@ -398,12 +402,18 @@ def main() -> int:
         )
         # llama.cpp's own load-time warmup does not necessarily exercise
         # the chat endpoint. Generate a tiny discarded completion first.
-        loading_notice("Warming up dialogue...")
+        loading_notice("Warming up dialogue and prompt cache...")
+        backend = LlamaCppBackend(compact=True, streaming=config.get("stream_dialogue", True) is not False,
+                                  cache_reuse=64 if config.get("reuse_prompt_chunks", True) is not False else 0)
+        agent = Agent(backend, SessionStore(saves / "sessions"),
+                      resource_directory() / "data" / "characters" / "eli.json")
         dialogue_warmup = {"status": "skipped"}
         if config.get("dialogue_warmup", True) is not False:
             warm_result = {}
             def run_warmup():
-                warm_result.update(warm_dialogue())
+                messages = agent._messages({}, "Reply with one word: ready.",
+                                           goal=True, world={"objects": {}})
+                warm_result.update(warm_dialogue(backend.prepare_goal_messages(messages)))
             worker = threading.Thread(target=run_warmup, daemon=True)
             worker.start()
             while worker.is_alive():
@@ -436,8 +446,6 @@ def main() -> int:
         if splash:
             splash.destroy()
             splash = None
-        agent = Agent(LlamaCppBackend(), SessionStore(saves / "sessions"),
-                      resource_directory() / "data" / "characters" / "eli.json")
         bridge = ThreadingHTTPServer(("127.0.0.1", 8765),
                                      create_handler(agent, "llama.cpp", updater=UpdateService(base),
                                                     voice=voice_service))

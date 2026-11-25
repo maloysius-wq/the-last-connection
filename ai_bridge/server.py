@@ -13,6 +13,7 @@ from pathlib import Path
 from .agent import Agent, AgentError, BackendUnavailable, InvalidRequest, MockBackend, OllamaBackend, SessionStore, MODEL
 from .voice import LocalVoiceService, VoiceError, VoiceUnavailable, MAX_WAV_BYTES
 from .session_export import build_session_archive
+from .voice_prefetch import VoicePrefetch
 
 ROOT = Path(__file__).resolve().parent.parent
 MAX_BODY = 16_384
@@ -20,6 +21,7 @@ MAX_BODY = 16_384
 
 def create_handler(agent: Agent, mode: str, updater=None,
                    voice: LocalVoiceService | None = None):
+    prefetch = VoicePrefetch(voice)
     class Handler(BaseHTTPRequestHandler):
         def _send(self, code: int, payload: dict):
             body = json.dumps(payload).encode("utf-8")
@@ -123,15 +125,23 @@ def create_handler(agent: Agent, mode: str, updater=None,
                         # synthesize a discarded fallback or poison gameplay.
                         started = time.monotonic()
                         try:
-                            voice.synthesize("I'm listening.", "calm", warmup_only=True, **options)
+                            with prefetch.synthesis_lock:
+                                voice.synthesize("I'm listening.", "calm", warmup_only=True, **options)
                         except VoiceUnavailable as exc:
                             return self._send(200, {"status": "deferred", "reason": str(exc),
                                 "seconds": round(time.monotonic() - started, 3)})
                         return self._send(200, {"status": "ready",
                             "engine": getattr(voice, "last_engine", ""),
                             "seconds": round(time.monotonic() - started, 3)})
-                    audio = voice.synthesize(data.get("text", ""), data.get("emotion", "calm"), **options)
-                    return self._send_wav(audio, getattr(voice, "last_engine", ""))
+                    audio = prefetch.take(data.get("prefetch_id"), data.get("text", ""),
+                                          data.get("emotion", "calm"), options)
+                    if audio is not None:
+                        print("[Voice] Consumed validated streamed speech prefetch")
+                        return self._send_wav(audio, "nano_cuda")
+                    with prefetch.synthesis_lock:
+                        audio = voice.synthesize(data.get("text", ""), data.get("emotion", "calm"), **options)
+                        engine = getattr(voice, "last_engine", "")
+                    return self._send_wav(audio, engine)
                 except VoiceUnavailable as exc:
                     return self._send(503, {"error": str(exc)})
                 except (VoiceError, InvalidRequest, ValueError, TypeError, json.JSONDecodeError) as exc:
@@ -169,13 +179,27 @@ def create_handler(agent: Agent, mode: str, updater=None,
                 if not isinstance(data, dict):
                     raise InvalidRequest("Expected an object")
                 sid = data.get("session_id", "")
+                ticket = None
                 if self.path == "/api/decide":
-                    result = agent.decide(sid, data.get("player_text", ""), data.get("world"))
+                    options = data.get("voice_prefetch")
+                    if isinstance(options, dict) and mode == "llama.cpp":
+                        def offer(speech, emotion):
+                            nonlocal ticket
+                            if ticket is None:
+                                ticket = prefetch.offer(speech, emotion, options)
+                        result = agent.decide(sid, data.get("player_text", ""), data.get("world"),
+                                              on_speech=offer)
+                    else:
+                        result = agent.decide(sid, data.get("player_text", ""), data.get("world"))
                 else:
                     result = agent.outcome(sid, data.get("action"), data.get("target", ""),
                                            data.get("success"), data.get("description", ""), data.get("world"),
                                            speak=data.get("speak", True))
-                return self._send(200, asdict(result))
+                payload = asdict(result)
+                approved = prefetch.approve(ticket, result)
+                if approved:
+                    payload["voice_prefetch_id"] = approved
+                return self._send(200, payload)
             except (InvalidRequest, json.JSONDecodeError, ValueError, TypeError) as exc:
                 return self._send(400, {"error": str(exc)})
             except BackendUnavailable as exc:
