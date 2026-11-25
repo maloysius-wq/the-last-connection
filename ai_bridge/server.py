@@ -31,7 +31,7 @@ def create_handler(agent: Agent, mode: str, updater=None,
         def _send_wav(self, pcm_wav: bytes, engine=""):
             self.send_response(200)
             self.send_header("Content-Type", "audio/wav")
-            if engine in ("native", "nano", "piper"):
+            if engine in ("native", "native_vulkan", "nano", "piper"):
                 self.send_header("X-TLC-Voice-Engine", engine)
             self.send_header("Content-Length", str(len(pcm_wav)))
             self.send_header("Cache-Control", "no-store")
