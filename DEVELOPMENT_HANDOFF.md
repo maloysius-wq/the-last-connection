@@ -10,14 +10,14 @@ First-person psychological horror surveillance game. Player communicates with El
 
 - Windows portable release with in-game updater, local GGUF dialogue, and opt-in offline STT/TTS. Official Chatterbox Nano CUDA works in the user's GTX 1060 gameplay; preserve the installed models, environments, settings and saves.
 - First maintenance-room escape, semantic goal planning, action receipts, session transcripts and diagnostic ZIP export, and emotional cooperation/relationship gating are implemented.
-- Latest verified playable release: `portable-d04a380631970838b119e2981e48df03dc0cab92` (PR #50). Final Python/Godot validation and Windows publication passed; official release verified. Main may contain documentation-only commits after the release.
+- Latest verified published release: `portable-e6608c6b3ef1a0f609f119262d1ee4133e20291d` (PR #51). Python/Godot, Windows packaging, real CPU Nano synthesis and CUDA dependency validation passed. Real GTX 1060 playtest pending. Main may contain documentation-only commits after the release.
 - Remote-perspective comprehension, repeated-clause repair and structured bridge error reporting were shipped in PR #48. Real local GGUF dialogue behavior still requires player testing.
 - Historical entries below are chronological records, not current priority instructions.
 
 ## Immediate priority
 
 1. Preserve working CUDA voice and physical authority. Validate conversation repairs with the player's real local model; address concrete failures from diagnostic exports.
-2. Playtest shipped startup warmup (PR #50) on the user's GTX 1060: verify the saved CUDA profile warms silently, first speech latency improves, and dialogue remains responsive. Preserve fallbacks and measure real hardware. Terminal failure recovery shipped in PR #49.
+2. Playtest shipped CUDA warmup recovery (PR #51) on the user's GTX 1060. Verify selected CUDA voice warms successfully or defers without fallback, first real speech retries if deferred, and dialogue remains responsive. Preserve GPU offload and admission safeguards; collect fresh logs if failure recurs. Terminal failure recovery shipped in PR #49.
 3. Keep emotional agency, cooperation, action queues, save/export and local-only operation regression-tested. No additional voice backend installations without a demonstrated need.
 4. Improve room atmosphere, character animation and visual presentation after interaction reliability. Desktop visual and microphone QA cannot be inferred from headless CI.
 
@@ -585,3 +585,5 @@ Primary repo: `maloysius-wq/the-last-connection` (public; created by user). Use 
 
 - User logs: CUDA admitted with 5.08 GiB free, model loaded in 67.8s; no subsequent synthesis logged. Startup warmup 116.25s fell back to CPU Nano; earlier 151.047s fell to Piper. Dialogue warmup succeeded in 0.203s Vulkan. Evidence strongly suggests combined 75s cold-start/synthesis timeout, but original bridge did not log exception. Do not change admission threshold, GPU offload, model weights, or installed CUDA environment.
 - Candidate: explicit CUDA worker readiness handshake, independent 120s loading and 75s speech/conditioning deadlines. Optional preflight never invokes fallback and never marks engine failed; next real reply can retry. Normal speech fallback unchanged; HTTP budget accommodates longer cold initialization/fallback. Log stage/reason and show deferred status. Real GTX 1060 testing needed after release. Added regression tests for cold/warm deadlines, retry after optional failure, and no CPU fallback on warmup.
+
+- **OFFICIAL RELEASE VERIFIED:** PR #51 merged at `e6608c6b3ef1a0f609f119262d1ee4133e20291d`. All four PR checks SUCCESS (45693234063, 45693234045, 45693234186, 45693233741); final main validation 45694443577 and Windows publication 45694442782 SUCCESS. Latest release `portable-e6608c6b3ef1a0f609f119262d1ee4133e20291d` is published, exact target, ZIP 239,733,336 bytes (GitHub SHA256 digest `8f9052d3f7f82c2443f5129c13ef399c939e4007ee20d3d7748c7d99e5dc3333`), checksum asset 106 bytes. User can CHECK FOR UPDATES. Real CUDA synthesis on GTX 1060 remains pending; hosted CUDA job checks dependency installation only. No reinstall required.
