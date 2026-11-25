@@ -144,7 +144,7 @@ class FakeVoice:
         if not wav.startswith(b"RIFF"):
             raise VoiceError("Invalid microphone WAV")
         return "Please check the door."
-    def synthesize(self, spoken):
+    def synthesize(self, spoken, emotion="calm"):
         if spoken != "I'm listening.":
             raise VoiceError("Bad text")
         return microphone_wav(rate=22050, channels=1, seconds=.5)

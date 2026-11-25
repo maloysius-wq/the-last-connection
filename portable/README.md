@@ -124,3 +124,28 @@ If the model supplies a goal the physical engine cannot safely perform, you see 
 ## Experimental actions
 
 Eli can attempt unusual things such as knocking on the door, tapping a flashlight against the desk, dancing, or testing a wall. The small local GGUF interprets the physical intention and sends a freeform `experiment` to Godot, which actually moves/gestures and reports the attempt. An experiment by itself does not magically unlock doors, make new items or change breaker/puzzle state. Existing real puzzle actions like flipping the breaker, picking up the flashlight and entering a code still follow authoritative engine rules. A hypothetical suggestion or a question never authorizes a physical attempt.
+
+## Optional Chatterbox Nano voice (experimental)
+
+Close the game and double-click `SETUP_CHATTERBOX_NANO.cmd` in the portable folder.
+Accept the one-time download only if you have several GB free on the game drive
+(recommend at least 8 GB for the model, Python, CPU Torch, and temporary/cache files).
+The script downloads pinned official Chatterbox source (MIT), the Nano model
+(MIT), pinned Perth source and a checksum-verified uv bootstrap; it installs a
+game-local Python 3.11 environment without requiring a global Python or Git
+installation. The model files required by the official loader total about 2 GB,
+not including dependencies. Setup performs a real local WAV smoke test and
+only then creates the ready marker. Restart the game to use Nano. An initial
+synthetic built-in voice is used; if desired put a clean, authorized reference
+recording longer than five seconds at `models/chatterbox-nano/eli-reference.wav`
+before starting the game. Only use recordings you have permission to clone.
+No cloud inference or speech upload, and no download during ordinary gameplay.
+Nano stays loaded in one separate CPU worker and uses the current dialogue
+emotion to choose supported style tags (not guaranteed acting intensity).
+If missing or if synthesis fails, Piper remains available; subtitles and
+microphone are unchanged. To disable, close the game and rename
+`models/chatterbox-nano/ready.json`. The updater preserves models/ including
+the optional runtime; if moving to a different drive or machine, rerun setup
+if its environment no longer works. Listen to sample.wav after setup.
+Official model: https://huggingface.co/ResembleAI/chatterbox-nano
+Official code: https://github.com/resemble-ai/chatterbox

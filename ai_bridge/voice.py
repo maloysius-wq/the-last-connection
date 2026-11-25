@@ -17,6 +17,8 @@ import subprocess
 import tempfile
 import wave
 
+from .nano import NanoVoice
+
 
 class VoiceError(ValueError):
     """User-facing local microphone/voice setup or input error."""
@@ -99,6 +101,7 @@ class LocalVoiceService:
     def __init__(self, base: Path, runner=subprocess.run):
         self.base = Path(base)
         self.runner = runner
+        self.nano = NanoVoice(self.base)
         self.whisper = self.base / "runtime" / "voice" / "whisper" / "whisper-cli.exe"
         self.stt_model = self.base / "runtime" / "voice" / "whisper" / "ggml-tiny.en-q5_1.bin"
         self.piper = self.base / "runtime" / "voice" / "piper" / "piper.exe"
@@ -106,14 +109,23 @@ class LocalVoiceService:
         self.tts_config = self.base / "runtime" / "voice" / "piper" / "en_US-joe-medium.onnx.json"
 
     def status(self) -> dict[str, object]:
+        nano_ready = self.nano.installed() and not self.nano.failed
+        piper_ready = self.piper.is_file() and self.tts_model.is_file() and self.tts_config.is_file()
         return {
             "stt_ready": self.whisper.is_file() and self.stt_model.is_file(),
-            "tts_ready": (self.piper.is_file() and self.tts_model.is_file()
-                          and self.tts_config.is_file()),
+            "tts_ready": nano_ready or piper_ready,
             "push_to_talk": "hold_v",
-            "voice": "en_US-joe-medium",
+            "voice": "Chatterbox Nano" if nano_ready else "en_US-joe-medium",
+            "nano_ready": nano_ready,
+            "piper_ready": piper_ready,
             "offline": True,
         }
+
+    def warm(self):
+        self.nano.warm()
+
+    def close(self):
+        self.nano.close()
 
     def _temp_root(self) -> Path:
         temp = self.base / "temp"
@@ -154,7 +166,7 @@ class LocalVoiceService:
             raise VoiceError("No clear words were recognized. Please try again or type.")
         return transcript
 
-    def synthesize(self, spoken: str) -> bytes:
+    def synthesize(self, spoken: str, emotion: str = "calm") -> bytes:
         if not self.status()["tts_ready"]:
             raise VoiceUnavailable("Eli's offline voice isn't installed; subtitles remain available.")
         if not isinstance(spoken, str) or not 1 <= len(spoken.strip()) <= MAX_TTS_CHARS:
@@ -163,6 +175,14 @@ class LocalVoiceService:
         clean = re.sub(r"<[^>]{1,80}>", "", spoken).strip()
         if not clean:
             raise VoiceError("Nothing to speak.")
+        if self.nano.installed() and not self.nano.failed:
+            try:
+                return self.nano.synthesize(clean, emotion)
+            except (RuntimeError, ValueError):
+                # Nano failures must not stop dialogue, subtitles or Piper.
+                pass
+        if not self.status()["piper_ready"]:
+            raise VoiceUnavailable("Nano failed and Piper is unavailable; subtitles still work.")
         with tempfile.TemporaryDirectory(prefix="tlc-tts-", dir=self._temp_root()) as folder:
             output = Path(folder) / "eli.wav"
             command = [str(self.piper), "--model", str(self.tts_model),
