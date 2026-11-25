@@ -69,6 +69,8 @@ var update_stage := ""
 var available_update_tag := ""
 var session_id: String
 var request_stage := "idle"
+# Retained only until a decision is received or the request is recovered.
+var pending_player_text := ""
 var action_context := {"action": "", "target": ""}
 var queued_actions: Array[Dictionary] = []
 var queue_index := 0
@@ -323,6 +325,7 @@ func _submit(message: String) -> void:
     if trimmed.length() > 600:
         _message("SYSTEM", "Message is too long (maximum 600 characters).")
         return
+    pending_player_text = trimmed
     input.clear()
     _message("YOU", trimmed)
     var body := {"session_id": session_id, "player_text": trimmed, "world": world.snapshot()}
@@ -339,24 +342,58 @@ func _request(path: String, body: Dictionary, stage: String) -> void:
         PackedStringArray(["Content-Type: application/json"]),
         HTTPClient.METHOD_POST, JSON.stringify(body))
     if code != OK:
-        _message("SYSTEM", "Unable to send request. Code: " + str(code))
-        if not queued_actions.is_empty():
-            _message("SYSTEM", "Sequence cancelled because the action outcome could not be recorded.")
-        _idle()
+        _recover_bridge_failure("The local connection could not start (error " + str(code) + ").")
+
+func _recover_bridge_failure(reason: String) -> void:
+    # A lost response is not proof the bridge never received the message.
+    # Never automatically resend decisions or outcomes. Only the player
+    # can transmit again, and a confirmed physical step is never replayed.
+    _message("SYSTEM", reason)
+    if request_stage == "decide":
+        if not pending_player_text.is_empty():
+            if input.text.is_empty():
+                input.text = pending_player_text
+                _message("SYSTEM", "Your last message is back in the editor. Review it before transmitting again.")
+            else:
+                _message("SYSTEM", "Your current draft is unchanged. The previous message remains in the conversation above.")
+        _message("SYSTEM", "No action plan was received. Nothing from this request was attempted.")
+    elif request_stage == "outcome":
+        _message("SYSTEM", "The action already reported in OBSERVATION was not undone. Its dialogue receipt could not be confirmed. Any remaining steps were cancelled; check the current room state before giving another instruction.")
+    _idle()
+
+func _bridge_failure_reason(result: int, response_code: int, body: PackedByteArray) -> String:
+    if result == HTTPRequest.RESULT_TIMEOUT:
+        return "The local dialogue connection timed out."
+    if result != HTTPRequest.RESULT_SUCCESS:
+        return "The local dialogue connection was interrupted (connection error " + str(result) + ")."
+    var reply = JSON.parse_string(body.get_string_from_utf8())
+    if typeof(reply) == TYPE_DICTIONARY:
+        var category := str(reply.get("category", ""))
+        var hint := str(reply.get("hint", "")).strip_edges().left(220)
+        var detail := str(reply.get("error", "")).strip_edges().left(220)
+        var explanation := ""
+        match category:
+            "invalid_json":
+                explanation = "Eli's local model returned an invalid response."
+            "timeout":
+                explanation = "The local dialogue model timed out."
+            "transport", "http", "unavailable":
+                explanation = "The local dialogue model is temporarily unavailable."
+            _:
+                explanation = detail if not detail.is_empty() else "The local bridge rejected the request."
+        return explanation + " (HTTP " + str(response_code) + ")." + (" " + hint if not hint.is_empty() else "")
+    return "The local bridge returned HTTP " + str(response_code) + ". Check the game logs if this repeats."
 
 func _on_http_completed(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:
     if result != HTTPRequest.RESULT_SUCCESS or response_code != 200:
-        var detail := body.get_string_from_utf8()
-        _message("SYSTEM", "AI bridge error (HTTP " + str(response_code) + "): " + detail.left(350))
-        if not queued_actions.is_empty():
-            _message("SYSTEM", "The remaining actions were cancelled because the bridge failed.")
-        _idle()
+        _recover_bridge_failure(_bridge_failure_reason(result, response_code, body))
         return
     var response = JSON.parse_string(body.get_string_from_utf8())
     if typeof(response) != TYPE_DICTIONARY:
-        _message("SYSTEM", "Invalid response from the AI bridge. Sequence cancelled.")
-        _idle()
+        _recover_bridge_failure("The local bridge returned an unreadable response.")
         return
+    if request_stage == "decide":
+        pending_player_text = ""
 
     if request_stage == "outcome" and not queued_actions.is_empty():
         # An actual world exit is TERMINAL regardless of any remaining model
@@ -520,6 +557,7 @@ func _idle() -> void:
     queue_index = 0
     last_step_succeeded = false
     request_stage = "idle"
+    pending_player_text = ""
     status.text = "Ready"
     send_button.disabled = false
     # Returning to READY must make the editor usable immediately, while an
