@@ -5,11 +5,12 @@ import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 import zipfile
 
 from portable.update_service import (ASSET_NAME, HASH_NAME, REPOSITORY, UpdateError,
                                     UpdateService, fetch_latest_release, installed_tag)
-from portable.updater import (install_staged, unpack_verified, run_update, _sha256)
+from portable.updater import (install_staged, unpack_verified, run_update, _sha256, rename_with_retry)
 
 TAG = "portable-" + "1" * 40
 NAME = ASSET_NAME
@@ -127,6 +128,43 @@ class UpdateTests(unittest.TestCase):
         self.assertEqual((self.base / "models/eli.gguf").stat().st_size, 1004)
         self.assertEqual(json.loads((self.base / "build-info.json").read_text())["tag"], TAG)
         self.assertFalse((self.home / "backup").exists())
+
+    def test_transient_windows_lock_retries_and_preserves_installation(self):
+        archive = self.home / "release.zip"
+        zip_release(archive)
+        stage = self.home / "stage"
+        backup = self.home / "backup"
+        unpack_verified(archive, stage, TAG)
+        (self.base / "config.json").write_text("saved configuration")
+        original = Path.rename
+        blocked = []
+        def flaky(path, dest):
+            if path == self.base and not blocked:
+                blocked.append(True)
+                raise PermissionError(13, "Windows is holding the folder")
+            return original(path, dest)
+        with patch.object(Path, "rename", flaky), patch("portable.updater.time.sleep") as delay:
+            install_staged(self.base, stage, backup)
+        delay.assert_called_once_with(1)
+        self.assertEqual((self.base / "config.json").read_text(), "saved configuration")
+        self.assertFalse(backup.exists())
+        self.assertEqual(json.loads((self.base / "build-info.json").read_text())["tag"], TAG)
+
+    def test_persistent_directory_lock_does_not_move_original(self):
+        backup = self.home / "backup"
+        with patch.object(Path, "rename", side_effect=PermissionError(13, "locked")), patch("portable.updater.time.sleep") as delay:
+            with self.assertRaisesRegex(UpdateError, "Windows would not release"):
+                rename_with_retry(self.base, backup, attempts=3)
+        self.assertEqual(delay.call_count, 2)
+        self.assertEqual((self.base / "TheLastConnection.exe").read_bytes(), b"MZold")
+        self.assertFalse(backup.exists())
+
+    def test_rename_refuses_existing_destination(self):
+        backup = self.home / "backup"
+        backup.mkdir()
+        with self.assertRaisesRegex(UpdateError, "Refusing to overwrite"):
+            rename_with_retry(self.base, backup)
+        self.assertTrue(self.base.is_dir())
 
     def test_bad_checksum_does_not_modify_game(self):
         archive = self.home / "local_release.zip"

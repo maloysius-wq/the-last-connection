@@ -463,6 +463,7 @@ def main() -> int:
                 server_proc.wait(timeout=8)
             except subprocess.TimeoutExpired:
                 server_proc.kill()
+                server_proc.wait(timeout=8)
         model_log.close()
 
     # All game/AI processes and their file handles are now stopped. The separate

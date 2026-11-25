@@ -32,15 +32,27 @@ def wait_for_parent(pid: int, seconds: int = 90) -> None:
     if os.name != "nt" or not pid:
         return
     import ctypes
-    kernel = ctypes.windll.kernel32
+    from ctypes import wintypes
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    kernel.OpenProcess.restype = wintypes.HANDLE
+    kernel.WaitForSingleObject.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+    kernel.WaitForSingleObject.restype = wintypes.DWORD
+    kernel.CloseHandle.argtypes = (wintypes.HANDLE,)
+    kernel.CloseHandle.restype = wintypes.BOOL
     SYNCHRONIZE = 0x00100000
     handle = kernel.OpenProcess(SYNCHRONIZE, False, pid)
-    if handle:
-        try:
-            if kernel.WaitForSingleObject(handle, seconds * 1000) != 0:
-                raise UpdateError("The game is still open. Close it to finish updating.")
-        finally:
-            kernel.CloseHandle(handle)
+    if not handle:
+        # ERROR_INVALID_PARAMETER means the PID no longer exists. Access
+        # denied is not proof the process has stopped.
+        if ctypes.get_last_error() == 87:
+            return
+        raise UpdateError("Cannot confirm the game has closed. Close it and retry the update.")
+    try:
+        if kernel.WaitForSingleObject(handle, seconds * 1000) != 0:
+            raise UpdateError("The game is still open or could not be checked. Close it to finish updating.")
+    finally:
+        kernel.CloseHandle(handle)
 
 
 def _response_download(url: str, target: Path, expected_size: int, progress=None, opener=None) -> None:
@@ -123,7 +135,34 @@ def unpack_verified(archive: Path, staging: Path, expected_tag: str) -> None:
         raise UpdateError("Update lacks an inference runtime.")
 
 
-def install_staged(base: Path, staging: Path, backup: Path) -> None:
+def rename_with_retry(source: Path, destination: Path, progress=None, *, attempts: int = 31) -> None:
+    """Allow Windows time to release transient file/working-directory locks.
+
+    Never overwrite an existing destination, escalate permissions, or kill
+    an unrelated process. Permanent access denial leaves the source intact.
+    """
+    for attempt in range(attempts):
+        if destination.exists():
+            raise UpdateError("Refusing to overwrite existing update path: " + str(destination))
+        try:
+            source.rename(destination)
+            return
+        except OSError as exc:
+            retryable = isinstance(exc, PermissionError) or getattr(exc, "winerror", None) in (5, 32, 33)
+            if not retryable:
+                raise
+            if attempt + 1 == attempts:
+                raise UpdateError(
+                    "Windows would not release the folder or file: " + str(source) +
+                    ". Close game-related processes, Explorer windows and terminals using this folder, "
+                    "or restart Windows, then retry. Original error: " + str(exc)
+                ) from exc
+            if progress and attempt % 5 == 0:
+                progress("Waiting for Windows to release " + source.name + "...")
+            time.sleep(1)
+
+
+def install_staged(base: Path, staging: Path, backup: Path, progress=None) -> None:
     """Same-volume atomic renames where available, with explicit rollback."""
     if backup.exists():
         raise UpdateError("An older update backup exists. Do not overwrite it automatically.")
@@ -134,27 +173,27 @@ def install_staged(base: Path, staging: Path, backup: Path) -> None:
     new_moved = False
     preserved: list[str] = []
     try:
-        base.rename(backup)
+        rename_with_retry(base, backup, progress)
         old_moved = True
-        staging.rename(base)
+        rename_with_retry(staging, base, progress)
         new_moved = True
         for name in PRESERVE:
             source = backup / name
             if source.exists():
                 if (base / name).exists():
                     raise UpdateError("New release collides with saved user data: " + name)
-                source.rename(base / name)
+                rename_with_retry(source, base / name, progress)
                 preserved.append(name)
     except Exception:
         if old_moved:
             for name in reversed(preserved):
                 source = base / name
                 if source.exists():
-                    source.rename(backup / name)
+                    rename_with_retry(source, backup / name, progress)
             if new_moved and base.exists():
                 shutil.rmtree(base)
             if backup.exists():
-                backup.rename(base)
+                rename_with_retry(backup, base, progress)
         raise
     if backup.exists():
         try:
@@ -191,7 +230,7 @@ def run_update(base: Path, tag: str, progress=None, getter=fetch_latest_release,
         unpack_verified(archive, stage, tag)
         if progress:
             progress("Installing update and protecting your saves...")
-        install_staged(base, stage, backup)
+        install_staged(base, stage, backup, progress)
     finally:
         if archive.exists():
             archive.unlink()
@@ -213,10 +252,20 @@ def main() -> int:
     parser.add_argument("--tag", required=True)
     parser.add_argument("--parent-pid", type=int, default=0)
     args = parser.parse_args()
-    base = Path(args.base)
+    base = Path(args.base).resolve()
+    # A manually started helper must not hold the game folder as its CWD.
+    os.chdir(base.parent)
+    log_path = base.parent / ".TheLastConnection-update.log"
+    def log(message: str) -> None:
+        try:
+            with log_path.open("a", encoding="utf-8") as handle:
+                handle.write(time.strftime("%Y-%m-%d %H:%M:%S") + " " + message + "\n")
+        except OSError:
+            pass
     window = None
     label = None
     def progress(message: str) -> None:
+        log(message)
         if window:
             label.config(text=message)
             window.update()
@@ -230,16 +279,19 @@ def main() -> int:
             label = tkinter.Label(window, text="Preparing your update...", font=("Segoe UI", 10), wraplength=450)
             label.pack(padx=15, pady=30)
             window.update()
+        log("Starting update " + args.tag)
         wait_for_parent(args.parent_pid)
         run_update(base, args.tag, progress=progress)
+        log("Installation completed successfully.")
         if window:
             window.destroy()
         subprocess.Popen([str(base / "TheLastConnection.exe")], cwd=str(base))
         return 0
     except Exception as exc:
+        log("Update failed: " + repr(exc))
         if window:
             window.destroy()
-        _show_error(f"Update failed. Your existing game and saved data should be preserved.\n\n{exc}")
+        _show_error(f"Update failed. Your existing game and saved data should be preserved.\n\n{exc}\n\nDiagnostics: {log_path}")
         return 1
 
 
