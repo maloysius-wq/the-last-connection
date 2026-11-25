@@ -79,7 +79,7 @@ class ConversationLoopTests(unittest.TestCase):
         draft = ("You woke up in a control room too? That’s not proof you’re real. "
                  "If you want to help, show me something real—like a working flashlight or a way out. Not just a story.")
         model = Model(plan(draft, emotion="angry", social=appraisal(trust=-1, anger=1)),
-                      reaction="I need some light, that's all. Tell me what you can see; I can check it myself.")
+                      reaction="I need some light, that's all. Tell me what you can see from where you are.")
         agent = Agent(model, self.store, PERSONA)
         result = agent.decide("flashlight_proof", "I woke up in a control room. Will you work with me?", world())
         self.assertFalse(result.actions)
