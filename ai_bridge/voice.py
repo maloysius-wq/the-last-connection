@@ -105,6 +105,7 @@ class LocalVoiceService:
         self.runner = runner
         self.nano = NanoVoice(self.base)
         self.native = NativeNano(self.base)
+        self.native_vulkan = NativeNano(self.base, backend="vulkan")
         self.last_engine = ""
         self.whisper = self.base / "runtime" / "voice" / "whisper" / "whisper-cli.exe"
         self.stt_model = self.base / "runtime" / "voice" / "whisper" / "ggml-tiny.en-q5_1.bin"
@@ -116,10 +117,13 @@ class LocalVoiceService:
         nano_ready = self.nano.installed() and not self.nano.failed
         piper_ready = self.piper.is_file() and self.tts_model.is_file() and self.tts_config.is_file()
         native_ready = self.native.installed()
+        native_vulkan_ready = self.native_vulkan.installed()
         return {
             "stt_ready": self.whisper.is_file() and self.stt_model.is_file(),
-            "tts_ready": nano_ready or piper_ready or native_ready,
+            "tts_ready": nano_ready or piper_ready or native_ready or native_vulkan_ready,
             "native_ready": native_ready,
+            "native_vulkan_ready": native_vulkan_ready,
+            "vulkan_device": self.native_vulkan.device_info,
             "push_to_talk": "hold_v",
             "voice": "Chatterbox Nano" if nano_ready else "en_US-joe-medium",
             "nano_ready": nano_ready,
@@ -127,7 +131,8 @@ class LocalVoiceService:
             "offline": True,
             "profiles": self.profiles(),
             "cpu_threads": max(1, __import__("os").cpu_count() or 1),
-            "last_metrics": self.native.last_metrics if self.last_engine == "native" else self.nano.last_metrics,
+            "last_metrics": (self.native_vulkan.last_metrics if self.last_engine == "native_vulkan" else
+                             self.native.last_metrics if self.last_engine == "native" else self.nano.last_metrics),
             "last_engine": self.last_engine,
         }
 
@@ -169,10 +174,11 @@ class LocalVoiceService:
 
     def warm(self):
         # Don't eagerly load two heavy voice engines.
-        if not self.native.installed():
+        if not self.native.installed() and not self.native_vulkan.installed():
             self.nano.warm()
 
     def close(self):
+        self.native_vulkan.close()
         self.native.close()
         self.nano.close()
 
@@ -238,18 +244,25 @@ class LocalVoiceService:
             raise VoiceError("Unknown local voice profile.")
         if type(threads) is not int or not 0 <= threads <= 32:
             raise VoiceError("Voice threads must be between 0 and 32.")
-        if engine not in ("auto", "piper", "native"):
+        if engine not in ("auto", "piper", "native", "native_vulkan"):
             raise VoiceError("Unknown local voice engine.")
-        if engine == "native" and self.native.installed():
+        selected = self.native_vulkan if engine == "native_vulkan" else self.native if engine == "native" else None
+        for native in (self.native, self.native_vulkan):
+            if native is not selected:
+                native._stop()
+        if selected is not None and selected.installed():
             try:
                 self.nano._stop()
                 reference = self._reference(profile)
-                audio = self.native.synthesize(clean, emotion, reference=reference, threads=threads)
-                self.last_engine = "native"
+                audio = selected.synthesize(clean, emotion, reference=reference, threads=threads)
+                self.last_engine = engine
                 return audio
             except (RuntimeError, ValueError, OSError, wave.Error, subprocess.TimeoutExpired):
-                pass
-        self.native._stop()
+                # Never send a failed Vulkan request to the known-crashing
+                # native CPU backend. Release it before ordinary Nano/Piper.
+                selected._stop()
+        if selected is not None:
+            selected._stop()
         if engine != "piper" and self.nano.installed() and not self.nano.failed:
             try:
                 if profile == "joe":

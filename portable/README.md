@@ -181,3 +181,27 @@ If native fails, official Nano and then Piper remain available. Models and
 reference files stay in models/ and survive in-game updates.
 Sources: https://github.com/delebash/audio.cpp and
 https://huggingface.co/delebash/chatterbox-nano-GGUF .
+
+### Native Nano Vulkan GPU (experimental)
+Close the game, run SETUP_NATIVE_NANO_VULKAN.cmd, and approve setup.
+It reuses the SHA256-verified existing Q8 model (about 616 MB), downloads
+the separate pinned 88.4 MB Vulkan portable runtime, enumerates actual
+Vulkan devices and checks free VRAM, then generates two real WAVs using
+the selected discrete GPU. Only successful synthesis writes ready-vulkan.json.
+No changes to CPU setup marker, official Nano, or Piper. Older GTX Pascal
+cards are not covered by upstream's prebuilt CUDA packages; Vulkan may
+work but this community model does not have upstream Vulkan test coverage.
+Actual local synthesis, not enumeration alone, is required.
+Select Native Nano Q8 Vulkan GPU in Voice Studio. The game probes reported
+free VRAM before starting speech while the dialogue model is running;
+2 GiB free is an initial guard, not a peak-memory guarantee. With less
+reported free VRAM, failed inference, or no discrete Vulkan device, it
+falls back directly to official Nano then Piper, not native CPU.
+Voice Studio reports the actual engine. See logs/nano-native-vulkan.log
+for device memory at admission, timings and native errors. If the dialogue
+model uses too much VRAM, optionally set "acceleration": "cpu" in config.json
+with the game closed (preserve other fields), at the cost of dialogue speed.
+Use the normal settings if the GPU engine fails. No GPU drivers are installed
+or modified automatically. Setup diagnostics are in models/chatterbox-nano-native:
+devices-vulkan.json, devices-vulkan-error.log, setup-server-vulkan.log,
+setup-server-vulkan-error.log, sample-vulkan.wav, sample-vulkan-warm.wav.
