@@ -43,12 +43,32 @@ $deviceInfo = $null
 function Read-Devices {
     $probeOut = Join-Path $root "devices$suffix.json"
     $probeErr = Join-Path $root "devices$suffix-error.log"
-    $probe = Start-Process -FilePath $exe[0].FullName -WorkingDirectory $exe[0].DirectoryName -ArgumentList @('--list-devices','--json') -RedirectStandardOutput $probeOut -RedirectStandardError $probeErr -PassThru -WindowStyle Hidden
-    if (!$probe.WaitForExit(30000)) { Stop-Process -Id $probe.Id -Force; throw 'Native device probe timed out' }
-    if ($probe.ExitCode -ne 0) {
-        Get-Content $probeErr -Tail 80 -ErrorAction SilentlyContinue
-        throw "Native device probe failed (exit $($probe.ExitCode))"
-    }
+    # Retain an owned process handle; Start-Process can lose ExitCode on
+    # Windows PowerShell 5.1 when the enumeration executable exits quickly.
+    $info = New-Object System.Diagnostics.ProcessStartInfo
+    $info.FileName = $exe[0].FullName
+    $info.WorkingDirectory = $exe[0].DirectoryName
+    $info.Arguments = '--list-devices --json'
+    $info.UseShellExecute = $false
+    $info.CreateNoWindow = $true
+    $info.RedirectStandardOutput = $true
+    $info.RedirectStandardError = $true
+    $probe = New-Object System.Diagnostics.Process
+    $probe.StartInfo = $info
+    try {
+        if (!$probe.Start()) { throw 'Unable to launch native device probe' }
+        $outTask = $probe.StandardOutput.ReadToEndAsync()
+        $errTask = $probe.StandardError.ReadToEndAsync()
+        if (!$probe.WaitForExit(30000)) { $probe.Kill(); $probe.WaitForExit(); throw 'Native device probe timed out' }
+        $probe.WaitForExit()
+        [IO.File]::WriteAllText($probeOut, $outTask.GetAwaiter().GetResult())
+        [IO.File]::WriteAllText($probeErr, $errTask.GetAwaiter().GetResult())
+        $code = $probe.ExitCode
+        if ($code -ne 0) {
+            Get-Content $probeErr -Tail 80 -ErrorAction SilentlyContinue
+            throw ("Native device probe failed (exit {0}, 0x{0:X8})" -f $code)
+        }
+    } finally { $probe.Dispose() }
     $report = Get-Content $probeOut -Raw | ConvertFrom-Json
     if ($null -eq $report.devices) { throw 'Native device probe returned invalid JSON' }
     return $report
