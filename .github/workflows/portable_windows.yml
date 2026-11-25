@@ -215,7 +215,7 @@ jobs:
         run: |
           @{"tag" = "portable-$env:GITHUB_SHA"; "commit" = "$env:GITHUB_SHA"; "channel" = "$env:GITHUB_REF_NAME"} | ConvertTo-Json -Compress | Set-Content -Encoding utf8 'dist/TheLastConnection/build-info.json'
           Copy-Item 'portable/README.md' 'dist/TheLastConnection/READ_ME_FIRST.md'
-          Copy-Item 'portable/SETUP_CHATTERBOX_NANO.cmd','portable/setup_nano.ps1','portable/nano_voice_worker.py','portable/SETUP_NATIVE_NANO.cmd','portable/SETUP_NATIVE_NANO_VULKAN.cmd','portable/setup_native_nano.ps1' 'dist/TheLastConnection/'
+          Copy-Item 'portable/SETUP_CHATTERBOX_NANO.cmd','portable/SETUP_CHATTERBOX_NANO_CUDA.cmd','portable/setup_nano.ps1','portable/nano_voice_worker.py','portable/SETUP_NATIVE_NANO.cmd','portable/SETUP_NATIVE_NANO_VULKAN.cmd','portable/setup_native_nano.ps1' 'dist/TheLastConnection/'
           Set-Content -Encoding ascii -Path 'dist/TheLastConnection/portable-build.txt' -Value "No AI model bundled. First launch selects an existing GGUF or downloads Qwen3 Q4_K_M (~2.5GB) into models/ with approval. GPU Vulkan is tried first, CPU fallback included."
           New-Item -ItemType Directory -Force -Path 'dist/TheLastConnection/LICENSES' | Out-Null
           Invoke-WebRequest 'https://raw.githubusercontent.com/ggml-org/llama.cpp/master/LICENSE' -OutFile 'dist/TheLastConnection/LICENSES/llama.cpp-MIT.txt'

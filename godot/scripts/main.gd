@@ -814,7 +814,7 @@ func _setup_voice() -> void:
     add_child(voice_stt_http)
     voice_stt_http.request_completed.connect(_on_voice_transcription)
     voice_tts_http = HTTPRequest.new()
-    voice_tts_http.timeout = 105.0
+    voice_tts_http.timeout = 245.0
     add_child(voice_tts_http)
     voice_tts_http.request_completed.connect(_on_eli_wav)
     eli_voice_player = AudioStreamPlayer.new()
@@ -1039,7 +1039,8 @@ func _on_eli_wav(result: int, response_code: int, _headers: PackedStringArray,
             match engine_id:
                 "native_vulkan": actual_engine = "Native Nano Q8 (Vulkan)"
                 "native": actual_engine = "Native Nano Q8 (CPU)"
-                "nano": actual_engine = "Nano"
+                "nano_cuda": actual_engine = "Chatterbox Nano CUDA GPU"
+                "nano": actual_engine = "Nano CPU"
                 "piper": actual_engine = "Piper"
     var metrics := "%s | Playable segment: %.2fs | %.2fs audio" % [actual_engine, elapsed, stream.get_length()]
     print("[Voice] " + metrics)
@@ -1077,15 +1078,17 @@ func _build_voice_studio() -> void:
         voice_profile = str(voice_profiles.get_item_metadata(idx))
         _save())
     voice_engine_control = OptionButton.new()
-    voice_engine_control.add_item("Chatterbox Nano (automatic Piper fallback)")
+    voice_engine_control.add_item("Chatterbox Nano CPU (automatic Piper fallback)")
     voice_engine_control.add_item("Piper (fast fallback)")
     voice_engine_control.add_item("Native Nano Q8 CPU (experimental)")
     voice_engine_control.add_item("Native Nano Q8 Vulkan GPU (experimental)")
+    voice_engine_control.add_item("Chatterbox Nano CUDA GPU (experimental)")
+    voice_engine_control.set_item_disabled(4, true)
     voice_engine_control.set_item_disabled(2, true)
     voice_engine_control.set_item_disabled(3, true)
     panel.add_child(voice_engine_control)
     voice_engine_control.item_selected.connect(func(idx: int):
-        voice_engine = ["auto", "piper", "native", "native_vulkan"][idx]
+        voice_engine = ["auto", "piper", "native", "native_vulkan", "nano_cuda"][idx]
         _save())
     var thread_label := Label.new()
     thread_label.text = "CPU threads (0 = automatic)"
@@ -1154,10 +1157,12 @@ func _open_voice_studio() -> void:
     var vulkan_ready := bool(voice_status_data.get("native_vulkan_ready", false))
     voice_engine_control.set_item_disabled(2, not native_ready)
     voice_engine_control.set_item_disabled(3, not vulkan_ready)
-    if (voice_engine == "native" and not native_ready) or (voice_engine == "native_vulkan" and not vulkan_ready):
+    var cuda_ready := bool(voice_status_data.get("nano_cuda_ready", false))
+    voice_engine_control.set_item_disabled(4, not cuda_ready)
+    if (voice_engine == "native" and not native_ready) or (voice_engine == "native_vulkan" and not vulkan_ready) or (voice_engine == "nano_cuda" and not cuda_ready):
         voice_engine = "auto"
         _save()
-    var engine_index := ["auto", "piper", "native", "native_vulkan"].find(voice_engine)
+    var engine_index := ["auto", "piper", "native", "native_vulkan", "nano_cuda"].find(voice_engine)
     voice_engine_control.select(maxi(0, engine_index))
     voice_fast_control.set_pressed_no_signal(voice_fast)
     voice_studio.popup_centered()

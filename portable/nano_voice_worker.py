@@ -19,7 +19,46 @@ FILES = ["t3_nano_v1.safetensors", "s3gen_meanflow.safetensors",
          "tokenizer_config.json", "README.md"]
 
 
-def load(root):
+MIN_CUDA_FREE_BYTES = 3 * 1024**3
+
+
+def check_cuda(torch):
+    if not torch.cuda.is_available():
+        raise RuntimeError("CUDA unavailable: check NVIDIA driver and CUDA-enabled torch")
+    torch.cuda.set_device(0)
+    major, minor = torch.cuda.get_device_capability(0)
+    arches = torch.cuda.get_arch_list()
+    free, total = torch.cuda.mem_get_info(0)
+    info = {"device": torch.cuda.get_device_name(0), "capability": [major, minor],
+            "architectures": arches, "free_bytes": free, "total_bytes": total,
+            "torch": torch.__version__, "cuda": torch.version.cuda}
+    print("Nano CUDA admission:", json.dumps(info), file=sys.stderr, flush=True)
+    # CUDA cubins are compatible with equal/newer minor revisions of the same
+    # major architecture (e.g. sm_60 on sm_61). Actual kernels must also pass.
+    if not any(a.startswith("sm_") and a[3:].isdigit() and
+               int(a[3:]) // 10 == major and int(a[3:]) % 10 <= minor for a in arches):
+        raise RuntimeError("Installed PyTorch CUDA binary does not target this GPU")
+    if free < MIN_CUDA_FREE_BYTES:
+        raise RuntimeError("Less than 3 GiB free VRAM; close GPU apps or reduce dialogue GPU offload")
+    # Test actual FP32 kernel execution, not just driver enumeration.
+    x = torch.ones((32, 32), device="cuda", dtype=torch.float32)
+    if float((x @ x)[0, 0].item()) != 32.0:
+        raise RuntimeError("CUDA kernel self-test failed")
+    torch.cuda.synchronize()
+    del x
+    return info
+
+
+def cuda_metrics(torch):
+    free, total = torch.cuda.mem_get_info(0)
+    return {"free_bytes": free, "total_bytes": total,
+            "allocated_bytes": torch.cuda.memory_allocated(0),
+            "reserved_bytes": torch.cuda.memory_reserved(0),
+            "peak_allocated_bytes": torch.cuda.max_memory_allocated(0),
+            "peak_reserved_bytes": torch.cuda.max_memory_reserved(0)}
+
+
+def load(root, device="cpu"):
     # Normal play must never trigger an implicit HF/model download.
     os.environ["HF_HUB_OFFLINE"] = "1"
     os.environ["TRANSFORMERS_OFFLINE"] = "1"
@@ -27,7 +66,15 @@ def load(root):
     from chatterbox.tts_turbo import ChatterboxTurboTTS
     torch.set_num_threads(auto_threads())
     torch.set_num_interop_threads(1)
-    model = ChatterboxTurboTTS.from_local(root / "checkpoint", device="cpu", nano=True)
+    if device == "cuda":
+        check_cuda(torch)
+        torch.cuda.reset_peak_memory_stats(0)
+    # GTX 1060 lacks Tensor Cores; retain official FP32 inference rather than
+    # introducing mixed precision or unsupported attention kernels.
+    model = ChatterboxTurboTTS.from_local(root / "checkpoint", device=device, nano=True)
+    if device == "cuda":
+        torch.cuda.synchronize()
+        print("Nano CUDA loaded:", json.dumps(cuda_metrics(torch)), file=sys.stderr, flush=True)
     if model.conds is None:
         raise RuntimeError("Nano's built-in voice is missing")
     return model
@@ -108,12 +155,59 @@ def install(root):
     print("Nano ready. Listen to models/chatterbox-nano/sample.wav.")
 
 
-def serve(root):
+def install_cuda(root):
+    # Reuse the already-installed official checkpoint; no snapshot download.
+    marker = root / "ready-cuda.json"
+    marker.unlink(missing_ok=True)
+    if not all((root / "checkpoint" / name).is_file() for name in FILES if name != "README.md"):
+        raise RuntimeError("Install original CPU Nano first; CUDA reuses its checkpoint")
+    import torch
+    started = time.monotonic()
+    model = load(root, "cuda")
+    startup = time.monotonic() - started
+    timings = []
+    for name, prompt in (("sample-cuda.wav", "[fear] Is someone there?"),
+                         ("sample-cuda-warm.wav", "[angry] Who are you?")):
+        print("Testing CUDA speech:", prompt, flush=True)
+        start = time.monotonic()
+        audio = render(model, prompt)
+        torch.cuda.synchronize()
+        with wave.open(io.BytesIO(audio), "rb") as stream:
+            duration = stream.getnframes() / stream.getframerate()
+        if duration < .2:
+            raise RuntimeError("CUDA Nano produced no usable speech")
+        (root / name).write_bytes(audio)
+        timing = {"seconds": round(time.monotonic()-start,3), "audio_seconds": round(duration,3),
+                  **cuda_metrics(torch)}
+        print(json.dumps(timing), flush=True)
+        timings.append(timing)
+    summary = {"revision": REVISION, "device": "cuda", "torch": torch.__version__,
+               "cuda": torch.version.cuda, "gpu": torch.cuda.get_device_name(0),
+               "capability": list(torch.cuda.get_device_capability(0)),
+               "startup_seconds": round(startup,3), "samples": timings}
+    marker.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    print("CUDA Nano ready. Two real speech samples passed.", flush=True)
+
+
+def check_cuda_build():
+    import torch
+    import torchaudio
+    from chatterbox.tts_turbo import ChatterboxTurboTTS
+    if torch.version.cuda != "12.4" or not torch.__version__.startswith("2.6.0") or not torchaudio.__version__.startswith("2.6.0"):
+        raise RuntimeError("Incorrect CUDA dependency build")
+    print("CUDA 12.4 torch and torchaudio imports passed:", torch.__version__, torchaudio.__version__)
+    if not torch.cuda.is_available():
+        print("No GPU exposed; build check only, no speech activation.")
+    else:
+        check_cuda(torch)
+
+
+def serve(root, device="cpu"):
     # stdout is the protocol; all library logging goes to the local log.
     output = sys.stdout
     with contextlib.redirect_stdout(sys.stderr):
         load_started = time.monotonic()
-        model = load(root)
+        model = load(root, device)
         cache = {"builtin": model.conds}
         import torch
         print("Nano load seconds:", round(time.monotonic() - load_started, 2),
@@ -138,7 +232,11 @@ def serve(root):
                 with wave.open(io.BytesIO(wav), "rb") as stream:
                     duration = round(stream.getnframes() / stream.getframerate(), 3)
                 response = {"wav": base64.b64encode(wav).decode("ascii"),
-                            "seconds": seconds, "audio_seconds": duration, "threads": threads}
+                            "seconds": seconds, "audio_seconds": duration, "threads": threads,
+                            "device": device}
+                if device == "cuda":
+                    response["gpu_memory"] = cuda_metrics(torch)
+                    print("Nano CUDA memory:", json.dumps(response["gpu_memory"]), file=sys.stderr, flush=True)
                 print("Nano synthesis seconds:", seconds,
                       "total:", round(time.monotonic() - started, 2),
                       "audio seconds:", duration, "threads:", threads,
@@ -154,8 +252,14 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("--root", required=True, type=Path)
     p.add_argument("--setup", action="store_true")
+    p.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
+    p.add_argument("--check-cuda-build", action="store_true")
     a = p.parse_args()
-    if a.setup:
+    if a.check_cuda_build:
+        check_cuda_build()
+    elif a.setup and a.device == "cuda":
+        install_cuda(a.root)
+    elif a.setup:
         install(a.root)
     else:
-        serve(a.root)
+        serve(a.root, a.device)
