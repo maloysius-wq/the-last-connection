@@ -1,0 +1,60 @@
+name: Nano real Windows setup and synthesis
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'portable/setup_nano.ps1'
+      - 'portable/nano_voice_worker.py'
+      - 'ai_bridge/nano.py'
+      - '.github/workflows/nano_validation.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  nano:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install official CPU Nano runtime and synthesize a real WAV
+        shell: pwsh
+        run: |
+          & ./portable/setup_nano.ps1
+          $root = 'portable/models/chatterbox-nano'
+          if (!(Test-Path "$root/ready.json")) { throw 'Nano setup did not complete' }
+          Get-Content "$root/ready.json"
+          $audio = [System.IO.File]::ReadAllBytes((Resolve-Path "$root/sample.wav"))
+          if ($audio.Length -lt 4096 -or [Text.Encoding]::ASCII.GetString($audio, 0, 4) -ne 'RIFF') {
+            throw 'Nano did not synthesize playable audio'
+          }
+      - name: Verify real worker can synthesize with the model loaded once
+        shell: pwsh
+        run: |
+          $root = (Resolve-Path 'portable/models/chatterbox-nano').Path
+          $env:HF_HUB_OFFLINE = '1'
+          $env:TRANSFORMERS_OFFLINE = '1'
+          $env:HF_HOME = Join-Path $root 'hf-cache'
+          $messages = @('{"text":"[angry] Who are you?"}', '{"text":"[sigh] I can see now."}')
+          $replies = $messages | & "$root/venv/Scripts/python.exe" portable/nano_voice_worker.py --root $root
+          if ($LASTEXITCODE -ne 0) { throw "Nano worker failed" }
+          $valid = @($replies | Where-Object { $_ -like 'TLC_NANO *' })
+          if ($valid.Count -ne 2) { throw 'Expected two worker replies' }
+          $i = 0
+          foreach ($reply in $valid) {
+            $wav = $reply.Substring(9) | ConvertFrom-Json
+            if (!$wav.wav) { throw 'Worker synthesis failed' }
+            $bytes = [Convert]::FromBase64String($wav.wav)
+            if ($bytes.Length -lt 4096 -or [Text.Encoding]::ASCII.GetString($bytes, 0, 4) -ne 'RIFF') { throw 'Invalid worker audio' }
+            $i += 1
+            [IO.File]::WriteAllBytes((Join-Path $root "worker-$i.wav"), $bytes)
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Nano-emotional-voice-smoke-samples
+          path: |
+            portable/models/chatterbox-nano/sample.wav
+            portable/models/chatterbox-nano/worker-*.wav
+            portable/models/chatterbox-nano/ready.json
+          if-no-files-found: error
+          retention-days: 14
