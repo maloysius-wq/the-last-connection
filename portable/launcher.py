@@ -47,7 +47,9 @@ def find_gguf_candidates(base: Path, extra_roots: tuple[Path, ...] = ()) -> list
     for root in roots:
         if root.is_dir():
             try:
-                matches.extend(p.resolve() for p in root.rglob("*.gguf") if p.is_file())
+                matches.extend(p.resolve() for p in root.rglob("*.gguf")
+                               if p.is_file() and not any(
+                                   part.lower().startswith("chatterbox-nano") for part in p.relative_to(root).parts))
             except (OSError, PermissionError):
                 continue
     return sorted(set(matches))

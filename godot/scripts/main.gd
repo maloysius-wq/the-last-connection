@@ -1032,7 +1032,12 @@ func _on_eli_wav(result: int, response_code: int, _headers: PackedStringArray,
         _play_next_eli_chunk()
         return
     var elapsed := float(Time.get_ticks_msec() - voice_request_started) / 1000.0
-    var metrics := "First playable segment: %.2fs | %.2fs audio" % [elapsed, stream.get_length()]
+    var actual_engine := "local voice"
+    for header in _headers:
+        if header.to_lower().begins_with("x-tlc-voice-engine:"):
+            var engine_id := header.get_slice(":", 1).strip_edges()
+            actual_engine = "Native Nano Q8" if engine_id == "native" else ("Nano" if engine_id == "nano" else "Piper")
+    var metrics := "%s | Playable segment: %.2fs | %.2fs audio" % [actual_engine, elapsed, stream.get_length()]
     print("[Voice] " + metrics)
     voice_benchmark_label.text = metrics
     if voice_benchmark:
@@ -1070,9 +1075,11 @@ func _build_voice_studio() -> void:
     voice_engine_control = OptionButton.new()
     voice_engine_control.add_item("Chatterbox Nano (automatic Piper fallback)")
     voice_engine_control.add_item("Piper (fast fallback)")
+    voice_engine_control.add_item("Native Nano Q8 (experimental)")
+    voice_engine_control.set_item_disabled(2, true)
     panel.add_child(voice_engine_control)
     voice_engine_control.item_selected.connect(func(idx: int):
-        voice_engine = "piper" if idx == 1 else "auto"
+        voice_engine = "piper" if idx == 1 else ("native" if idx == 2 else "auto")
         _save())
     var thread_label := Label.new()
     thread_label.text = "CPU threads (0 = automatic)"
@@ -1131,13 +1138,18 @@ func _refresh_voice_profiles() -> void:
         voice_profiles.set_item_metadata(idx, str(item.get("id", "default")))
         if str(item.get("id", "")) == voice_profile:
             voice_profiles.select(idx)
-    if voice_profiles.selected < 0 and voice_profiles.item_count > 0:
+    if voice_profiles.item_count > 0 and voice_profiles.selected < 0:
         voice_profiles.select(0)
 
 func _open_voice_studio() -> void:
     _refresh_voice_profiles()
     voice_thread_control.set_value_no_signal(voice_threads)
-    voice_engine_control.select(1 if voice_engine == "piper" else 0)
+    var native_ready := bool(voice_status_data.get("native_ready", false))
+    voice_engine_control.set_item_disabled(2, not native_ready)
+    if voice_engine == "native" and not native_ready:
+        voice_engine = "auto"
+        _save()
+    voice_engine_control.select(1 if voice_engine == "piper" else (2 if voice_engine == "native" else 0))
     voice_fast_control.set_pressed_no_signal(voice_fast)
     voice_studio.popup_centered()
 

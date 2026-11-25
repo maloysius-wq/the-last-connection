@@ -19,6 +19,7 @@ import time
 import wave
 
 from .nano import NanoVoice
+from .native_nano import NativeNano
 
 
 class VoiceError(ValueError):
@@ -103,6 +104,8 @@ class LocalVoiceService:
         self.base = Path(base)
         self.runner = runner
         self.nano = NanoVoice(self.base)
+        self.native = NativeNano(self.base)
+        self.last_engine = ""
         self.whisper = self.base / "runtime" / "voice" / "whisper" / "whisper-cli.exe"
         self.stt_model = self.base / "runtime" / "voice" / "whisper" / "ggml-tiny.en-q5_1.bin"
         self.piper = self.base / "runtime" / "voice" / "piper" / "piper.exe"
@@ -112,9 +115,11 @@ class LocalVoiceService:
     def status(self) -> dict[str, object]:
         nano_ready = self.nano.installed() and not self.nano.failed
         piper_ready = self.piper.is_file() and self.tts_model.is_file() and self.tts_config.is_file()
+        native_ready = self.native.installed()
         return {
             "stt_ready": self.whisper.is_file() and self.stt_model.is_file(),
-            "tts_ready": nano_ready or piper_ready,
+            "tts_ready": nano_ready or piper_ready or native_ready,
+            "native_ready": native_ready,
             "push_to_talk": "hold_v",
             "voice": "Chatterbox Nano" if nano_ready else "en_US-joe-medium",
             "nano_ready": nano_ready,
@@ -122,7 +127,8 @@ class LocalVoiceService:
             "offline": True,
             "profiles": self.profiles(),
             "cpu_threads": max(1, __import__("os").cpu_count() or 1),
-            "last_metrics": self.nano.last_metrics,
+            "last_metrics": self.native.last_metrics if self.last_engine == "native" else self.nano.last_metrics,
+            "last_engine": self.last_engine,
         }
 
     def profiles(self):
@@ -162,10 +168,23 @@ class LocalVoiceService:
 
 
     def warm(self):
-        self.nano.warm()
+        # Don't eagerly load two heavy voice engines.
+        if not self.native.installed():
+            self.nano.warm()
 
     def close(self):
+        self.native.close()
         self.nano.close()
+
+    def _reference(self, profile):
+        if profile == "joe":
+            self._prepare_joe()
+            return self.nano.root / "joe-reference.wav"
+        if profile == "custom" or (profile == "default" and (self.nano.root / "eli-reference.wav").is_file()):
+            return self.nano.root / "eli-reference.wav"
+        if profile.startswith("ref:"):
+            return self.nano.root / "voices" / (profile[4:] + ".wav")
+        return None
 
     def _temp_root(self) -> Path:
         temp = self.base / "temp"
@@ -219,17 +238,30 @@ class LocalVoiceService:
             raise VoiceError("Unknown local voice profile.")
         if type(threads) is not int or not 0 <= threads <= 32:
             raise VoiceError("Voice threads must be between 0 and 32.")
-        if engine not in ("auto", "piper"):
+        if engine not in ("auto", "piper", "native"):
             raise VoiceError("Unknown local voice engine.")
+        if engine == "native" and self.native.installed():
+            try:
+                self.nano._stop()
+                reference = self._reference(profile)
+                audio = self.native.synthesize(clean, emotion, reference=reference, threads=threads)
+                self.last_engine = "native"
+                return audio
+            except (RuntimeError, ValueError, OSError, wave.Error, subprocess.TimeoutExpired):
+                pass
+        self.native._stop()
         if engine != "piper" and self.nano.installed() and not self.nano.failed:
             try:
                 if profile == "joe":
                     self._prepare_joe()
                 # Preserve existing API/tests for default calls.
                 if profile == "default" and threads == 0:
-                    return self.nano.synthesize(clean, emotion)
-                return self.nano.synthesize(clean, emotion, profile=profile, threads=threads)
-            except (RuntimeError, ValueError):
+                    audio = self.nano.synthesize(clean, emotion)
+                else:
+                    audio = self.nano.synthesize(clean, emotion, profile=profile, threads=threads)
+                self.last_engine = "nano"
+                return audio
+            except (RuntimeError, ValueError, OSError, wave.Error, subprocess.TimeoutExpired):
                 # Nano failures must not stop dialogue, subtitles or Piper.
                 pass
         if not self.status()["piper_ready"]:
@@ -251,4 +283,5 @@ class LocalVoiceService:
             audio = output.read_bytes()
             if not audio.startswith(b"RIFF") or audio[8:12] != b"WAVE":
                 raise VoiceError("Eli's voice engine returned an invalid WAV.")
+            self.last_engine = "piper"
             return audio

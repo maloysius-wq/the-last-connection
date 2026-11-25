@@ -28,9 +28,11 @@ def create_handler(agent: Agent, mode: str, updater=None,
             self.end_headers()
             self.wfile.write(body)
 
-        def _send_wav(self, pcm_wav: bytes):
+        def _send_wav(self, pcm_wav: bytes, engine=""):
             self.send_response(200)
             self.send_header("Content-Type", "audio/wav")
+            if engine in ("native", "nano", "piper"):
+                self.send_header("X-TLC-Voice-Engine", engine)
             self.send_header("Content-Length", str(len(pcm_wav)))
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
@@ -116,7 +118,7 @@ def create_handler(agent: Agent, mode: str, updater=None,
                     data = self._read_voice_json(2_000)
                     options = {key: data[key] for key in ("profile", "threads", "engine") if key in data}
                     audio = voice.synthesize(data.get("text", ""), data.get("emotion", "calm"), **options)
-                    return self._send_wav(audio)
+                    return self._send_wav(audio, getattr(voice, "last_engine", ""))
                 except VoiceUnavailable as exc:
                     return self._send(503, {"error": str(exc)})
                 except (VoiceError, InvalidRequest, ValueError, TypeError, json.JSONDecodeError) as exc:

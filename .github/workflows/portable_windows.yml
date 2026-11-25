@@ -215,7 +215,7 @@ jobs:
         run: |
           @{"tag" = "portable-$env:GITHUB_SHA"; "commit" = "$env:GITHUB_SHA"; "channel" = "$env:GITHUB_REF_NAME"} | ConvertTo-Json -Compress | Set-Content -Encoding utf8 'dist/TheLastConnection/build-info.json'
           Copy-Item 'portable/README.md' 'dist/TheLastConnection/READ_ME_FIRST.md'
-          Copy-Item 'portable/SETUP_CHATTERBOX_NANO.cmd','portable/setup_nano.ps1','portable/nano_voice_worker.py' 'dist/TheLastConnection/'
+          Copy-Item 'portable/SETUP_CHATTERBOX_NANO.cmd','portable/setup_nano.ps1','portable/nano_voice_worker.py','portable/SETUP_NATIVE_NANO.cmd','portable/setup_native_nano.ps1' 'dist/TheLastConnection/'
           Set-Content -Encoding ascii -Path 'dist/TheLastConnection/portable-build.txt' -Value "No AI model bundled. First launch selects an existing GGUF or downloads Qwen3 Q4_K_M (~2.5GB) into models/ with approval. GPU Vulkan is tried first, CPU fallback included."
           New-Item -ItemType Directory -Force -Path 'dist/TheLastConnection/LICENSES' | Out-Null
           Invoke-WebRequest 'https://raw.githubusercontent.com/ggml-org/llama.cpp/master/LICENSE' -OutFile 'dist/TheLastConnection/LICENSES/llama.cpp-MIT.txt'
@@ -255,7 +255,40 @@ jobs:
           $hash = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
           "$hash  TheLastConnection-Windows-Portable.zip" | Set-Content -Encoding utf8 'SHA256SUMS.txt'
           $tag = "portable-$env:GITHUB_SHA"
-          gh release create $tag $archive 'SHA256SUMS.txt' --target $env:GITHUB_SHA --latest `
-            --title "The Last Connection | $($env:GITHUB_SHA.Substring(0, 8))" `
-            --notes "Windows portable build with in-game updater, Vulkan GPU support, CPU fallback, and local model setup. No GGUF weights bundled."
-          if ($LASTEXITCODE -ne 0) { throw "Failed to publish permanent GitHub release assets" }
+          # Retry transient GitHub API failures. Stage as draft so the updater
+          # never sees an incomplete release, and don't overwrite published assets.
+          $notes = "Windows portable build with in-game updater, local dialogue and optional native Nano voice. No GGUF weights bundled."
+          function Read-Release {
+            $raw = gh release view $tag --json tagName,isDraft,targetCommitish,assets 2>$null
+            if ($LASTEXITCODE -eq 0) { return ($raw | ConvertFrom-Json) }
+            return $null
+          }
+          $release = Read-Release
+          for ($attempt=0; !$release -and $attempt -lt 4; $attempt++) {
+            gh release create $tag --draft --target $env:GITHUB_SHA --title "The Last Connection | $($env:GITHUB_SHA.Substring(0, 8))" --notes $notes
+            $release = Read-Release
+            if (!$release) { Start-Sleep -Seconds (5 * ($attempt + 1)) }
+          }
+          if (!$release -or $release.targetCommitish -ne $env:GITHUB_SHA) { throw 'Could not stage exact commit release' }
+          if ($release.isDraft) {
+            $uploaded = $false
+            for ($attempt=0; !$uploaded -and $attempt -lt 4; $attempt++) {
+              gh release upload $tag $archive 'SHA256SUMS.txt' --clobber
+              $uploaded = ($LASTEXITCODE -eq 0)
+              if (!$uploaded) { Start-Sleep -Seconds (5 * ($attempt + 1)) }
+            }
+            if (!$uploaded) { throw 'Release asset upload failed' }
+            $release = Read-Release
+            $zipAsset = @($release.assets | Where-Object { $_.name -eq 'TheLastConnection-Windows-Portable.zip' })
+            $sumAsset = @($release.assets | Where-Object { $_.name -eq 'SHA256SUMS.txt' })
+            if ($zipAsset.Count -ne 1 -or $zipAsset[0].size -ne (Get-Item $archive).Length -or $sumAsset.Count -ne 1 -or $sumAsset[0].size -ne (Get-Item 'SHA256SUMS.txt').Length) { throw 'Incomplete draft assets' }
+            for ($attempt=0; $release.isDraft -and $attempt -lt 4; $attempt++) {
+              gh release edit $tag --draft=false --latest
+              $release = Read-Release
+              if (!$release) { throw 'Cannot verify release state' }
+              if ($release.isDraft) { Start-Sleep -Seconds (5 * ($attempt + 1)) }
+            }
+          }
+          $release = Read-Release
+          if (!$release -or $release.isDraft -or $release.targetCommitish -ne $env:GITHUB_SHA -or @($release.assets | Where-Object { $_.name -eq 'TheLastConnection-Windows-Portable.zip' -and $_.size -gt 1000000 }).Count -ne 1 -or @($release.assets | Where-Object { $_.name -eq 'SHA256SUMS.txt' -and $_.size -gt 0 }).Count -ne 1) { throw 'Release publication verification failed' }
+          Write-Host "Verified published release: $tag"
