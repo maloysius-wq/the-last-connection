@@ -202,7 +202,7 @@ def check_cuda_build():
         check_cuda(torch)
 
 
-def serve(root, device="cpu"):
+def serve(root, device="cpu", ready_protocol=False):
     # stdout is the protocol; all library logging goes to the local log.
     output = sys.stdout
     with contextlib.redirect_stdout(sys.stderr):
@@ -212,6 +212,9 @@ def serve(root, device="cpu"):
         import torch
         print("Nano load seconds:", round(time.monotonic() - load_started, 2),
               file=sys.stderr, flush=True)
+        if ready_protocol:
+            output.write("TLC_NANO " + json.dumps({"ready": True, "device": device}) + "\n")
+            output.flush()
         for line in sys.stdin:
             started = time.monotonic()
             try:
@@ -254,6 +257,7 @@ if __name__ == "__main__":
     p.add_argument("--setup", action="store_true")
     p.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
     p.add_argument("--check-cuda-build", action="store_true")
+    p.add_argument("--ready-protocol", action="store_true")
     a = p.parse_args()
     if a.check_cuda_build:
         check_cuda_build()
@@ -262,4 +266,4 @@ if __name__ == "__main__":
     elif a.setup:
         install(a.root)
     else:
-        serve(a.root, a.device)
+        serve(a.root, a.device, a.ready_protocol)

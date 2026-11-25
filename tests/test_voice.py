@@ -205,8 +205,19 @@ class TestVoiceBridge(unittest.TestCase):
         self.assertEqual(code, 200)
         self.assertTrue(content_type.startswith("application/json"))
         self.assertEqual(json.loads(body)["engine"], "nano_cuda")
-        self.assertEqual(self.voice.last_options, options)
+        self.assertEqual(self.voice.last_options, {**options, "warmup_only": True})
         self.assertFalse(list(Path(self.temp.name).glob("*.json")))
+
+    def test_failed_warmup_reports_deferred_not_fallback(self):
+        from unittest.mock import Mock
+        self.voice.synthesize = Mock(side_effect=VoiceUnavailable("worker startup timed out"))
+        code, body, _ = self.post("/api/voice/warmup", {"engine": "nano_cuda"})
+        self.assertEqual(code, 200)
+        result = json.loads(body)
+        self.assertEqual(result["status"], "deferred")
+        self.assertEqual(result["reason"], "worker startup timed out")
+        self.assertNotIn("engine", result)
+        self.voice.synthesize.assert_called_once()
 
     def test_invalid_base64_rejected(self):
         with self.assertRaises(error.HTTPError) as error_context:

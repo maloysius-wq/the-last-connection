@@ -119,12 +119,15 @@ def create_handler(agent: Agent, mode: str, updater=None,
                     data = self._read_voice_json(2_000)
                     options = {key: data[key] for key in ("profile", "threads", "engine") if key in data}
                     if self.path == "/api/voice/warmup":
-                        # Use the real synthesis path, including saved voice
-                        # conditioning and GPU admission/fallback. Discard
-                        # audio here; it never reaches a speaker or session.
+                        # Preflight only the selected persistent engine. Never
+                        # synthesize a discarded fallback or poison gameplay.
                         started = time.monotonic()
-                        voice.synthesize("I'm listening.", "calm", **options)
-                        return self._send(200, {
+                        try:
+                            voice.synthesize("I'm listening.", "calm", warmup_only=True, **options)
+                        except VoiceUnavailable as exc:
+                            return self._send(200, {"status": "deferred", "reason": str(exc),
+                                "seconds": round(time.monotonic() - started, 3)})
+                        return self._send(200, {"status": "ready",
                             "engine": getattr(voice, "last_engine", ""),
                             "seconds": round(time.monotonic() - started, 3)})
                     audio = voice.synthesize(data.get("text", ""), data.get("emotion", "calm"), **options)

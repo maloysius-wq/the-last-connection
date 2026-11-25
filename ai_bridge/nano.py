@@ -35,7 +35,7 @@ def directed_text(text: str, emotion: str) -> str:
 
 
 class NanoVoice:
-    def __init__(self, base: Path, *, device="cpu", popen=subprocess.Popen, timeout=75):
+    def __init__(self, base: Path, *, device="cpu", popen=subprocess.Popen, timeout=75, startup_timeout=120):
         if device not in ("cpu", "cuda"):
             raise ValueError("Unknown Nano device")
         self.device = device
@@ -47,6 +47,9 @@ class NanoVoice:
         self.log_name = "nano-voice-cuda.log" if device == "cuda" else "nano-voice.log"
         self._popen = popen
         self.timeout = timeout
+        self.startup_timeout = startup_timeout
+        self._ready = False
+        self.last_failure = ""
         self._proc = None
         self._responses = queue.Queue()
         self._lock = threading.Lock()
@@ -86,7 +89,7 @@ class NanoVoice:
         self._responses = queue.Queue()
         args = [str(self.python), "-u", str(self.script), "--root", str(self.root)]
         if self.device == "cuda":
-            args += ["--device", "cuda"]
+            args += ["--device", "cuda", "--ready-protocol"]
         with (self.base / "logs" / self.log_name).open("a", encoding="utf-8") as log:
             proc = self._popen(
                 args,
@@ -94,6 +97,7 @@ class NanoVoice:
                 stdout=subprocess.PIPE, stderr=log, text=True, encoding="utf-8",
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         self._proc = proc
+        self._ready = False
         threading.Thread(target=self._read, args=(proc, self._responses),
                          daemon=True).start()
 
@@ -109,6 +113,7 @@ class NanoVoice:
     def _stop(self):
         proc = self._proc
         self._proc = None
+        self._ready = False
         if proc is not None:
             if proc.poll() is None:
                 proc.terminate()
@@ -126,14 +131,25 @@ class NanoVoice:
         self._closing = True
         self._stop()
 
-    def synthesize(self, text: str, emotion: str = "calm", *, profile="default", threads=0) -> bytes:
+    def synthesize(self, text: str, emotion: str = "calm", *, profile="default", threads=0, optional_warmup=False) -> bytes:
         prompt = directed_text(text, emotion)
         queued = time.monotonic()
         with self._lock:
+            stage = "worker startup"
             try:
                 started = time.monotonic()
                 self._start()
                 proc = self._proc
+                if self.device == "cuda" and not self._ready:
+                    # Worker confirms successful CUDA admission and completed
+                    # model loading before the independent synthesis deadline.
+                    ready = self._responses.get(timeout=self.startup_timeout)
+                    if ready is None:
+                        raise RuntimeError("CUDA worker exited during startup; see voice log")
+                    if json.loads(ready) != {"ready": True, "device": "cuda"}:
+                        raise RuntimeError("CUDA worker did not confirm model readiness")
+                    self._ready = True
+                stage = "speech synthesis"
                 proc.stdin.write(json.dumps({"text": prompt, "profile": profile,
                                              "threads": threads}, ensure_ascii=False) + "\n")
                 proc.stdin.flush()
@@ -161,9 +177,20 @@ class NanoVoice:
                                      "threads": result.get("threads"),
                                      "profile": profile, "device": self.device,
                                      "gpu_memory": result.get("gpu_memory")}
+                self.last_failure = ""
                 return audio
             except (OSError, RuntimeError, ValueError, TypeError, queue.Empty,
                     EOFError, wave.Error, AttributeError) as exc:
-                self.failed = True
+                self.last_failure = (f"{stage} timed out" if isinstance(exc, queue.Empty)
+                                     else f"{stage} failed ({type(exc).__name__})")
+                try:
+                    (self.base / "logs").mkdir(exist_ok=True)
+                    with (self.base / "logs" / self.log_name).open("a", encoding="utf-8") as log:
+                        log.write(f"Nano bridge: {self.last_failure}: {exc!r}\n")
+                except OSError:
+                    pass
+                # An optional preflight is not a gameplay failure. Leave the
+                # next real request eligible for a fresh worker, not CPU lock-in.
+                self.failed = not optional_warmup
                 self._stop()
-                raise RuntimeError("Nano failed locally; Piper fallback selected") from exc
+                raise RuntimeError(self.last_failure) from exc

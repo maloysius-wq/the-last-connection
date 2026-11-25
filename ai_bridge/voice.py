@@ -236,7 +236,7 @@ class LocalVoiceService:
             raise VoiceError("No clear words were recognized. Please try again or type.")
         return transcript
 
-    def synthesize(self, spoken: str, emotion: str = "calm", *, profile="default", threads=0, engine="auto") -> bytes:
+    def synthesize(self, spoken: str, emotion: str = "calm", *, profile="default", threads=0, engine="auto", warmup_only=False) -> bytes:
         if not self.status()["tts_ready"]:
             raise VoiceUnavailable("Eli's offline voice isn't installed; subtitles remain available.")
         if not isinstance(spoken, str) or not 1 <= len(spoken.strip()) <= MAX_TTS_CHARS:
@@ -251,6 +251,23 @@ class LocalVoiceService:
             raise VoiceError("Voice threads must be between 0 and 32.")
         if engine not in ("auto", "piper", "native", "native_vulkan", "nano_cuda"):
             raise VoiceError("Unknown local voice engine.")
+        if warmup_only and engine not in ("auto", "nano_cuda"):
+            raise VoiceError("Only official Nano supports persistent startup warmup.")
+        if warmup_only:
+            # Startup preflight must not warm another engine, disable the
+            # selected one for gameplay, or change the saved preference.
+            target = self.nano_cuda if engine == "nano_cuda" else self.nano
+            if not target.installed() or target.failed:
+                raise VoiceUnavailable("Selected Nano engine is not ready; normal speech remains available.")
+            try:
+                if profile == "joe":
+                    self._prepare_joe()
+                audio = target.synthesize(clean, emotion, profile=profile, threads=threads,
+                                          optional_warmup=True)
+                self.last_engine = "nano_cuda" if engine == "nano_cuda" else "nano"
+                return audio
+            except (RuntimeError, ValueError, OSError, wave.Error, subprocess.TimeoutExpired) as exc:
+                raise VoiceUnavailable(target.last_failure or "Selected voice warmup failed; see local voice log.") from exc
         selected = self.native_vulkan if engine == "native_vulkan" else self.native if engine == "native" else None
         for native in (self.native, self.native_vulkan):
             if native is not selected:
