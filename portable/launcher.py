@@ -252,6 +252,7 @@ def main() -> int:
     server_proc = None
     bridge = None
     bridge_thread = None
+    voice_service = None
     splash = None
     game_exit_code = 0
     pending_update = base / "updates" / "request.json"
@@ -279,9 +280,11 @@ def main() -> int:
             splash = None
         agent = Agent(LlamaCppBackend(), SessionStore(saves / "sessions"),
                       resource_directory() / "data" / "characters" / "eli.json")
+        voice_service = LocalVoiceService(base)
+        voice_service.warm()
         bridge = ThreadingHTTPServer(("127.0.0.1", 8765),
                                      create_handler(agent, "llama.cpp", updater=UpdateService(base),
-                                                    voice=LocalVoiceService(base)))
+                                                    voice=voice_service))
         bridge_thread = threading.Thread(target=bridge.serve_forever, daemon=True)
         bridge_thread.start()
         with (logs / "game.log").open("a", encoding="utf-8") as game_log:
@@ -291,6 +294,8 @@ def main() -> int:
     finally:
         if splash:
             splash.destroy()
+        if voice_service:
+            voice_service.close()
         if bridge:
             bridge.shutdown()
             bridge.server_close()

@@ -93,7 +93,7 @@ var stt_ready := false
 var tts_ready := false
 var microphone_recording := false
 var transcribing := false
-var voice_speaking_queue: Array[String] = []
+var voice_speaking_queue: Array[Dictionary] = []
 var tts_pending := false
 var voice_muted := false
 var text_only := false
@@ -278,13 +278,13 @@ func _build_ui() -> void:
     new_game.pressed.connect(_new_game)
     right.add_child(new_game)
 
-func _message(speaker: String, text: String) -> void:
+func _message(speaker: String, text: String, emotion: String = "calm") -> void:
     var line := "[" + speaker + "] " + text + "\n\n"
     log_view.append_text(line)
     if not session_id.is_empty():
         _append_transcript(line)
     if speaker == "ELI":
-        _queue_eli_speech(text)
+        _queue_eli_speech(text, emotion)
 
 func _send_pressed() -> void:
     _submit(input.text)
@@ -350,7 +350,7 @@ func _on_http_completed(result: int, response_code: int, _headers: PackedStringA
         if not last_step_succeeded:
             var failed_reply := str(response.get("speech", ""))
             if not failed_reply.strip_edges().is_empty():
-                _message("ELI", failed_reply)
+                _message("ELI", failed_reply, str(response.get("emotion", "calm")))
             if queued_actions.size() > 1:
                 _message("SYSTEM", "Sequence stopped at step " + str(queue_index + 1) +
                     " of " + str(queued_actions.size()) +
@@ -363,7 +363,7 @@ func _on_http_completed(result: int, response_code: int, _headers: PackedStringA
             return
         var final_reply := str(response.get("speech", ""))
         if not final_reply.strip_edges().is_empty():
-            _message("ELI", final_reply)
+            _message("ELI", final_reply, str(response.get("emotion", "calm")))
         if queued_actions.size() > 1:
             _message("SYSTEM", "Sequence complete: " + str(queued_actions.size()) +
                 " of " + str(queued_actions.size()) + " steps confirmed.")
@@ -381,7 +381,7 @@ func _on_http_completed(result: int, response_code: int, _headers: PackedStringA
     # ground a reply. The authoritative OBSERVATION still remains visible.
     var eli_reply := str(response.get("speech", ""))
     if not eli_reply.strip_edges().is_empty():
-        _message("ELI", eli_reply)
+        _message("ELI", eli_reply, str(response.get("emotion", "calm")))
     if request_stage == "decide":
         var plan_value: Variant = response.get("actions", [])
         if typeof(plan_value) == TYPE_ARRAY and not plan_value.is_empty():
@@ -809,17 +809,19 @@ func _setup_voice() -> void:
         _message("SYSTEM", "Voice engine unavailable. Typing still works.")
 
 func _on_voice_status(result: int, code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:
+    var voice_name := "local voice"
     if result == HTTPRequest.RESULT_SUCCESS and code == 200:
         var data = JSON.parse_string(body.get_string_from_utf8())
         if typeof(data) == TYPE_DICTIONARY:
             stt_ready = bool(data.get("stt_ready", false))
             tts_ready = bool(data.get("tts_ready", false))
+            voice_name = str(data.get("voice", "local voice"))
     microphone_button.disabled = not stt_ready or text_only
     if not text_only:
         audio_link_status.text = ("AUDIO LINK: PUSH TO TALK (V)" if stt_ready
                                  else "AUDIO LINK: TEXT ONLY / MIC UNAVAILABLE") + "       ◦       VIDEO FEED: ACTIVE"
     if stt_ready and tts_ready:
-        _message("SYSTEM", "Microphone and Eli's local voice ready. Hold V, release to transmit.")
+        _message("SYSTEM", "Microphone and Eli's voice ready (" + voice_name + "). Hold V, release to transmit.")
     elif not stt_ready or not tts_ready:
         _message("SYSTEM", "Some offline voice components are unavailable. Text conversation still works.")
 
@@ -919,7 +921,7 @@ func _voice_ready() -> void:
         "AUDIO LINK: MIC UNAVAILABLE") + "       ◦       VIDEO FEED: ACTIVE"
     call_deferred("_restore_input_focus")
 
-func _queue_eli_speech(speech: String) -> void:
+func _queue_eli_speech(speech: String, emotion: String = "calm") -> void:
     if text_only or voice_muted or not tts_ready or not is_instance_valid(voice_tts_http):
         return
     # Preserve the complete subtitle. Long lines are spoken in sequential
@@ -930,11 +932,11 @@ func _queue_eli_speech(speech: String) -> void:
         if word.length() > 1100:
             continue
         if not current.is_empty() and current.length() + word.length() + 1 > 420:
-            voice_speaking_queue.append(current)
+            voice_speaking_queue.append({"text": current, "emotion": emotion})
             current = ""
         current += ("" if current.is_empty() else " ") + word
     if not current.is_empty():
-        voice_speaking_queue.append(current)
+        voice_speaking_queue.append({"text": current, "emotion": emotion})
     _play_next_eli_chunk()
 
 func _play_next_eli_chunk() -> void:
@@ -942,11 +944,11 @@ func _play_next_eli_chunk() -> void:
         return
     if voice_speaking_queue.is_empty():
         return
-    var segment: String = voice_speaking_queue.pop_front()
+    var segment: Dictionary = voice_speaking_queue.pop_front()
     tts_pending = true
     var result := voice_tts_http.request(BRIDGE_URL + "/api/voice/speak",
         PackedStringArray(["Content-Type: application/json"]),
-        HTTPClient.METHOD_POST, JSON.stringify({"text": segment}))
+        HTTPClient.METHOD_POST, JSON.stringify(segment))
     if result != OK:
         tts_pending = false
         _message("SYSTEM", "Eli's local speech engine is unavailable. Subtitles still work.")
