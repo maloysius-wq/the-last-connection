@@ -469,6 +469,8 @@ class Agent:
             "want to talk, respond to what they are SAYING, not a nonexistent "
             "rescue mission. Let anger, anxiety, suspicion, humor or relief "
             "shape your voice without reciting the name of your emotion. "
+            "Understand remote-room claims without believing them; a screen elsewhere need not be visible here. "
+            "If they clarify, move on rather than repeating the same objection. "
             "If their behavior is cruel, you can snap or withdraw. "
             "If you trust them more, don't become blindly obedient. "
             "Only describe real observations as facts; do not invent keypad "
@@ -938,7 +940,6 @@ class Agent:
                 "speaker_identity_known": False,
                 "speaker_can_reach_your_room": False,
                 "speaker_can_see_you": "unknown, do not assume a camera feed",
-                "remote_perspective_rule": "The speaker may describe their own room or claim a remote view. Understand their claim without treating it as proven; absence from your room evidence does not disprove a remote screen or hidden camera.",
                 "only_you_can_touch_room_objects": True,
                 "speaker_location_known": False,
                 "first_contact": not bool(state.get("history")) and not bool(state.get("facts")),
