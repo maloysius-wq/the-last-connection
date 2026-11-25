@@ -166,7 +166,12 @@ def create_handler(agent: Agent, mode: str, updater=None,
             except (InvalidRequest, json.JSONDecodeError, ValueError, TypeError) as exc:
                 return self._send(400, {"error": str(exc)})
             except BackendUnavailable as exc:
-                return self._send(503, {"error": str(exc), "hint": "Start Ollama and pull the configured model, or use --mock for a scripted test."})
+                hint = ("The local model produced invalid output twice. Try your message again."
+                        if exc.category == "invalid_json" else
+                        "Check the local dialogue server. Restart the game if it is no longer running.")
+                if mode == "ollama" and exc.category != "invalid_json":
+                    hint = "Check that Ollama and the configured model are running."
+                return self._send(503, {"error": str(exc), "category": exc.category, "hint": hint})
             except AgentError as exc:
                 return self._send(500, {"error": str(exc)})
 

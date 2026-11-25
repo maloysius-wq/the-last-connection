@@ -48,7 +48,69 @@ class AgentError(Exception):
 
 
 class BackendUnavailable(AgentError):
-    pass
+    def __init__(self, message, *, category="unavailable", detail=""):
+        super().__init__(message)
+        self.category = category
+        self.detail = detail
+
+
+def _goal_transport_error(exc):
+    if isinstance(exc, error.HTTPError):
+        category, detail = "http", f"HTTP {exc.code}"
+    elif isinstance(exc, TimeoutError) or isinstance(getattr(exc, "reason", None), TimeoutError):
+        category, detail = "timeout", "Local dialogue request timed out"
+    else:
+        category, detail = "transport", type(exc).__name__ + ": " + str(exc)[:250]
+    return BackendUnavailable("Local dialogue model request failed", category=category, detail=detail)
+
+
+def _request_goal_json(endpoint, payload, *, ollama=False):
+    """One normal call; retry only malformed structured output, within one deadline."""
+    deadline = time.monotonic() + (120 if ollama else 290)
+    for attempt in range(2):
+        remaining = deadline - time.monotonic()
+        if remaining <= 1:
+            raise BackendUnavailable("Local dialogue model timed out", category="timeout")
+        req = request.Request(endpoint, json.dumps(payload).encode("utf-8"),
+                              {"Content-Type": "application/json"}, method="POST")
+        try:
+            with request.urlopen(req, timeout=remaining) as res:
+                body = res.read(1_000_000)
+        except (OSError, error.URLError) as exc:
+            raise _goal_transport_error(exc) from exc
+        finish = ""
+        try:
+            reply = json.loads(body)
+            if ollama:
+                finish = str(reply.get("done_reason", ""))
+                content = reply["message"]["content"]
+            else:
+                choice = reply["choices"][0]
+                finish = str(choice.get("finish_reason", ""))
+                content = choice["message"]["content"]
+            parsed = json.loads(content)
+            if not isinstance(parsed, dict):
+                raise ValueError("Expected a goal object")
+            return parsed
+        except (ValueError, KeyError, TypeError, IndexError, AttributeError) as exc:
+            detail = f"{type(exc).__name__}; finish_reason={finish or 'unknown'}; attempt={attempt+1}"
+            if attempt == 1 or time.monotonic() >= deadline - 5:
+                raise BackendUnavailable("Local dialogue returned an incomplete or invalid response",
+                                         category="invalid_json", detail=detail) from exc
+            # Retain current user message; do not append malformed assistant text
+            # or promote a partial action plan. Keep all original safety rules.
+            messages = [dict(m) for m in payload["messages"]]
+            instruction = " Return ONLY one complete JSON object. Keep speech to 1-2 short sentences and boundary_update empty unless the speaker explicitly set a boundary."
+            if messages and messages[0].get("role") == "system":
+                messages[0]["content"] += instruction
+            else:
+                messages.insert(0, {"role": "system", "content": instruction.strip()})
+            payload = dict(payload, messages=messages)
+            if ollama:
+                payload["options"] = dict(payload["options"], num_predict=800)
+            else:
+                payload["max_tokens"] = 800
+    raise AssertionError("unreachable")
 
 
 class InvalidRequest(AgentError):
@@ -120,17 +182,7 @@ class OllamaBackend:
                    "format": GOAL_SCHEMA,
                    "options": {"temperature": 0.1, "num_predict": 620},
                    "messages": messages}
-        req = request.Request(self.endpoint, json.dumps(payload).encode("utf-8"),
-                              {"Content-Type": "application/json"}, method="POST")
-        try:
-            with request.urlopen(req, timeout=120) as res:
-                content = json.loads(res.read(1_000_000))["message"]["content"]
-            parsed = json.loads(content)
-            if not isinstance(parsed, dict):
-                raise ValueError("Expected a goal object")
-            return parsed
-        except (OSError, error.URLError, ValueError, KeyError, TypeError) as exc:
-            raise BackendUnavailable("Local goal interpretation failed") from exc
+        return _request_goal_json(self.endpoint, payload, ollama=True)
 
     def review(self, messages: list[dict[str, str]]) -> dict[str, Any]:
         """Independently audit physical action coverage with the SAME GGUF."""
@@ -150,7 +202,7 @@ class OllamaBackend:
         except (OSError, error.URLError, ValueError, KeyError, TypeError) as exc:
             raise BackendUnavailable("Local action completeness review failed") from exc
 
-    def converse(self, messages: list[dict[str, str]]) -> str:
+    def converse(self, messages: list[dict[str, str]], *, timeout=None) -> str:
         """Natural dialogue, without a forced tool-call JSON envelope."""
         payload = {"model": self.model, "stream": False, "think": False,
                    "options": {"temperature": 0.55, "num_predict": 384},
@@ -158,7 +210,7 @@ class OllamaBackend:
         req = request.Request(self.endpoint, json.dumps(payload).encode("utf-8"),
                               {"Content-Type": "application/json"}, method="POST")
         try:
-            with request.urlopen(req, timeout=90) as res:
+            with request.urlopen(req, timeout=timeout if timeout is not None else 90) as res:
                 answer = json.loads(res.read(1_000_000))["message"]["content"]
             if not isinstance(answer, str) or not answer.strip():
                 raise ValueError("Empty dialogue response")
@@ -216,17 +268,7 @@ class LlamaCppBackend:
         payload = {"model": self.model, "messages": messages, "stream": False,
                    "temperature": 0.1, "max_tokens": 620,
                    "response_format": {"type": "json_schema", "schema": GOAL_SCHEMA}}
-        req = request.Request(self.endpoint, json.dumps(payload).encode("utf-8"),
-                              {"Content-Type": "application/json"}, method="POST")
-        try:
-            with request.urlopen(req, timeout=300) as res:
-                reply = json.loads(res.read(1_000_000))
-            parsed = json.loads(reply["choices"][0]["message"]["content"])
-            if not isinstance(parsed, dict):
-                raise ValueError("Expected a goal object")
-            return parsed
-        except (OSError, error.URLError, ValueError, KeyError, TypeError, IndexError) as exc:
-            raise BackendUnavailable("Local goal interpretation failed") from exc
+        return _request_goal_json(self.endpoint, payload)
 
     def review(self, messages: list[dict[str, str]]) -> dict[str, Any]:
         """Independently audit physical action coverage, no second model."""
@@ -245,14 +287,14 @@ class LlamaCppBackend:
         except (OSError, error.URLError, ValueError, KeyError, TypeError, IndexError) as exc:
             raise BackendUnavailable("Local action completeness review failed") from exc
 
-    def converse(self, messages: list[dict[str, str]]) -> str:
+    def converse(self, messages: list[dict[str, str]], *, timeout=None) -> str:
         """Unconstrained natural speech for conversational turns."""
         payload = {"model": self.model, "messages": messages, "stream": False,
                    "temperature": 0.55, "max_tokens": 384}
         req = request.Request(self.endpoint, json.dumps(payload).encode("utf-8"),
                               {"Content-Type": "application/json"}, method="POST")
         try:
-            with request.urlopen(req, timeout=300) as res:
+            with request.urlopen(req, timeout=timeout if timeout is not None else 300) as res:
                 response = json.loads(res.read(1_000_000))
             answer = response["choices"][0]["message"]["content"]
             if not isinstance(answer, str) or not answer.strip():
@@ -427,6 +469,8 @@ class Agent:
             "want to talk, respond to what they are SAYING, not a nonexistent "
             "rescue mission. Let anger, anxiety, suspicion, humor or relief "
             "shape your voice without reciting the name of your emotion. "
+            "Understand remote-room claims without believing them; a screen elsewhere need not be visible here. "
+            "If they clarify, move on rather than repeating the same objection. "
             "If their behavior is cruel, you can snap or withdraw. "
             "If you trust them more, don't become blindly obedient. "
             "Only describe real observations as facts; do not invent keypad "
@@ -557,6 +601,10 @@ class Agent:
         if not isinstance(value, str):
             return False
         normalized = re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
+        # Reject Eli's own objections that small models mistakenly persist
+        # as the other person's restrictions. Also cleans up older saves.
+        if re.search(r"\b(?:i will not accept|i have no evidence|i don t believe|i do not believe)\b", normalized) or normalized.startswith(("you claim ", "you say you can see ")):
+            return False
         return bool(normalized) and normalized not in {
             "none", "none set", "nothing", "no boundaries", "no boundary",
             "no explicit boundary", "no explicit boundaries",
@@ -998,6 +1046,22 @@ class Agent:
         return ([{"role": "system", "content": system_context}]
                 + history + [{"role": "user", "content": user_content}])
 
+    @staticmethod
+    def _repeated_conversation(speech, state):
+        """Detect substantial recycled clauses, not ordinary repeated short words."""
+        def clauses(value):
+            return [set(re.findall(r"[a-z0-9]+", part.lower()))
+                    for part in re.split(r"(?<=[.!?])\s+", value) if part.strip()]
+        recent = [turn.get("content", "") for turn in state.get("history", [])[-8:]
+                  if isinstance(turn, dict) and turn.get("role") == "assistant"
+                  and isinstance(turn.get("content"), str)]
+        if len(recent) < 2:
+            return False
+        old = [words for reply in recent for words in clauses(reply) if len(words) >= 5]
+        repeated = [words for words in clauses(speech) if len(words) >= 5 and
+                    any(len(words & prev) / len(words | prev) >= .72 for prev in old)]
+        return len(repeated) >= 2 and sum(map(len, repeated)) >= 14
+
     def _decide_goals(self, session_id: str, player_text: str,
                       world: dict[str, Any]) -> Decision:
         """Production path: a single semantic plan, engine-only verification.
@@ -1021,8 +1085,16 @@ class Agent:
                 "planner": "goals_v1",
             })
             begin = time.monotonic()
-            raw = self.backend.plan_goals(
-                self._messages(state, player_text, goal=True, world=world))
+            try:
+                raw = self.backend.plan_goals(
+                    self._messages(state, player_text, goal=True, world=world))
+            except BackendUnavailable as exc:
+                self.store.trace(session_id, "goal_model_error", {
+                    "category": exc.category, "detail": exc.detail,
+                    "message": str(exc), "inference_ms": round((time.monotonic()-begin)*1000),
+                    "actions": [], "relationship_unchanged": True,
+                })
+                raise
             elapsed_ms = round((time.monotonic() - begin) * 1000)
             self.store.trace(session_id, "goal_model_proposal", {
                 "proposal": raw, "inference_ms": elapsed_ms,
@@ -1034,6 +1106,41 @@ class Agent:
             emotion = raw.get("emotion") if raw.get("emotion") in EMOTION_SET else "cautious"
             candidate = raw.get("speech") if isinstance(raw.get("speech"), str) else ""
             appraisal = raw.get("appraisal")
+            repair_calls = 0
+            # Only repair clearly looping conversation; no changes to action
+            # authorization and no second call for ordinary dialogue.
+            if kind in ("conversation", "clarify") and goals == [] and self._repeated_conversation(candidate, state):
+                converse = getattr(self.backend, "converse", None)
+                if callable(converse) and elapsed_ms < 200_000:
+                    repair_calls = 1
+                    messages = self._messages(state, player_text, dialogue=True, world=world)
+                    messages[0]["content"] += (
+                        "\nCONVERSATION REPAIR: Your draft recycled multiple objections "
+                        "from your recent replies. Understand the speaker's actual explanation "
+                        "from their perspective; acknowledge it as a claim, not proof. "
+                        "Keep your current fear, anger and distrust. Do not repeat prior "
+                        "demands for proof or the same objections. Respond freshly in one "
+                        "or two short sentences; no physical actions, no promises to act. "
+                        "Do not force agreement or apologize unless natural.")
+                    try:
+                        revised = (converse(messages, timeout=60)
+                                   if isinstance(self.backend, (OllamaBackend, LlamaCppBackend))
+                                   else converse(messages))
+                        grounded = self._ground_dialogue(revised, world, state, player_text, allow_fallback=False)
+                        if grounded and not self._repeated_conversation(grounded, state) and not self._unperformed_action_commitment(grounded):
+                            candidate = grounded
+                            self.store.trace(session_id, "conversation_loop_repair", {"accepted": True})
+                        else:
+                            candidate = ""
+                            self.store.trace(session_id, "conversation_loop_repair", {"accepted": False})
+                    except BackendUnavailable as exc:
+                        candidate = ""
+                        self.store.trace(session_id, "conversation_loop_repair", {"accepted": False, "error": str(exc)})
+                    # The discarded draft is not new social evidence, even if
+                    # the repair failed. Preserve existing emotions/consent.
+                    if isinstance(appraisal, dict):
+                        appraisal = dict(appraisal, trust=0, stress=0, anger=0,
+                                         boundary_update="", claimed_purpose="unchanged")
             before_relationship, social_changes = self._apply_social_appraisal(
                 state, appraisal)
             # The single-pass model can REFUSE or pause before a physical
@@ -1161,7 +1268,9 @@ class Agent:
                 result = Decision(
                     speech, "wait", "", emotion,
                     status=("Eli has not agreed to act on that request."
-                            if withheld_consent and not speech else ""))
+                            if withheld_consent and not speech else
+                            "Eli's reply could not be completed. No action was taken."
+                            if repair_calls and not speech else ""))
             prior = [clean for turn in state.get("history", [])[-22:]
                      if (clean := self._clean_turn(turn)) is not None]
             entries = [{"role": "user", "content": player_text.strip()}]
@@ -1173,7 +1282,7 @@ class Agent:
             self.store.trace(session_id, "goal_decision", {
                 "actions": list(actions), "speech": result.speech,
                 "status": result.status, "validation_issue": issue,
-                "inference_ms": elapsed_ms, "model_calls": 1,
+                "inference_ms": elapsed_ms, "model_calls": 1 + repair_calls,
                 "satisfied_goals_omitted": suppressed,
                 "agency_decision": agency,
                 "willingness": willingness,
