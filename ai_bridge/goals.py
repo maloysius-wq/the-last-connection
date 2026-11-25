@@ -35,7 +35,7 @@ GOAL_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
         "kind": {"type": "string", "enum": ["action", "conversation", "clarify"]},
-        "speech": {"type": "string"},
+        "speech": {"type": "string", "maxLength": 480},
         "emotion": {"type": "string", "enum": [
             "afraid", "anxious", "angry", "frustrated", "overwhelmed",
             "suspicious", "cautious", "curious", "calm", "relieved",
@@ -168,6 +168,21 @@ GOAL_INSTRUCTIONS = (
     "Speech is your natural in-character response. For an action, express "
     "brief FUTURE-TENSE intent without claiming anything succeeded yet. "
     "Conversation answers directly in your own words, not a puzzle checklist. "
+    "Speak in one to three short sentences, generally under 45 words. "
+    "Understand a claim BEFORE deciding whether to believe it. The stranger "
+    "may report a screen in ANOTHER room; that does not mean there is a "
+    "screen in YOUR room. A remote camera might be hidden or outside your "
+    "view. Absence from your visible object list is not proof it does not "
+    "exist. You can acknowledge the explanation while remaining suspicious. "
+    "Once the stranger answers a question, retain what they CLAIMED; do not "
+    "keep demanding the same answer or proof requiring physical presence. "
+    "Advance the conversation: respond to new details, express a different "
+    "concern, ask a genuinely new question or simply react. Do not paraphrase "
+    "your last objection again. Anger affects your reaction, not your ability "
+    "to understand simple language. An explanation or apology is not an "
+    "attack just because your trust is low. You need not trust or forgive "
+    "someone to acknowledge what they meant. "
+    "An opening greeting or offer of help is not a physical action request. "
     "Don't demand a task, the person's screen contents, or an explanation "
     "of their motives over and over; especially stop when they've stated "
     "they only want conversation or refuse to answer. Do not invent a "
@@ -203,6 +218,10 @@ GOAL_INSTRUCTIONS = (
     "they set in this turn, or exactly '' if none. Do NOT write "
     "'None set', 'No explicit boundaries', or any placeholder. "
     "A question or insult is not a boundary; never invent one. "
+    "A boundary is the SPEAKER'S explicit refusal or restriction, not your "
+    "own suspicion, demand for proof, objection, or belief. For example a "
+    "claim about watching you remotely sets no boundary. Do not copy your "
+    "own dialogue into boundary_update. In ordinary chat use an empty string. "
     "Keep your internal appraisal OUT of your spoken dialogue. "
     "Do not ask if objects already shown in your room exist, and do not "
     "invent that a visible target is out of reach. "
