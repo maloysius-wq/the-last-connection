@@ -97,6 +97,12 @@ var microphone_recording := false
 var transcribing := false
 var voice_speaking_queue: Array[Dictionary] = []
 var tts_pending := false
+# A startup warmup owns the same HTTP slot as real speech; there is never
+# overlapping synthesis or a warmup WAV entering the playback queue.
+var voice_warmup_checked := false
+var voice_warmup_active := false
+var voice_warmup_label: Label
+var voice_warmup_settings: Dictionary = {}
 var voice_buffer: Array[AudioStreamWAV] = []
 var voice_epoch := 0
 var voice_request_epoch := 0
@@ -287,6 +293,10 @@ func _build_ui() -> void:
     studio_button.focus_mode = Control.FOCUS_NONE
     studio_button.pressed.connect(_open_voice_studio)
     right.add_child(studio_button)
+    voice_warmup_label = Label.new()
+    voice_warmup_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+    voice_warmup_label.hide()
+    right.add_child(voice_warmup_label)
     _build_voice_studio()
     update_button = Button.new()
     update_button.text = "CHECK FOR UPDATES"
@@ -888,14 +898,65 @@ func _on_voice_status(result: int, code: int, _headers: PackedStringArray, body:
             voice_name = str(data.get("voice", "local voice"))
             voice_status_data = data
             _refresh_voice_profiles()
+            _start_voice_warmup(data)
     microphone_button.disabled = not stt_ready or text_only
     if not text_only:
         audio_link_status.text = ("AUDIO LINK: PUSH TO TALK (V)" if stt_ready
                                  else "AUDIO LINK: TEXT ONLY / MIC UNAVAILABLE") + "       ◦       VIDEO FEED: ACTIVE"
     if stt_ready and tts_ready:
-        _message("SYSTEM", "Microphone and Eli's voice ready (" + voice_name + "). Hold V, release to transmit.")
+        _message("SYSTEM", "Microphone and Eli's voice available (" + voice_name + "). Hold V, release to transmit.")
     elif not stt_ready or not tts_ready:
         _message("SYSTEM", "Some offline voice components are unavailable. Text conversation still works.")
+
+func _start_voice_warmup(data: Dictionary) -> void:
+    if voice_warmup_checked:
+        return
+    voice_warmup_checked = true
+    # Only the persistent official Nano engines benefit from this warmup.
+    # Do not automatically activate the experimental native installations.
+    if text_only or voice_muted or not tts_ready or tts_pending:
+        return
+    if not ((voice_engine == "nano_cuda" and bool(data.get("nano_cuda_ready", false)))
+            or (voice_engine == "auto" and bool(data.get("nano_ready", false)))):
+        return
+    voice_warmup_settings = {"engine": voice_engine, "profile": voice_profile, "threads": voice_threads}
+    voice_warmup_active = true
+    tts_pending = true
+    voice_warmup_label.text = "Initializing Eli's voice..."
+    voice_warmup_label.show()
+    var result := voice_tts_http.request(BRIDGE_URL + "/api/voice/warmup",
+        PackedStringArray(["Content-Type: application/json"]),
+        HTTPClient.METHOD_POST, JSON.stringify(voice_warmup_settings))
+    if result != OK:
+        _finish_voice_warmup(HTTPRequest.RESULT_CANT_CONNECT, 0, PackedByteArray())
+
+func _finish_voice_warmup(result: int, response_code: int, body: PackedByteArray) -> void:
+    voice_warmup_active = false
+    tts_pending = false
+    var report = JSON.parse_string(body.get_string_from_utf8()) if response_code == 200 else null
+    if text_only or voice_muted:
+        voice_warmup_label.hide()
+    elif voice_warmup_settings != {"engine": voice_engine, "profile": voice_profile, "threads": voice_threads}:
+        voice_warmup_label.text = "Voice settings changed; next reply uses the new selection."
+    elif result == HTTPRequest.RESULT_SUCCESS and response_code == 200 and typeof(report) == TYPE_DICTIONARY:
+        var actual := str(report.get("engine", ""))
+        match actual:
+            "nano_cuda":
+                voice_warmup_label.text = "Eli's CUDA voice warmed up."
+            "nano":
+                voice_warmup_label.text = "Eli's CPU voice warmed up." if voice_engine == "auto" else "CUDA unavailable; CPU voice warmed up."
+            "piper":
+                voice_warmup_label.text = "Nano unavailable; Piper fallback available."
+            _:
+                voice_warmup_label.text = "Voice warmup finished; actual engine unconfirmed."
+        print("[Voice] Startup warmup: " + JSON.stringify(report))
+    else:
+        voice_warmup_label.text = "Voice warmup did not finish; speech will retry normally."
+        print("[Voice] Startup warmup failed: " + str(result) + " HTTP " + str(response_code))
+    voice_warmup_settings.clear()
+    # Player dialogue/preview may have queued while we initialized. No audio
+    # from this response is decoded, played, logged as speech, or persisted.
+    _play_next_eli_chunk()
 
 func _can_record_microphone() -> bool:
     return (stt_ready and not text_only and not microphone_recording and not transcribing
@@ -1052,6 +1113,9 @@ func _play_next_eli_chunk() -> void:
 
 func _on_eli_wav(result: int, response_code: int, _headers: PackedStringArray,
         body: PackedByteArray) -> void:
+    if voice_warmup_active:
+        _finish_voice_warmup(result, response_code, body)
+        return
     tts_pending = false
     # Skipping cannot cancel Python computation already underway. Drain that
     # response before sending the next request; never play stale audio.

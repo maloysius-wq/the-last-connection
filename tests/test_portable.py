@@ -7,7 +7,7 @@ import json
 import unittest
 
 from ai_bridge.agent import BackendUnavailable, LlamaCppBackend
-from portable.launcher import PortableSetupError, find_gguf_candidates, select_model
+from portable.launcher import PortableSetupError, find_gguf_candidates, select_model, warm_dialogue
 
 
 class FakeHTTPResponse:
@@ -77,6 +77,28 @@ class TestPortable(unittest.TestCase):
         self.assertEqual(body["response_format"]["type"], "json_schema")
         self.assertIn("argument", body["response_format"]["schema"]["properties"])
         self.assertEqual(req.full_url, "http://127.0.0.1:8877/v1/chat/completions")
+
+    def test_startup_warmup_generates_only_two_local_tokens(self):
+        reply = FakeHTTPResponse({"choices": [{"message": {"content": "ready"}}],
+                                  "usage": {"completion_tokens": 1}})
+        with patch("portable.launcher.request.urlopen", return_value=reply) as mocked:
+            result = warm_dialogue()
+        self.assertEqual(result["status"], "ready")
+        req = mocked.call_args.args[0]
+        body = json.loads(req.data)
+        self.assertEqual(req.full_url, "http://127.0.0.1:8877/v1/chat/completions")
+        self.assertEqual(body["max_tokens"], 2)
+        self.assertFalse(body["cache_prompt"])
+        self.assertNotIn("session_id", body)
+        self.assertEqual(mocked.call_args.kwargs["timeout"], 20)
+
+    def test_startup_warmup_failures_are_nonfatal_and_not_reported_ready(self):
+        for reply in (FakeHTTPResponse({"choices": [{}], "usage": {"completion_tokens": 0}}),
+                      FakeHTTPResponse({"error": "model unavailable"})):
+            with patch("portable.launcher.request.urlopen", return_value=reply):
+                self.assertEqual(warm_dialogue()["status"], "failed")
+        with patch("portable.launcher.request.urlopen", side_effect=TimeoutError):
+            self.assertEqual(warm_dialogue()["status"], "failed")
 
     def test_llama_cpp_invalid_response_fails_without_fake_success(self):
         fake = FakeHTTPResponse({"choices": [{"message": {"content": "not json"}}]})

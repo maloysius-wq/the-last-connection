@@ -144,9 +144,11 @@ class FakeVoice:
         if not wav.startswith(b"RIFF"):
             raise VoiceError("Invalid microphone WAV")
         return "Please check the door."
-    def synthesize(self, spoken, emotion="calm"):
+    def synthesize(self, spoken, emotion="calm", **options):
         if spoken != "I'm listening.":
             raise VoiceError("Bad text")
+        self.last_options = options
+        self.last_engine = "nano_cuda"
         return microphone_wav(rate=22050, channels=1, seconds=.5)
 
 
@@ -155,8 +157,9 @@ class TestVoiceBridge(unittest.TestCase):
         self.temp = TemporaryDirectory()
         agent = Agent(MockBackend(), SessionStore(Path(self.temp.name)),
                       ROOT / "data/characters/eli.json")
+        self.voice = FakeVoice()
         self.server = ThreadingHTTPServer(
-            ("127.0.0.1", 0), create_handler(agent, "mock", voice=FakeVoice()))
+            ("127.0.0.1", 0), create_handler(agent, "mock", voice=self.voice))
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         self.url = f"http://127.0.0.1:{self.server.server_port}"
@@ -195,6 +198,15 @@ class TestVoiceBridge(unittest.TestCase):
         self.assertEqual(code, 200)
         self.assertEqual(content_type, "audio/wav")
         self.assertTrue(body.startswith(b"RIFF"))
+
+    def test_silent_warmup_uses_selected_profile_and_discards_audio(self):
+        options = {"engine": "nano_cuda", "profile": "ref:eli", "threads": 4}
+        code, body, content_type = self.post("/api/voice/warmup", options)
+        self.assertEqual(code, 200)
+        self.assertTrue(content_type.startswith("application/json"))
+        self.assertEqual(json.loads(body)["engine"], "nano_cuda")
+        self.assertEqual(self.voice.last_options, options)
+        self.assertFalse(list(Path(self.temp.name).glob("*.json")))
 
     def test_invalid_base64_rejected(self):
         with self.assertRaises(error.HTTPError) as error_context:
