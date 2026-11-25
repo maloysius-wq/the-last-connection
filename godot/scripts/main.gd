@@ -314,13 +314,13 @@ func _build_ui() -> void:
     new_game.pressed.connect(_new_game)
     right.add_child(new_game)
 
-func _message(speaker: String, text: String, emotion: String = "calm") -> void:
+func _message(speaker: String, text: String, emotion: String = "calm", prefetch_id: String = "") -> void:
     var line := "[" + speaker + "] " + text + "\n\n"
     log_view.append_text(line)
     if not session_id.is_empty():
         _append_transcript(line)
     if speaker == "ELI":
-        _queue_eli_speech(text, emotion)
+        _queue_eli_speech(text, emotion, prefetch_id)
 
 func _send_pressed() -> void:
     _submit(input.text)
@@ -339,6 +339,9 @@ func _submit(message: String) -> void:
     input.clear()
     _message("YOU", trimmed)
     var body := {"session_id": session_id, "player_text": trimmed, "world": world.snapshot()}
+    if tts_ready and not text_only and not voice_muted and voice_engine == "nano_cuda" and not tts_pending and voice_speaking_queue.is_empty():
+        body["voice_prefetch"] = {"engine": voice_engine, "profile": voice_profile,
+            "threads": voice_threads, "fast": voice_fast}
     _request("/api/decide", body, "decide")
     call_deferred("_restore_input_focus")
 
@@ -452,7 +455,8 @@ func _on_http_completed(result: int, response_code: int, _headers: PackedStringA
     # ground a reply. The authoritative OBSERVATION still remains visible.
     var eli_reply := str(response.get("speech", ""))
     if not eli_reply.strip_edges().is_empty():
-        _message("ELI", eli_reply, str(response.get("emotion", "calm")))
+        _message("ELI", eli_reply, str(response.get("emotion", "calm")),
+            str(response.get("voice_prefetch_id", "")))
     if request_stage == "decide":
         var plan_value: Variant = response.get("actions", [])
         if typeof(plan_value) == TYPE_ARRAY and not plan_value.is_empty():
@@ -1103,12 +1107,16 @@ func _voice_chunks(speech: String, fast: bool) -> Array[String]:
         parts.append(current)
     return parts
 
-func _queue_eli_speech(speech: String, emotion: String = "calm") -> void:
+func _queue_eli_speech(speech: String, emotion: String = "calm", prefetch_id: String = "") -> void:
     if text_only or voice_muted or not tts_ready or not is_instance_valid(voice_tts_http):
         return
     for part in _voice_chunks(speech, voice_fast and voice_engine != "piper"):
-        voice_speaking_queue.append({"text": part, "emotion": emotion,
-            "profile": voice_profile, "threads": voice_threads, "engine": voice_engine})
+        var segment := {"text": part, "emotion": emotion,
+            "profile": voice_profile, "threads": voice_threads, "engine": voice_engine}
+        if not prefetch_id.is_empty():
+            segment["prefetch_id"] = prefetch_id
+            prefetch_id = ""
+        voice_speaking_queue.append(segment)
     _play_next_eli_chunk()
 
 func _play_next_eli_chunk() -> void:
