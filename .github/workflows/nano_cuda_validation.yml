@@ -1,0 +1,27 @@
+name: Official Nano CUDA Windows dependency validation
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'portable/setup_nano.ps1'
+      - 'portable/nano_voice_worker.py'
+      - 'portable/SETUP_CHATTERBOX_NANO_CUDA.cmd'
+      - 'ai_bridge/nano.py'
+      - '.github/workflows/nano_cuda_validation.yml'
+permissions:
+  contents: read
+jobs:
+  cuda-build:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install and import actual pinned CUDA 12.4 runtime (no GPU or model download required)
+        shell: powershell
+        run: |
+          & ./portable/setup_nano.ps1 -Cuda -CudaBuildCheck
+          if (Test-Path 'portable/models/chatterbox-nano/ready-cuda.json') { throw 'Build check incorrectly activated CUDA' }
+          if (Test-Path 'portable/models/chatterbox-nano/checkpoint') { throw 'Build check downloaded model' }
+      - name: Explain hosted hardware limitation
+        shell: pwsh
+        run: Write-Host 'GPU synthesis must be validated on the player PC; hosted runner validates dependency installation only.'

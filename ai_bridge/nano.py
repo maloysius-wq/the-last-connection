@@ -1,4 +1,4 @@
-"""Optional CPU-only Chatterbox Nano subprocess; no model downloads in play."""
+"""Optional official CPU/CUDA Chatterbox Nano subprocess; no model downloads in play."""
 from __future__ import annotations
 
 import base64
@@ -35,12 +35,16 @@ def directed_text(text: str, emotion: str) -> str:
 
 
 class NanoVoice:
-    def __init__(self, base: Path, *, popen=subprocess.Popen, timeout=75):
+    def __init__(self, base: Path, *, device="cpu", popen=subprocess.Popen, timeout=75):
+        if device not in ("cpu", "cuda"):
+            raise ValueError("Unknown Nano device")
+        self.device = device
         self.base = Path(base).resolve()
         self.root = self.base / "models" / "chatterbox-nano"
-        self.python = self.root / "venv" / "Scripts" / "python.exe"
+        self.python = self.root / ("venv-cuda" if device == "cuda" else "venv") / "Scripts" / "python.exe"
         self.script = self.base / "nano_voice_worker.py"
-        self.marker = self.root / "ready.json"
+        self.marker = self.root / ("ready-cuda.json" if device == "cuda" else "ready.json")
+        self.log_name = "nano-voice-cuda.log" if device == "cuda" else "nano-voice.log"
         self._popen = popen
         self.timeout = timeout
         self._proc = None
@@ -80,9 +84,12 @@ class NanoVoice:
         (self.base / "logs").mkdir(exist_ok=True)
         (self.base / "temp").mkdir(exist_ok=True)
         self._responses = queue.Queue()
-        with (self.base / "logs" / "nano-voice.log").open("a", encoding="utf-8") as log:
+        args = [str(self.python), "-u", str(self.script), "--root", str(self.root)]
+        if self.device == "cuda":
+            args += ["--device", "cuda"]
+        with (self.base / "logs" / self.log_name).open("a", encoding="utf-8") as log:
             proc = self._popen(
-                [str(self.python), "-u", str(self.script), "--root", str(self.root)],
+                args,
                 cwd=str(self.base), env=env, stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE, stderr=log, text=True, encoding="utf-8",
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
@@ -136,6 +143,8 @@ class NanoVoice:
                 result = json.loads(response)
                 if not isinstance(result, dict) or not result.get("wav"):
                     raise RuntimeError("Nano synthesis failed")
+                if self.device == "cuda" and result.get("device") != "cuda":
+                    raise RuntimeError("CUDA worker did not confirm GPU synthesis")
                 encoded = result["wav"]
                 if not isinstance(encoded, str) or len(encoded) > 11_000_000:
                     raise ValueError("Nano audio too large")
@@ -150,7 +159,8 @@ class NanoVoice:
                                      "synthesis_seconds": result.get("seconds"),
                                      "audio_seconds": result.get("audio_seconds"),
                                      "threads": result.get("threads"),
-                                     "profile": profile}
+                                     "profile": profile, "device": self.device,
+                                     "gpu_memory": result.get("gpu_memory")}
                 return audio
             except (OSError, RuntimeError, ValueError, TypeError, queue.Empty,
                     EOFError, wave.Error, AttributeError) as exc:

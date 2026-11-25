@@ -205,3 +205,24 @@ Use the normal settings if the GPU engine fails. No GPU drivers are installed
 or modified automatically. Setup diagnostics are in models/chatterbox-nano-native:
 devices-vulkan.json, devices-vulkan-error.log, setup-server-vulkan.log,
 setup-server-vulkan-error.log, sample-vulkan.wav, sample-vulkan-warm.wav.
+
+### Original Chatterbox Nano CUDA GPU (experimental)
+Requires an existing working CPU Nano installation and NVIDIA GPU. Close the
+game and other GPU-intensive applications; run SETUP_CHATTERBOX_NANO_CUDA.cmd.
+The separate PyTorch/torchaudio 2.6.0+cu124 runtime may require several GB
+of downloads and at least 10 GiB free on the game drive. No model download:
+it uses the existing official checkpoint, voice references, Python and uv.
+No system CUDA toolkit or driver modification. CUDA 12.4 was chosen for
+Pascal compatibility; local device and actual FP32 kernel/speech tests must
+pass. The setup makes two real samples and only then writes ready-cuda.json.
+Select Chatterbox Nano CUDA GPU in Voice Studio. A 3 GiB free-VRAM guard
+runs when the worker starts with dialogue already loaded; this is an initial
+admission guard, not a guarantee of peak usage. Actual engine and timing
+appear in the preview, and logs/nano-voice-cuda.log records VRAM stats.
+GPU worker failure releases the process and falls back to ordinary Nano CPU,
+then Piper; it never tries the community native GGML engines. If the dialogue
+model consumes too much VRAM, optionally set acceleration to cpu in config.json
+with game closed, preserving other settings; dialogue may become slower.
+Existing CPU environment, checkpoints, and references remain intact. CUDA
+is opt-in and no download occurs during gameplay. Setup diagnostics:
+models/chatterbox-nano/setup-cuda.log and ready-cuda.json (on success).

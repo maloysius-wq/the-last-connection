@@ -84,11 +84,12 @@ func _run() -> void:
     _expect(app.get("voice_stt_http") != null and app.get("voice_tts_http") != null,
         "Mic and speech have separate HTTP clients from the action queue")
     var engine_control: OptionButton = app.get("voice_engine_control")
-    _expect(engine_control != null and engine_control.item_count == 4,
+    _expect(engine_control != null and engine_control.item_count == 5,
         "Voice Studio includes CPU and Vulkan native Nano, official Nano, and Piper")
     if engine_control != null:
         _expect(engine_control.is_item_disabled(2), "Native Nano requires successful local setup")
         _expect(engine_control.is_item_disabled(3), "Vulkan requires its own successful local setup")
+        _expect(engine_control.is_item_disabled(4), "CUDA requires its own successful local setup")
     if mic_control != null and text_mode != null:
         _expect(mic_control.focus_mode == Control.FOCUS_NONE,
             "Holding the microphone button does not steal chat keyboard focus")
