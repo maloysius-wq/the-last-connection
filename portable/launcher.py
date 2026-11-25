@@ -109,6 +109,28 @@ def _ready(url: str) -> bool:
         return False
 
 
+def warm_dialogue() -> dict:
+    """Exercise actual local token generation, never a player/session turn."""
+    started = time.monotonic()
+    payload = {"model": "tlc-eli", "messages": [
+        {"role": "user", "content": "Reply with one word: ready."}],
+        "max_tokens": 2, "temperature": 0, "stream": False, "cache_prompt": False}
+    req = request.Request("http://127.0.0.1:8877/v1/chat/completions",
+                          json.dumps(payload).encode("utf-8"),
+                          {"Content-Type": "application/json"}, method="POST")
+    try:
+        with request.urlopen(req, timeout=20) as response:
+            reply = json.loads(response.read(64_000))
+        if not reply.get("choices") or int(reply.get("usage", {}).get("completion_tokens", 0)) < 1:
+            raise ValueError("No generated token confirmed")
+        state = {"status": "ready"}
+    except (OSError, ValueError, TypeError, AttributeError) as exc:
+        # Optional preflight: never invent success or block normal play forever.
+        state = {"status": "failed", "reason": type(exc).__name__}
+    state["seconds"] = round(time.monotonic() - started, 3)
+    return state
+
+
 def _available_port(port: int) -> bool:
     import socket
     with socket.socket() as sock:
@@ -268,13 +290,33 @@ def main() -> int:
                 splash.title("The Last Connection | " + message)
                 splash.update()
 
-        # Overlap CPU voice model loading with the dialogue server startup.
+        # Voice warmup runs after the dialogue model is resident, using the
+        # player's saved engine/profile from Godot rather than guessing here.
         voice_service = LocalVoiceService(base)
-        voice_service.warm()
         server_proc, acceleration, failed_attempts = start_model_server(
             base, model, config, model_log, _ready, progress=loading_notice, env=env,
         )
+        # llama.cpp's own load-time warmup does not necessarily exercise
+        # the chat endpoint. Generate a tiny discarded completion first.
+        loading_notice("Warming up dialogue...")
+        dialogue_warmup = {"status": "skipped"}
+        if config.get("dialogue_warmup", True) is not False:
+            warm_result = {}
+            def run_warmup():
+                warm_result.update(warm_dialogue())
+            worker = threading.Thread(target=run_warmup, daemon=True)
+            worker.start()
+            while worker.is_alive():
+                if splash:
+                    splash.update()
+                worker.join(timeout=0.05)
+            dialogue_warmup = warm_result or {"status": "failed"}
+        model_log.write("\n[The Last Connection] Dialogue warmup: " + json.dumps(dialogue_warmup) + "\n")
+        model_log.flush()
+        if server_proc.poll() is not None:
+            raise PortableSetupError("Dialogue server exited during startup. See logs/llama-server.log.")
         (logs / "runtime-status.json").write_text(json.dumps({
+            "dialogue_warmup": dialogue_warmup,
             "acceleration": acceleration,
             "gpu_active": acceleration.startswith("vulkan"),
             "failed_attempts": failed_attempts,

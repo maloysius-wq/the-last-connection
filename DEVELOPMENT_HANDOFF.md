@@ -17,7 +17,7 @@ First-person psychological horror surveillance game. Player communicates with El
 ## Immediate priority
 
 1. Preserve working CUDA voice and physical authority. Validate conversation repairs with the player's real local model; address concrete failures from diagnostic exports.
-2. Terminal failure recovery: present readable bridge errors, restore a failed decision to the editor only if no newer draft exists, and never automatically replay a decision or an already-executed physical action.
+2. Startup warmup (user-directed): initialize dialogue with a tiny discarded completion, then warm the saved official Nano voice and profile after dialogue is resident. Keep text and the interface usable, preserve fallbacks and measure real hardware. Terminal failure recovery was merged in PR #49.
 3. Keep emotional agency, cooperation, action queues, save/export and local-only operation regression-tested. No additional voice backend installations without a demonstrated need.
 4. Improve room atmosphere, character animation and visual presentation after interaction reliability. Desktop visual and microphone QA cannot be inferred from headless CI.
 
@@ -573,3 +573,8 @@ Primary repo: `maloysius-wq/the-last-connection` (public; created by user). Use 
 ## 2026-11-25: Terminal failure recovery (candidate change)
 
 - The terminal previously dumped raw HTTP errors and cleared submitted text even if the decision failed. Candidate patch adds readable structured failure explanations, manual message recovery only when the editor is empty, preserves newer drafts, cancels remaining actions on a failed outcome without undoing world state, and never resends automatically. Headless smoke regressions cover these paths. Await exact-head CI and release verification; no change to inference or voice.
+
+## 2026-11-25: Startup inference warmup (candidate)
+
+- User redirected next priority to automatic inference warmup after GTX 1060 first CUDA sample 16.344s and second 0.891s. These are different utterances, not controlled benchmark. PR #49 dialogue failure recovery passed both PR checks and merged at ce1e455d4cf82027575f74285b26ff89ccdafb4a; official release not yet verified here.
+- Candidate: after llama.cpp health, launcher generates at most two discarded chat tokens with 20s request timeout, pumping loading window and recording actual result in runtime-status.json and llama-server.log. config.json dialogue_warmup=false is an opt-out. No session, action or dialogue memory. After game loads saved settings and voice status, one asynchronous warmup on official Nano CPU or CUDA uses same synthesis path and voice profile/threads, including admission checks, existing fallback, conditioning cache and persistent process. Fixed sample discarded on bridge, JSON status only, no sound or transcript. Shared Godot speech slot serializes real speech behind warmup. Text and UI remain usable, user may see delay if sending before warmup finishes; no guarantee of VRAM headroom during simultaneous dialogue/voice work. Skip muted/text-only, Piper and experimental native engines. No model download or new voice runtime. Test transport and silent UI paths; actual model latency/VRAM needs local testing. Await CI/release validation.

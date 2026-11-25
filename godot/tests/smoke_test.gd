@@ -117,6 +117,30 @@ func _run() -> void:
         "Godot initializes capture and synthesized speech playback")
     _expect(app.get("voice_stt_http") != null and app.get("voice_tts_http") != null,
         "Mic and speech have separate HTTP clients from the action queue")
+    # Simulate an already-issued silent startup request. It owns the speech
+    # slot but cannot become a subtitle, audio buffer, or world action.
+    var old_transcript := str(app.get("log_view").get_parsed_text())
+    app.set("voice_warmup_active", true)
+    app.set("tts_pending", true)
+    app.set("voice_warmup_settings", {"engine": app.get("voice_engine"),
+        "profile": app.get("voice_profile"), "threads": app.get("voice_threads")})
+    app.call("_on_eli_wav", HTTPRequest.RESULT_SUCCESS, 200, PackedStringArray(),
+        JSON.stringify({"engine": "nano_cuda", "seconds": 1.5}).to_utf8_buffer())
+    _expect(not bool(app.get("voice_warmup_active")) and not bool(app.get("tts_pending")),
+        "Silent warmup frees the same HTTP slot for gameplay speech")
+    _expect(app.get("voice_buffer").is_empty() and not app.get("eli_voice_player").playing,
+        "Warmup does not play or buffer audio")
+    _expect(str(app.get("log_view").get_parsed_text()) == old_transcript,
+        "Warmup cannot create conversation entries")
+    app.set("voice_warmup_active", true)
+    app.set("tts_pending", true)
+    app.call("_on_eli_wav", HTTPRequest.RESULT_TIMEOUT, 0, PackedStringArray(), PackedByteArray())
+    _expect(not bool(app.get("tts_pending")), "Warmup failure does not jam speech")
+    app.set("voice_warmup_checked", false)
+    app.set("voice_muted", true)
+    app.call("_start_voice_warmup", {"nano_cuda_ready": true, "nano_ready": true})
+    _expect(not bool(app.get("voice_warmup_active")), "Muted startup does not synthesize")
+    app.set("voice_muted", false)
     var engine_control: OptionButton = app.get("voice_engine_control")
     _expect(engine_control != null and engine_control.item_count == 5,
         "Voice Studio includes CPU and Vulkan native Nano, official Nano, and Piper")

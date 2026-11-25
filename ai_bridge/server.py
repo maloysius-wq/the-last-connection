@@ -7,6 +7,7 @@ import binascii
 from dataclasses import asdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import time
 from pathlib import Path
 
 from .agent import Agent, AgentError, BackendUnavailable, InvalidRequest, MockBackend, OllamaBackend, SessionStore, MODEL
@@ -98,7 +99,7 @@ def create_handler(agent: Agent, mode: str, updater=None,
                     return self._send(400, {"error": str(exc)[:220]})
                 except (OSError, RuntimeError):
                     return self._send(503, {"error": "Local conversation export couldn't be created."})
-            if self.path in ("/api/voice/transcribe", "/api/voice/speak"):
+            if self.path in ("/api/voice/transcribe", "/api/voice/speak", "/api/voice/warmup"):
                 if voice is None:
                     return self._send(503, {"error": "Optional voice runtime is not installed. Text mode still works."})
                 try:
@@ -117,6 +118,15 @@ def create_handler(agent: Agent, mode: str, updater=None,
                         return self._send(200, {"transcript": transcript})
                     data = self._read_voice_json(2_000)
                     options = {key: data[key] for key in ("profile", "threads", "engine") if key in data}
+                    if self.path == "/api/voice/warmup":
+                        # Use the real synthesis path, including saved voice
+                        # conditioning and GPU admission/fallback. Discard
+                        # audio here; it never reaches a speaker or session.
+                        started = time.monotonic()
+                        voice.synthesize("I'm listening.", "calm", **options)
+                        return self._send(200, {
+                            "engine": getattr(voice, "last_engine", ""),
+                            "seconds": round(time.monotonic() - started, 3)})
                     audio = voice.synthesize(data.get("text", ""), data.get("emotion", "calm"), **options)
                     return self._send_wav(audio, getattr(voice, "last_engine", ""))
                 except VoiceUnavailable as exc:
