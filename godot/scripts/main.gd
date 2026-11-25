@@ -862,7 +862,8 @@ func _setup_voice() -> void:
     add_child(voice_stt_http)
     voice_stt_http.request_completed.connect(_on_voice_transcription)
     voice_tts_http = HTTPRequest.new()
-    voice_tts_http.timeout = 245.0
+    # Cold CUDA startup + synthesis + bounded normal gameplay fallback.
+    voice_tts_http.timeout = 420.0
     add_child(voice_tts_http)
     voice_tts_http.request_completed.connect(_on_eli_wav)
     eli_voice_player = AudioStreamPlayer.new()
@@ -940,15 +941,18 @@ func _finish_voice_warmup(result: int, response_code: int, body: PackedByteArray
         voice_warmup_label.text = "Voice settings changed; next reply uses the new selection."
     elif result == HTTPRequest.RESULT_SUCCESS and response_code == 200 and typeof(report) == TYPE_DICTIONARY:
         var actual := str(report.get("engine", ""))
-        match actual:
-            "nano_cuda":
-                voice_warmup_label.text = "Eli's CUDA voice warmed up."
-            "nano":
-                voice_warmup_label.text = "Eli's CPU voice warmed up." if voice_engine == "auto" else "CUDA unavailable; CPU voice warmed up."
-            "piper":
-                voice_warmup_label.text = "Nano unavailable; Piper fallback available."
-            _:
-                voice_warmup_label.text = "Voice warmup finished; actual engine unconfirmed."
+        if str(report.get("status", "")) == "deferred":
+            voice_warmup_label.text = "Voice warmup deferred: " + str(report.get("reason", "see voice log")) + ". First reply will retry."
+        else:
+            match actual:
+                "nano_cuda":
+                    voice_warmup_label.text = "Eli's CUDA voice warmed up."
+                "nano":
+                    voice_warmup_label.text = "Eli's CPU voice warmed up." if voice_engine == "auto" else "CUDA unavailable; CPU voice warmed up."
+                "piper":
+                    voice_warmup_label.text = "Nano unavailable; Piper fallback available."
+                _:
+                    voice_warmup_label.text = "Voice warmup finished; actual engine unconfirmed."
         print("[Voice] Startup warmup: " + JSON.stringify(report))
     else:
         voice_warmup_label.text = "Voice warmup did not finish; speech will retry normally."

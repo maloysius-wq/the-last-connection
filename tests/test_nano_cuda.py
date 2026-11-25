@@ -2,6 +2,11 @@ import tempfile
 from pathlib import Path
 from unittest import TestCase
 from unittest.mock import Mock
+import queue
+import json
+import base64
+import io
+import wave
 from ai_bridge.nano import NanoVoice
 from ai_bridge.voice import LocalVoiceService
 from portable.nano_voice_worker import check_cuda
@@ -62,3 +67,56 @@ class CudaTests(TestCase):
             self.assertEqual(service.last_engine, "nano")
             service.native.synthesize.assert_not_called()
             service.native_vulkan.synthesize.assert_not_called()
+
+    def test_cuda_cold_load_and_synthesis_have_separate_deadlines(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cuda = NanoVoice(Path(tmp), device="cuda")
+            proc = Mock()
+            cuda._proc = proc
+            cuda._start = Mock()
+            buf = io.BytesIO()
+            with wave.open(buf, "wb") as wav:
+                wav.setnchannels(1)
+                wav.setsampwidth(2)
+                wav.setframerate(24000)
+                wav.writeframes(b"\0\0" * 100)
+            reply = json.dumps({"device": "cuda", "wav": base64.b64encode(buf.getvalue()).decode()})
+            cuda._responses = Mock()
+            cuda._responses.get.side_effect = [json.dumps({"ready": True, "device": "cuda"}), reply, reply]
+            cuda.synthesize("Warmup", optional_warmup=True)
+            cuda.synthesize("Real reply")
+            self.assertEqual([c.kwargs["timeout"] for c in cuda._responses.get.call_args_list],
+                             [120, 75, 75])
+            self.assertFalse(cuda.failed)
+
+    def test_startup_timeout_logs_stage_and_remains_retryable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cuda = NanoVoice(Path(tmp), device="cuda")
+            cuda._proc = Mock()
+            cuda._start = Mock()
+            cuda._stop = Mock()
+            cuda._responses = Mock()
+            cuda._responses.get.side_effect = queue.Empty
+            with self.assertRaisesRegex(RuntimeError, "worker startup timed out"):
+                cuda.synthesize("Warmup", optional_warmup=True)
+            self.assertFalse(cuda.failed)
+            self.assertIn("worker startup timed out", (Path(tmp) / "logs" / cuda.log_name).read_text())
+            with self.assertRaisesRegex(RuntimeError, "worker startup timed out"):
+                cuda.synthesize("Real reply")
+            self.assertTrue(cuda.failed)
+
+    def test_failed_warmup_never_loads_cpu_and_real_reply_retries_cuda(self):
+        from ai_bridge.voice import VoiceUnavailable
+        with tempfile.TemporaryDirectory() as tmp:
+            service = LocalVoiceService(Path(tmp))
+            service.nano_cuda.installed = Mock(return_value=True)
+            service.nano.installed = Mock(return_value=True)
+            service.nano.synthesize = Mock(return_value=b"cpu")
+            service.nano_cuda.synthesize = Mock(side_effect=[RuntimeError("timeout"), b"gpu"])
+            with self.assertRaises(VoiceUnavailable):
+                service.synthesize("Warmup", engine="nano_cuda", warmup_only=True)
+            self.assertFalse(service.nano_cuda.failed)
+            service.nano.synthesize.assert_not_called()
+            self.assertEqual(service.synthesize("Real reply", engine="nano_cuda"), b"gpu")
+            self.assertEqual(service.last_engine, "nano_cuda")
+            self.assertEqual(service.nano_cuda.synthesize.call_count, 2)
