@@ -75,6 +75,53 @@ class ConversationLoopTests(unittest.TestCase):
         self.assertIn('"speaker_can_see_you":"unknown"', system)
         self.assertEqual(len(model.requests), 1)
 
+    def test_uploaded_working_flashlight_demand_is_repaired_without_action(self):
+        draft = ("You woke up in a control room too? That’s not proof you’re real. "
+                 "If you want to help, show me something real—like a working flashlight or a way out. Not just a story.")
+        model = Model(plan(draft, emotion="angry", social=appraisal(trust=-1, anger=1)),
+                      reaction="I need some light, that's all. Tell me what you can see; I can check it myself.")
+        agent = Agent(model, self.store, PERSONA)
+        result = agent.decide("flashlight_proof", "I woke up in a control room. Will you work with me?", world())
+        self.assertFalse(result.actions)
+        self.assertIn("I need some light", result.speech)
+        self.assertEqual(len(model.requests), 1)
+        self.assertEqual(len(model.reactions), 1)
+        self.assertIn("cannot physically supply", model.reactions[0][0]["content"])
+        self.assertEqual(self.store.load("flashlight_proof")["relationship"]["trust"], -40)
+
+    def test_repeated_single_long_demand_triggers_repair(self):
+        demand = "If you want to help, show me something real—like a working flashlight or a way out."
+        self.store.save("single_repeat", {"history": [
+            {"role": "user", "content": "Will you work with me?"},
+            {"role": "assistant", "content": "I don't know. " + demand + " Not just a story."}
+        ], "facts": []})
+        model = Model(plan("I don't care about your stories. " + demand + " Not just a story."),
+                      reaction="Because it's dark and I want to see. I haven't checked whether the one here works.")
+        result = Agent(model, self.store, PERSONA).decide("single_repeat", "Why would you mention a flashlight?", world())
+        self.assertFalse(result.actions)
+        self.assertIn("Because it's dark", result.speech)
+        self.assertEqual(len(model.reactions), 1)
+        self.assertIn("repeats a substantial", model.reactions[0][0]["content"])
+
+    def test_reported_view_does_not_require_local_display(self):
+        model = Model(plan("That's not possible. I don't have a screen."),
+                      reaction="You're saying you can watch me from somewhere else? Who else can see this?")
+        result = Agent(model, self.store, PERSONA).decide("view", "I can see you on my screen.", world())
+        self.assertIn("somewhere else", result.speech)
+        self.assertFalse(result.actions)
+        self.assertEqual(len(model.reactions), 1)
+
+    def test_legitimate_light_wish_and_remote_guidance_are_single_pass(self):
+        model = Model(plan("I could use a working flashlight. Can you tell me what you see from where you are?"))
+        result = Agent(model, self.store, PERSONA).decide("light_wish", "How can I help?", world())
+        self.assertIn("working flashlight", result.speech)
+        self.assertFalse(result.actions)
+        self.assertFalse(model.reactions)
+
+    def test_short_boundary_placeholder_is_not_memory(self):
+        self.assertFalse(Agent._real_boundary("no"))
+        self.assertTrue(Agent._real_boundary("Do not ask about my monitor"))
+
     def test_failed_repair_does_not_repeat_or_act(self):
         self.seed()
         model = Model(plan(LOOP), reaction=LOOP)

@@ -606,7 +606,7 @@ class Agent:
         if re.search(r"\b(?:i will not accept|i have no evidence|i don t believe|i do not believe)\b", normalized) or normalized.startswith(("you claim ", "you say you can see ")):
             return False
         return bool(normalized) and normalized not in {
-            "none", "none set", "nothing", "no boundaries", "no boundary",
+            "none", "none set", "nothing", "no", "yes", "no boundaries", "no boundary",
             "no explicit boundary", "no explicit boundaries",
             "no explicit boundary set", "no explicit boundaries set",
             "not specified", "not set", "n a", "na", "unknown",
@@ -993,6 +993,10 @@ class Agent:
                                "speaker phrases things. The flashlight, wall panel, "
                                "keypad and door are IN YOUR ROOM. Never assign them "
                                "to the speaker or ask the speaker to grab them. "
+                               "The speaker can describe, guide or advise, not deliver "
+                               "or operate objects here. Visible does not mean tested "
+                               "or working. A claim about another location must be "
+                               "understood separately from whether you believe it. "
                                "Only speak of prior actions if confirmed by evidence. "
                                "Relationship numbers here are PRIVATE emotional "
                                "continuity, never say scores aloud, and they "
@@ -1055,12 +1059,63 @@ class Agent:
         recent = [turn.get("content", "") for turn in state.get("history", [])[-8:]
                   if isinstance(turn, dict) and turn.get("role") == "assistant"
                   and isinstance(turn.get("content"), str)]
-        if len(recent) < 2:
+        if not recent:
             return False
         old = [words for reply in recent for words in clauses(reply) if len(words) >= 5]
         repeated = [words for words in clauses(speech) if len(words) >= 5 and
                     any(len(words & prev) / len(words | prev) >= .72 for prev in old)]
-        return len(repeated) >= 2 and sum(map(len, repeated)) >= 14
+        if len(repeated) >= 2 and sum(map(len, repeated)) >= 14:
+            return True
+        # A single substantial demand may dominate a reply even when the
+        # opening sentences change. Match the latest reply especially closely;
+        # brief recurring phrases or a repeated object name are not a loop.
+        def ordered(value):
+            return [re.findall(r"[a-z0-9]+", part.lower())
+                    for part in re.split(r"(?<=[.!?])\s+", value) if part.strip()]
+        current = ordered(speech)
+        total = sum(map(len, current))
+        previous = ordered(recent[-1])
+        return any(len(part) >= 12 and len(part) * 3 >= total and
+                   any(part == old_part for old_part in previous)
+                   for part in current)
+
+    @staticmethod
+    def _conversation_issue(speech, state, world, player_text):
+        """Detect demonstrated perspective contradictions, not disliked emotion.
+
+        Keep hypothetical wishes for light, remote visual descriptions and
+        requests for information legitimate. Only repair physical proof demands
+        about props in Eli's own room or a specific mistaken inference about
+        the speaker's reported view. Never infer action permission here.
+        """
+        if Agent._repeated_conversation(speech, state):
+            return "Your draft repeats a substantial objection or demand instead of answering the latest words."
+        local = {name for name, item in world.get("objects", {}).items()
+                 if isinstance(item, dict) and item.get("visible") is True}
+        for clause in re.split(r"(?<=[.!?])\s+", speech):
+            words = clause.lower().replace("’", "'")
+            # Asking for physical proof is different from asking the speaker
+            # to describe an object, direct a search, or read something aloud.
+            physical_proof = re.search(
+                r"\b(?:show|give|bring|hand|pass|send|get)\s+me\s+"
+                r"(?:something\s+real\s*[,;:—–-]*\s*(?:like|such\s+as)\s+)?"
+                r"(?:a|an|the|that|this)\s+(?:working\s+)?"
+                r"(?:flashlight|torch|breaker(?:\s+box)?|keypad|door|note)\b", words)
+            if physical_proof and set(mentioned_targets(words)) & local:
+                return ("The other person cannot physically supply the objects in your room. "
+                        "Distinguish wanting light from knowing a particular object works; "
+                        "ask for information you could verify yourself, not physical delivery.")
+        user_history = [str(turn.get("content", "")) for turn in state.get("history", [])[-12:]
+                        if isinstance(turn, dict) and turn.get("role") == "user"]
+        claimed_view = any(re.search(r"\b(?:see|seeing|watch|watching)\b.{0,100}\b(?:screen|monitor|camera)\b|"
+                                     r"\b(?:screen|monitor|camera)\b.{0,100}\b(?:see|seeing|watch|watching)\b",
+                                     line, re.I) for line in [*user_history, player_text])
+        if claimed_view and re.search(r"\b(?:not possible|impossible|can't be|cannot be)\b.{0,100}"
+                                      r"\bi\s+(?:don't|do not)\s+have\s+(?:a|the)\s+(?:screen|monitor)\b",
+                                      speech.replace("’", "'"), re.I | re.S):
+            return ("You confused the speaker's reported view with what exists in your own room. "
+                    "Understand their explanation before deciding whether it is credible.")
+        return ""
 
     def _decide_goals(self, session_id: str, player_text: str,
                       world: dict[str, Any]) -> Decision:
@@ -1111,15 +1166,20 @@ class Agent:
             repair_calls = 0
             # Only repair clearly looping conversation; no changes to action
             # authorization and no second call for ordinary dialogue.
-            if kind in ("conversation", "clarify") and goals == [] and self._repeated_conversation(candidate, state):
+            conversation_issue = (self._conversation_issue(candidate, state, world, player_text)
+                                  if goals == [] and (kind in ("conversation", "clarify") or
+                                      (kind == "action" and isinstance(appraisal, dict)
+                                       and appraisal.get("willingness") != "accept")) else "")
+            if conversation_issue:
                 converse = getattr(self.backend, "converse", None)
                 if callable(converse) and elapsed_ms < 200_000:
                     repair_calls = 1
                     messages = self._messages(state, player_text, dialogue=True, world=world)
                     messages[0]["content"] += (
-                        "\nCONVERSATION REPAIR: Your draft recycled multiple objections "
-                        "from your recent replies. Understand the speaker's actual explanation "
-                        "from their perspective; acknowledge it as a claim, not proof. "
+                        "\nCONVERSATION REPAIR: " + conversation_issue +
+                        " Understand the speaker's actual words from their perspective; "
+                        "acknowledge claims as claims, not proof. If asked why you said "
+                        "something, explain your reason or correct your misunderstanding. "
                         "Keep your current fear, anger and distrust. Do not repeat prior "
                         "demands for proof or the same objections. Respond freshly in one "
                         "or two short sentences; no physical actions, no promises to act. "
@@ -1129,12 +1189,12 @@ class Agent:
                                    if isinstance(self.backend, (OllamaBackend, LlamaCppBackend))
                                    else converse(messages))
                         grounded = self._ground_dialogue(revised, world, state, player_text, allow_fallback=False)
-                        if grounded and not self._repeated_conversation(grounded, state) and not self._unperformed_action_commitment(grounded):
+                        if grounded and not self._conversation_issue(grounded, state, world, player_text) and not self._unperformed_action_commitment(grounded):
                             candidate = grounded
-                            self.store.trace(session_id, "conversation_loop_repair", {"accepted": True})
+                            self.store.trace(session_id, "conversation_loop_repair", {"accepted": True, "reason": conversation_issue})
                         else:
                             candidate = ""
-                            self.store.trace(session_id, "conversation_loop_repair", {"accepted": False})
+                            self.store.trace(session_id, "conversation_loop_repair", {"accepted": False, "reason": conversation_issue})
                     except BackendUnavailable as exc:
                         candidate = ""
                         self.store.trace(session_id, "conversation_loop_repair", {"accepted": False, "error": str(exc)})
@@ -1255,7 +1315,7 @@ class Agent:
                     # Only the rare contradictory or unusable first reply
                     # needs another local inference. It can supply dialogue
                     # but NEVER reverse the model's withheld consent.
-                    if not speech:
+                    if not speech and not repair_calls:
                         speech = self._relationship_action_speech(
                             state, player_text, world, (),
                             {"choice": "challenge", "motive": "none",
