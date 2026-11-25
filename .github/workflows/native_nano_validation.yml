@@ -14,8 +14,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-      - name: Install checksum-pinned native runtime and render actual audio
-        shell: pwsh
+      - name: Install checksum-pinned native runtime and render actual audio (Windows PowerShell 5.1)
+        shell: powershell
         run: |
           & ./portable/setup_native_nano.ps1
           if (!(Test-Path 'portable/models/chatterbox-nano-native/ready.json')) { throw 'Native Nano not ready' }
