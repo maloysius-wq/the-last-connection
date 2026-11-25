@@ -50,6 +50,40 @@ func _run() -> void:
         _expect(entry.has_focus(), "Chat regains focus after request is done")
         _expect(entry.text == "next instruction", "Draft survives between interactions")
         entry.clear()
+        # Failed decisions recover text for manual review, not automatic replay.
+        var failure_body := JSON.stringify({"error": "Local dialogue model request failed",
+            "category": "invalid_json", "hint": "Try your message again."}).to_utf8_buffer()
+        app.set("pending_player_text", "Can you hear me?")
+        app.set("request_stage", "decide")
+        app.call("_on_http_completed", HTTPRequest.RESULT_SUCCESS, 503, PackedStringArray(), failure_body)
+        _expect(entry.text == "Can you hear me?", "Failed decision restores original message")
+        _expect(app.get("request_stage") == "idle", "Failure returns the terminal to idle")
+        _expect(not bool(app.get("send_button").disabled), "Failure restores the transmit control")
+        _expect("invalid response" in str(app.get("log_view").get_parsed_text()),
+            "Structured error is explained without dumping raw JSON")
+        _expect(str(app.get("pending_player_text")).is_empty(), "Failure clears pending request ownership")
+        entry.text = "A newer draft"
+        app.set("pending_player_text", "Previous message")
+        app.set("request_stage", "decide")
+        app.call("_on_http_completed", HTTPRequest.RESULT_TIMEOUT, 0, PackedStringArray(), PackedByteArray())
+        _expect(entry.text == "A newer draft", "Timeout does not overwrite a newer draft")
+        _expect("timed out" in str(app.get("log_view").get_parsed_text()), "Timeout gets a distinct explanation")
+        entry.clear()
+        app.set("pending_player_text", "Review malformed reply")
+        app.set("request_stage", "decide")
+        app.call("_on_http_completed", HTTPRequest.RESULT_SUCCESS, 200, PackedStringArray(), "[]".to_utf8_buffer())
+        _expect(entry.text == "Review malformed reply", "Unreadable success payload recovers text")
+        entry.clear()
+        var before_failure: Dictionary = world.snapshot()
+        app.get("queued_actions").append({"action": "move_to", "target": "keypad"})
+        app.set("request_stage", "outcome")
+        app.call("_on_http_completed", HTTPRequest.RESULT_SUCCESS, 503, PackedStringArray(), failure_body)
+        _expect(app.get("queued_actions").is_empty(), "Failed outcome cancels remaining physical actions")
+        _expect(entry.text.is_empty(), "Failed outcome does not restore or replay a player command")
+        _expect(world.snapshot() == before_failure, "Failed outcome never changes the authoritative room")
+        _expect("was not undone" in str(app.get("log_view").get_parsed_text()),
+            "Outcome failure distinguishes physical reality from a missing receipt")
+        entry.clear()
         # Lost Windows focus must not swallow the FIRST character when the
         # terminal is already showing READY. No focus-exited regrab callback.
         entry.release_focus()

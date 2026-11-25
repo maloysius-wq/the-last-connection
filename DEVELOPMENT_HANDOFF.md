@@ -1,28 +1,25 @@
 # DEVELOPMENT HANDOFF — The Last Connection
 
-Updated: 2026-11-21
+Updated: 2026-11-25
 
 ## Product
 
-First-person psychological horror surveillance game. Player guides Eli, a trapped AI-controlled person, through a dark escape room. User approved both typed and spoken interaction; voice is a required product feature, but it is intentionally not implemented in the initial AI/action vertical slice.
+First-person psychological horror surveillance game. Player communicates with Eli, a trapped AI-controlled person, using typed or spoken messages. The game uses local inference and the engine owns physical reality.
 
-## Current status
+## Current status (read this before historical entries)
 
-- Prototype Python bridge, local session memory and strict structured-action contract implemented.
-- Explicit Ollama model `qwen3:4b-instruct` and explicit `--mock` mode.
-- Basic Godot 4 surveillance view, room geometry, clickable terminal input, Eli placeholder, action tween, flashlight pickup, breaker interaction and persistent room state created.
-- Python unit and HTTP integration tests pass: 18/18 (2026-11-19).
-- **Godot runtime smoke-tested by GitHub Actions using Godot 4.5.2:** full first-room escape, wrong/correct keypad inputs, reset, and restore all passed. Headless checks do not validate on-screen visual quality or real microphone/voice hardware.
-- User created public GitHub repository `maloysius-wq/the-last-connection` on 2026-11-19. Prototype 01 source was committed to `main` at `9f3c9bc214c51bfd31896f9a98404d6ef0a94c3a`; the GitHub repository is now the source of truth.
-- Fixed the initial Godot session ID formatting bug: integer Unix timestamp now conforms to the bridge session ID regex; legacy saved decimal timestamps are replaced on load.
+- Windows portable release with in-game updater, local GGUF dialogue, and opt-in offline STT/TTS. Official Chatterbox Nano CUDA works in the user's GTX 1060 gameplay; preserve the installed models, environments, settings and saves.
+- First maintenance-room escape, semantic goal planning, action receipts, session transcripts and diagnostic ZIP export, and emotional cooperation/relationship gating are implemented.
+- Latest verified playable release: `portable-4e9813da79d10fedd5d288f922140f411772535e` (PR #48). Python 429 tests and Godot headless validation passed; official Windows release verified. Main may contain documentation-only commits after the release.
+- Remote-perspective comprehension, repeated-clause repair and structured bridge error reporting were shipped in PR #48. Real local GGUF dialogue behavior still requires player testing.
+- Historical entries below are chronological records, not current priority instructions.
 
 ## Immediate priority
 
-1. **Next feature: Phase 3 voice communications.** Build opt-in push-to-talk input and a local speech-to-text adapter (whisper.cpp), then route transcripts to the same `/api/decide` handler as typing. Keep a keyboard-only fallback.
-2. Add local TTS playback for Eli with subtitles and a mute/skip setting; inspect redistributable model and voice licensing before bundling binaries.
-3. Evaluate actual `qwen3:4b-instruct` with Ollama for first-room puzzle completion, vague instructions, and response latency; CI currently uses deterministic mock mode, not a real LLM.
-4. Improve 3D art, atmosphere, character animations, and visual QA on a desktop machine. Headless CI cannot establish visual fidelity.
-5. Add tests for the voice adapter and failure states; keep GitHub Actions Python+Godot checks green.
+1. Preserve working CUDA voice and physical authority. Validate conversation repairs with the player's real local model; address concrete failures from diagnostic exports.
+2. Terminal failure recovery: present readable bridge errors, restore a failed decision to the editor only if no newer draft exists, and never automatically replay a decision or an already-executed physical action.
+3. Keep emotional agency, cooperation, action queues, save/export and local-only operation regression-tested. No additional voice backend installations without a demonstrated need.
+4. Improve room atmosphere, character animation and visual presentation after interaction reliability. Desktop visual and microphone QA cannot be inferred from headless CI.
 
 ## Safeguards
 
@@ -572,3 +569,7 @@ Primary repo: `maloysius-wq/the-last-connection` (public; created by user). Use 
 - Seven new session regression tests plus entire 429-test Python suite passed; existing context-size limit preserved by removing duplicate instructions after initial regression failure. Exact-head prototype 45672911093 (Python/Godot) and portable Windows 45672911074 both SUCCESS. Merged main validation 45678198882 and official Windows release 45678198958 must be verified before announcing updater availability. No CUDA changes or reinstall required.
 
 - **OFFICIAL RELEASE VERIFIED:** Main validation 45678198882 and Windows publication 45678198958 SUCCESS at `4e9813da79d10fedd5d288f922140f411772535e`. Latest release `portable-4e9813da79d10fedd5d288f922140f411772535e` targets exact commit; ZIP 239,724,751 bytes SHA256 `2b3d1f4085383490bfc8754aac59109d11c10f6b255adad6881e40c45098383c`; checksum asset 106 bytes SHA256 `a612a32bbc261cd70b1e488396f772bdb5e9d6bf9945bb329e6878ec4f8acf88`. User can CHECK FOR UPDATES. No voice reinstallation necessary. Actual local dialogue behavior remains to be playtested.
+
+## 2026-11-25: Terminal failure recovery (candidate change)
+
+- The terminal previously dumped raw HTTP errors and cleared submitted text even if the decision failed. Candidate patch adds readable structured failure explanations, manual message recovery only when the editor is empty, preserves newer drafts, cancels remaining actions on a failed outcome without undoing world state, and never resends automatically. Headless smoke regressions cover these paths. Await exact-head CI and release verification; no change to inference or voice.
