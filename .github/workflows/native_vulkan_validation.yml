@@ -1,0 +1,35 @@
+name: Native Vulkan runtime packaging and device probe
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'portable/setup_native_nano.ps1'
+      - 'portable/SETUP_NATIVE_NANO_VULKAN.cmd'
+      - 'ai_bridge/native_nano.py'
+      - '.github/workflows/native_vulkan_validation.yml'
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: windows-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify pinned actual Vulkan portable package and device enumeration
+        shell: powershell
+        run: |
+          & ./portable/setup_native_nano.ps1 -Backend vulkan -ProbeOnly
+          if (Test-Path 'portable/models/chatterbox-nano-native/ready-vulkan.json') { throw 'Probe incorrectly enabled Vulkan without synthesis' }
+          if (Test-Path 'portable/models/chatterbox-nano-native/chatterbox-nano-q8_0.gguf') { throw 'Probe unexpectedly downloaded model' }
+      - name: Report hardware limitation
+        shell: pwsh
+        run: |
+          Write-Host 'Hosted runner probe only. Actual discrete GPU synthesis is verified by local setup, not this check.'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-vulkan-device-probe
+          path: |
+            portable/models/chatterbox-nano-native/devices-vulkan.json
+            portable/models/chatterbox-nano-native/devices-vulkan-error.log
+          if-no-files-found: warn
