@@ -12,12 +12,13 @@ First-person psychological horror surveillance game. Player communicates with El
 - First maintenance-room escape, semantic goal planning, action receipts, session transcripts and diagnostic ZIP export, and emotional cooperation/relationship gating are implemented.
 - Latest verified published release: `portable-e6608c6b3ef1a0f609f119262d1ee4133e20291d` (PR #51). Python/Godot, Windows packaging, real CPU Nano synthesis and CUDA dependency validation passed. Real GTX 1060 playtest pending. Main may contain documentation-only commits after the release.
 - Remote-perspective comprehension, repeated-clause repair and structured bridge error reporting were shipped in PR #48. Real local GGUF dialogue behavior still requires player testing.
+- User verified PR #51 CUDA warmup: 57.579s ready, 24 subsequent playable CUDA chunks 0.70–2.29s (mean 1.22s); no fallback in latest game log. Vulkan dialogue warmup 0.234s. Latest four LLM requests 17.056, 7.116, 10.193, 8.649s; first prefill 3132 tokens/12.122s, decode 148 tokens/4.934s. Qwen3-4B-Instruct-2507 Q4_K_M, requested 99 Vulkan layers, 30–32 generated tokens/s. Existing prefix caching works. Candidate compact goal prompt removes explicit camera/screen priming, retains validated action and relationship contracts, and logs prompt character/message counts. No voice/runtime settings changes. Actual speed and conversation quality need fresh user playtest; CI does not prove either.
 - Historical entries below are chronological records, not current priority instructions.
 
 ## Immediate priority
 
 1. Preserve working CUDA voice and physical authority. Validate conversation repairs with the player's real local model; address concrete failures from diagnostic exports.
-2. Playtest shipped CUDA warmup recovery (PR #51) on the user's GTX 1060. Verify selected CUDA voice warms successfully or defers without fallback, first real speech retries if deferred, and dialogue remains responsive. Preserve GPU offload and admission safeguards; collect fresh logs if failure recurs. Terminal failure recovery shipped in PR #49.
+2. Validate compact dialogue prompt and fresh-session knowledge separation against prior tests, then benchmark actual GGUF on user's GTX 1060. Preserve working CUDA voice, GPU offload and admission safeguards. Do not assume concurrent streaming is faster without testing contention.
 3. Keep emotional agency, cooperation, action queues, save/export and local-only operation regression-tested. No additional voice backend installations without a demonstrated need.
 4. Improve room atmosphere, character animation and visual presentation after interaction reliability. Desktop visual and microphone QA cannot be inferred from headless CI.
 
