@@ -95,6 +95,24 @@ var microphone_recording := false
 var transcribing := false
 var voice_speaking_queue: Array[Dictionary] = []
 var tts_pending := false
+var voice_buffer: Array[AudioStreamWAV] = []
+var voice_epoch := 0
+var voice_request_epoch := 0
+var voice_request_started := 0
+var voice_profile := "default"
+var voice_threads := 0
+var voice_engine := "auto"
+var voice_fast := true
+var voice_studio: Window
+var voice_profiles: OptionButton
+var voice_thread_control: SpinBox
+var voice_engine_control: OptionButton
+var voice_fast_control: CheckButton
+var voice_emotion_control: OptionButton
+var voice_benchmark_label: Label
+var voice_import_dialog: FileDialog
+var voice_status_data: Dictionary = {}
+var voice_benchmark := false
 var voice_muted := false
 var text_only := false
 var microphone_sensitivity := 0.35
@@ -262,6 +280,12 @@ func _build_ui() -> void:
     voice_skip_button.focus_mode = Control.FOCUS_NONE
     voice_skip_button.pressed.connect(_skip_eli_voice)
     setting_row.add_child(voice_skip_button)
+    var studio_button := Button.new()
+    studio_button.text = "VOICE STUDIO"
+    studio_button.focus_mode = Control.FOCUS_NONE
+    studio_button.pressed.connect(_open_voice_studio)
+    right.add_child(studio_button)
+    _build_voice_studio()
     update_button = Button.new()
     update_button.text = "CHECK FOR UPDATES"
     update_button.focus_mode = Control.FOCUS_NONE
@@ -744,6 +768,10 @@ func _load_save() -> void:
         text_only = bool(cfg.get_value("voice", "text_only", false))
         microphone_sensitivity = clampf(float(cfg.get_value("voice", "sensitivity", 0.35)), 0.0, 1.0)
         voice_volume = clampf(float(cfg.get_value("voice", "volume", 0.80)), 0.0, 1.0)
+        voice_profile = str(cfg.get_value("voice", "profile", "default"))
+        voice_threads = clampi(int(cfg.get_value("voice", "threads", 0)), 0, 32)
+        voice_engine = str(cfg.get_value("voice", "engine", "auto"))
+        voice_fast = bool(cfg.get_value("voice", "fast", true))
         voice_mute_button.set_pressed_no_signal(voice_muted)
         voice_text_only_button.set_pressed_no_signal(text_only)
         sensitivity_slider.set_value_no_signal(microphone_sensitivity)
@@ -765,6 +793,10 @@ func _save() -> void:
     cfg.set_value("voice", "text_only", text_only)
     cfg.set_value("voice", "sensitivity", microphone_sensitivity)
     cfg.set_value("voice", "volume", voice_volume)
+    cfg.set_value("voice", "profile", voice_profile)
+    cfg.set_value("voice", "threads", voice_threads)
+    cfg.set_value("voice", "engine", voice_engine)
+    cfg.set_value("voice", "fast", voice_fast)
     var error := cfg.save(_save_path())
     if error != OK:
         push_warning("Couldn't write save game: " + str(error))
@@ -816,6 +848,8 @@ func _on_voice_status(result: int, code: int, _headers: PackedStringArray, body:
             stt_ready = bool(data.get("stt_ready", false))
             tts_ready = bool(data.get("tts_ready", false))
             voice_name = str(data.get("voice", "local voice"))
+            voice_status_data = data
+            _refresh_voice_profiles()
     microphone_button.disabled = not stt_ready or text_only
     if not text_only:
         audio_link_status.text = ("AUDIO LINK: PUSH TO TALK (V)" if stt_ready
@@ -921,64 +955,234 @@ func _voice_ready() -> void:
         "AUDIO LINK: MIC UNAVAILABLE") + "       ◦       VIDEO FEED: ACTIVE"
     call_deferred("_restore_input_focus")
 
+# Fast mode sends a short opening clause/sentence, then bounded natural
+# chunks. Preserve words and punctuation; never synthesize invented filler.
+func _voice_chunks(speech: String, fast: bool) -> Array[String]:
+    var parts: Array[String] = []
+    var current := ""
+    for word in speech.split(" ", false):
+        if word.length() > 420:
+            if not current.is_empty():
+                parts.append(current)
+                current = ""
+            for offset in range(0, word.length(), 420):
+                parts.append(word.substr(offset, 420))
+            continue
+        var limit := (72 if parts.is_empty() else 150) if fast else 420
+        if not current.is_empty() and current.length() + word.length() + 1 > limit:
+            parts.append(current)
+            current = ""
+        current += ("" if current.is_empty() else " ") + word
+        if fast and (word.ends_with(".") or word.ends_with("!") or word.ends_with("?") or
+                (parts.is_empty() and current.length() >= 35 and
+                (word.ends_with(",") or word.ends_with(";")))):
+            parts.append(current)
+            current = ""
+    if not current.is_empty():
+        parts.append(current)
+    return parts
+
 func _queue_eli_speech(speech: String, emotion: String = "calm") -> void:
     if text_only or voice_muted or not tts_ready or not is_instance_valid(voice_tts_http):
         return
-    # Preserve the complete subtitle. Long lines are spoken in sequential
-    # chunks; speech is never truncated mid-sentence by a character limit.
-    var chunks := speech.split(" ", false)
-    var current := ""
-    for word in chunks:
-        if word.length() > 1100:
-            continue
-        if not current.is_empty() and current.length() + word.length() + 1 > 420:
-            voice_speaking_queue.append({"text": current, "emotion": emotion})
-            current = ""
-        current += ("" if current.is_empty() else " ") + word
-    if not current.is_empty():
-        voice_speaking_queue.append({"text": current, "emotion": emotion})
+    for part in _voice_chunks(speech, voice_fast and voice_engine != "piper"):
+        voice_speaking_queue.append({"text": part, "emotion": emotion,
+            "profile": voice_profile, "threads": voice_threads, "engine": voice_engine})
     _play_next_eli_chunk()
 
 func _play_next_eli_chunk() -> void:
-    if text_only or voice_muted or tts_pending or eli_voice_player.playing:
+    if text_only or voice_muted or not is_instance_valid(eli_voice_player):
         return
-    if voice_speaking_queue.is_empty():
+    if not eli_voice_player.playing and not voice_buffer.is_empty():
+        eli_voice_player.stream = voice_buffer.pop_front()
+        _set_voice_volume()
+        eli_voice_player.play()
+    # At most one ready WAV ahead. Generate it while the current WAV plays.
+    if tts_pending or not voice_buffer.is_empty() or voice_speaking_queue.is_empty():
         return
     var segment: Dictionary = voice_speaking_queue.pop_front()
     tts_pending = true
+    voice_request_epoch = voice_epoch
+    voice_request_started = Time.get_ticks_msec()
     var result := voice_tts_http.request(BRIDGE_URL + "/api/voice/speak",
         PackedStringArray(["Content-Type: application/json"]),
         HTTPClient.METHOD_POST, JSON.stringify(segment))
     if result != OK:
         tts_pending = false
+        voice_speaking_queue.clear()
         _message("SYSTEM", "Eli's local speech engine is unavailable. Subtitles still work.")
 
 func _on_eli_wav(result: int, response_code: int, _headers: PackedStringArray,
         body: PackedByteArray) -> void:
     tts_pending = false
-    if text_only or voice_muted:
+    # Skipping cannot cancel Python computation already underway. Drain that
+    # response before sending the next request; never play stale audio.
+    if voice_request_epoch != voice_epoch or text_only or voice_muted:
+        _play_next_eli_chunk()
         return
     if result != HTTPRequest.RESULT_SUCCESS or response_code != 200:
-        tts_ready = false
         voice_speaking_queue.clear()
         _message("SYSTEM", "Eli's voice couldn't be generated. His subtitles still work.")
+        voice_benchmark_label.text = "Synthesis failed. See local voice log."
+        voice_benchmark = false
         return
     var stream: AudioStreamWAV = AudioStreamWAV.load_from_buffer(body)
     if stream == null:
         _message("SYSTEM", "Eli's voice returned invalid audio. Subtitles still work.")
         _play_next_eli_chunk()
         return
-    eli_voice_player.stream = stream
-    _set_voice_volume()
-    eli_voice_player.play()
+    var elapsed := float(Time.get_ticks_msec() - voice_request_started) / 1000.0
+    var metrics := "First playable segment: %.2fs | %.2fs audio" % [elapsed, stream.get_length()]
+    print("[Voice] " + metrics)
+    voice_benchmark_label.text = metrics
+    if voice_benchmark:
+        voice_benchmark = false
+    voice_buffer.append(stream)
+    _play_next_eli_chunk()
 
 func _skip_eli_voice() -> void:
+    voice_epoch += 1
+    voice_benchmark = false
     voice_speaking_queue.clear()
+    voice_buffer.clear()
     if is_instance_valid(eli_voice_player):
         eli_voice_player.stop()
-    if is_instance_valid(voice_tts_http) and tts_pending:
-        voice_tts_http.cancel_request()
-        tts_pending = false
+
+func _build_voice_studio() -> void:
+    voice_studio = Window.new()
+    voice_studio.title = "Eli Voice Studio"
+    voice_studio.size = Vector2i(450, 390)
+    voice_studio.visible = false
+    voice_studio.close_requested.connect(func(): voice_studio.hide())
+    add_child(voice_studio)
+    var panel := VBoxContainer.new()
+    panel.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+    panel.add_theme_constant_override("separation", 9)
+    voice_studio.add_child(panel)
+    var heading := Label.new()
+    heading.text = "LOCAL VOICE / PERFORMANCE"
+    panel.add_child(heading)
+    voice_profiles = OptionButton.new()
+    panel.add_child(voice_profiles)
+    voice_profiles.item_selected.connect(func(idx: int):
+        voice_profile = str(voice_profiles.get_item_metadata(idx))
+        _save())
+    voice_engine_control = OptionButton.new()
+    voice_engine_control.add_item("Chatterbox Nano (automatic Piper fallback)")
+    voice_engine_control.add_item("Piper (fast fallback)")
+    panel.add_child(voice_engine_control)
+    voice_engine_control.item_selected.connect(func(idx: int):
+        voice_engine = "piper" if idx == 1 else "auto"
+        _save())
+    var thread_label := Label.new()
+    thread_label.text = "CPU threads (0 = automatic)"
+    panel.add_child(thread_label)
+    voice_thread_control = SpinBox.new()
+    voice_thread_control.min_value = 0
+    voice_thread_control.max_value = 32
+    voice_thread_control.step = 1
+    panel.add_child(voice_thread_control)
+    voice_thread_control.value_changed.connect(func(value: float):
+        voice_threads = int(value)
+        _save())
+    voice_fast_control = CheckButton.new()
+    voice_fast_control.text = "Low-latency sentence buffering"
+    panel.add_child(voice_fast_control)
+    voice_fast_control.toggled.connect(func(enabled: bool):
+        voice_fast = enabled
+        _save())
+    voice_emotion_control = OptionButton.new()
+    for emotion in ["calm", "afraid", "angry", "suspicious", "relieved"]:
+        voice_emotion_control.add_item(emotion.capitalize())
+        voice_emotion_control.set_item_metadata(voice_emotion_control.item_count - 1, emotion)
+    panel.add_child(voice_emotion_control)
+    var preview := Button.new()
+    preview.text = "PREVIEW + BENCHMARK"
+    preview.pressed.connect(_preview_voice)
+    panel.add_child(preview)
+    var import_button := Button.new()
+    import_button.text = "IMPORT AUTHORIZED REFERENCE WAV"
+    import_button.pressed.connect(func(): voice_import_dialog.popup_centered_ratio(0.75))
+    panel.add_child(import_button)
+    voice_benchmark_label = Label.new()
+    voice_benchmark_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+    voice_benchmark_label.text = "Preview measures request-to-playable-audio latency."
+    panel.add_child(voice_benchmark_label)
+    voice_import_dialog = FileDialog.new()
+    voice_import_dialog.access = FileDialog.ACCESS_FILESYSTEM
+    voice_import_dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILE
+    voice_import_dialog.filters = PackedStringArray(["*.wav ; WAV reference (over 5 seconds)"])
+    voice_import_dialog.file_selected.connect(_import_voice_reference)
+    voice_studio.add_child(voice_import_dialog)
+    _refresh_voice_profiles()
+
+func _refresh_voice_profiles() -> void:
+    if not is_instance_valid(voice_profiles):
+        return
+    voice_profiles.clear()
+    var profiles: Variant = voice_status_data.get("profiles", [{"id": "default", "label": "Original Nano"}])
+    if typeof(profiles) != TYPE_ARRAY:
+        return
+    for item in profiles:
+        if typeof(item) != TYPE_DICTIONARY:
+            continue
+        voice_profiles.add_item(str(item.get("label", "Voice")))
+        var idx := voice_profiles.item_count - 1
+        voice_profiles.set_item_metadata(idx, str(item.get("id", "default")))
+        if str(item.get("id", "")) == voice_profile:
+            voice_profiles.select(idx)
+    if voice_profiles.selected < 0 and voice_profiles.item_count > 0:
+        voice_profiles.select(0)
+
+func _open_voice_studio() -> void:
+    _refresh_voice_profiles()
+    voice_thread_control.set_value_no_signal(voice_threads)
+    voice_engine_control.select(1 if voice_engine == "piper" else 0)
+    voice_fast_control.set_pressed_no_signal(voice_fast)
+    voice_studio.popup_centered()
+
+func _preview_voice() -> void:
+    if voice_muted or text_only or not tts_ready:
+        voice_benchmark_label.text = "Enable local speech to preview."
+        return
+    _skip_eli_voice()
+    voice_benchmark = true
+    voice_benchmark_label.text = "Generating preview locally..."
+    var emotion := str(voice_emotion_control.get_item_metadata(voice_emotion_control.selected))
+    # Single fixed prompt for repeatable timing; never becomes Eli dialogue.
+    voice_speaking_queue.append({"text": "Is someone there? I can hear you.", "emotion": emotion,
+        "profile": voice_profile, "threads": voice_threads, "engine": voice_engine})
+    _play_next_eli_chunk()
+
+func _import_voice_reference(path: String) -> void:
+    var bytes := FileAccess.get_file_as_bytes(path)
+    if bytes.size() < 44 or bytes.size() > 16000000:
+        voice_benchmark_label.text = "Use a clean 5–30 second WAV under 16 MB."
+        return
+    var sample := AudioStreamWAV.load_from_buffer(bytes)
+    if sample == null or sample.get_length() <= 5.0 or sample.get_length() > 30.0:
+        voice_benchmark_label.text = "Reference must be a playable WAV longer than 5 seconds, up to 30."
+        return
+    var folder := OS.get_executable_path().get_base_dir().path_join("models/chatterbox-nano/voices")
+    if DirAccess.make_dir_recursive_absolute(folder) != OK:
+        voice_benchmark_label.text = "Could not create local voice directory."
+        return
+    var safe := RegEx.new()
+    safe.compile("[^A-Za-z0-9_-]")
+    var name := safe.sub(path.get_file().get_basename(), "_", true).left(36)
+    name = name + "_" + str(Time.get_ticks_msec())
+    var dest := folder.path_join(name + ".wav")
+    var file := FileAccess.open(dest, FileAccess.WRITE)
+    if file == null:
+        voice_benchmark_label.text = "Could not save reference."
+        return
+    file.store_buffer(bytes)
+    file.close()
+    voice_profile = "ref:" + name
+    _save()
+    voice_benchmark_label.text = "Reference imported locally. Select Preview to audition."
+    if is_instance_valid(voice_status_http):
+        voice_status_http.request(BRIDGE_URL + "/api/voice/status")
 
 func _stop_all_voice() -> void:
     _skip_eli_voice()

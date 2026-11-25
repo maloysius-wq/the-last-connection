@@ -149,3 +149,17 @@ the optional runtime; if moving to a different drive or machine, rerun setup
 if its environment no longer works. Listen to sample.wav after setup.
 Official model: https://huggingface.co/ResembleAI/chatterbox-nano
 Official code: https://github.com/resemble-ai/chatterbox
+
+### Voice Studio and low-latency buffering
+Open VOICE STUDIO in the game to select the built-in Nano voice, Joe (an
+on-demand local synthetic reference from the bundled CC0 Piper model), or
+import your own authorized WAV references (5–30 seconds). References are copied
+to models/chatterbox-nano/voices and persist through updates. Preview measures
+request-to-playable-WAV latency for a fixed line without changing Eli's
+conversation. Select 0 threads for automatic, or compare thread counts on your
+hardware. Select Piper for speed. Low-latency mode sends a short opening
+segment and prefetches one WAV during playback; toggle off for longer segments
+and continuity. This is sentence buffering, not true model-token streaming.
+The worker logs model load, inference time, audio duration and CPU threads to
+logs/nano-voice.log. Game logs contain time to playable audio. Nano's first
+custom reference can take longer; conditionals are cached in memory.

@@ -25,15 +25,47 @@ def load(root):
     os.environ["TRANSFORMERS_OFFLINE"] = "1"
     import torch
     from chatterbox.tts_turbo import ChatterboxTurboTTS
-    torch.set_num_threads(max(1, min(8, (os.cpu_count() or 2) // 2)))
+    torch.set_num_threads(auto_threads())
     torch.set_num_interop_threads(1)
     model = ChatterboxTurboTTS.from_local(root / "checkpoint", device="cpu", nano=True)
-    ref = root / "eli-reference.wav"
-    if ref.is_file():
-        model.prepare_conditionals(str(ref))
-    elif model.conds is None:
+    if model.conds is None:
         raise RuntimeError("Nano's built-in voice is missing")
     return model
+
+
+def auto_threads():
+    # Torch's default can oversubscribe older CPUs. Leave one logical core
+    # available for UI and the GGUF server, with a sensible upper bound.
+    return max(1, min(8, (os.cpu_count() or 2) - 1))
+
+
+def voice_conditionals(model, root, profile, cache):
+    import re
+    if profile == "default":
+        # Preserve previous installations that explicitly installed a custom voice.
+        path = root / "eli-reference.wav"
+        if not path.is_file():
+            model.conds = cache["builtin"]
+            return
+    elif profile == "custom":
+        path = root / "eli-reference.wav"
+    elif profile == "joe":
+        path = root / "joe-reference.wav"
+    elif isinstance(profile, str) and re.fullmatch(r"ref:[A-Za-z0-9_-]{1,48}", profile):
+        path = root / "voices" / (profile[4:] + ".wav")
+    else:
+        raise ValueError("Unknown voice profile")
+    if not path.is_file() or path.is_symlink():
+        raise ValueError("Voice reference missing")
+    key = (str(path), path.stat().st_mtime_ns)
+    if key not in cache:
+        # Limit cached reference conditionals to avoid growing RAM indefinitely.
+        if len(cache) >= 5:
+            cache.pop(next(k for k in cache if k != "builtin"))
+        model.prepare_conditionals(str(path))
+        cache[key] = model.conds
+    else:
+        model.conds = cache[key]
 
 
 def render(model, text):
@@ -80,7 +112,12 @@ def serve(root):
     # stdout is the protocol; all library logging goes to the local log.
     output = sys.stdout
     with contextlib.redirect_stdout(sys.stderr):
+        load_started = time.monotonic()
         model = load(root)
+        cache = {"builtin": model.conds}
+        import torch
+        print("Nano load seconds:", round(time.monotonic() - load_started, 2),
+              file=sys.stderr, flush=True)
         for line in sys.stdin:
             started = time.monotonic()
             try:
@@ -88,9 +125,23 @@ def serve(root):
                 text = data.get("text")
                 if not isinstance(text, str) or not 1 <= len(text) <= 520:
                     raise ValueError("Invalid speech text")
+                threads = data.get("threads", 0)
+                if type(threads) is not int or not 0 <= threads <= 32:
+                    raise ValueError("Invalid thread count")
+                threads = min(threads or auto_threads(), os.cpu_count() or 1)
+                if torch.get_num_threads() != threads:
+                    torch.set_num_threads(threads)
+                voice_conditionals(model, root, data.get("profile", "default"), cache)
+                synth_started = time.monotonic()
                 wav = render(model, text)
-                response = {"wav": base64.b64encode(wav).decode("ascii")}
-                print("Nano synthesis seconds:", round(time.monotonic() - started, 2),
+                seconds = round(time.monotonic() - synth_started, 3)
+                with wave.open(io.BytesIO(wav), "rb") as stream:
+                    duration = round(stream.getnframes() / stream.getframerate(), 3)
+                response = {"wav": base64.b64encode(wav).decode("ascii"),
+                            "seconds": seconds, "audio_seconds": duration, "threads": threads}
+                print("Nano synthesis seconds:", seconds,
+                      "total:", round(time.monotonic() - started, 2),
+                      "audio seconds:", duration, "threads:", threads,
                       file=sys.stderr, flush=True)
             except Exception as exc:
                 print("Nano synthesis error:", repr(exc), file=sys.stderr, flush=True)
