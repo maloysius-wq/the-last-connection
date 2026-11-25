@@ -266,6 +266,9 @@ def main() -> int:
                 splash.title("The Last Connection | " + message)
                 splash.update()
 
+        # Overlap CPU voice model loading with the dialogue server startup.
+        voice_service = LocalVoiceService(base)
+        voice_service.warm()
         server_proc, acceleration, failed_attempts = start_model_server(
             base, model, config, model_log, _ready, progress=loading_notice, env=env,
         )
@@ -280,8 +283,6 @@ def main() -> int:
             splash = None
         agent = Agent(LlamaCppBackend(), SessionStore(saves / "sessions"),
                       resource_directory() / "data" / "characters" / "eli.json")
-        voice_service = LocalVoiceService(base)
-        voice_service.warm()
         bridge = ThreadingHTTPServer(("127.0.0.1", 8765),
                                      create_handler(agent, "llama.cpp", updater=UpdateService(base),
                                                     voice=voice_service))

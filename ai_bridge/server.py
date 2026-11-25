@@ -114,7 +114,8 @@ def create_handler(agent: Agent, mode: str, updater=None,
                         transcript = voice.transcribe(wav, data.get("sensitivity", 0.20))
                         return self._send(200, {"transcript": transcript})
                     data = self._read_voice_json(2_000)
-                    audio = voice.synthesize(data.get("text", ""), data.get("emotion", "calm"))
+                    options = {key: data[key] for key in ("profile", "threads", "engine") if key in data}
+                    audio = voice.synthesize(data.get("text", ""), data.get("emotion", "calm"), **options)
                     return self._send_wav(audio)
                 except VoiceUnavailable as exc:
                     return self._send(503, {"error": str(exc)})

@@ -11,6 +11,7 @@ import re
 import subprocess
 import threading
 import wave
+import time
 
 # These are actual tokens in the pinned Nano tokenizer, not Turbo's ignored
 # exaggeration/CFG controls. Use at most one style marker per spoken segment.
@@ -47,6 +48,7 @@ class NanoVoice:
         self._lock = threading.Lock()
         self._closing = False
         self.failed = False
+        self.last_metrics = {}
 
     def installed(self):
         return (self.python.is_file() and self.script.is_file()
@@ -117,13 +119,16 @@ class NanoVoice:
         self._closing = True
         self._stop()
 
-    def synthesize(self, text: str, emotion: str = "calm") -> bytes:
+    def synthesize(self, text: str, emotion: str = "calm", *, profile="default", threads=0) -> bytes:
         prompt = directed_text(text, emotion)
+        queued = time.monotonic()
         with self._lock:
             try:
+                started = time.monotonic()
                 self._start()
                 proc = self._proc
-                proc.stdin.write(json.dumps({"text": prompt}, ensure_ascii=False) + "\n")
+                proc.stdin.write(json.dumps({"text": prompt, "profile": profile,
+                                             "threads": threads}, ensure_ascii=False) + "\n")
                 proc.stdin.flush()
                 response = self._responses.get(timeout=self.timeout)
                 if response is None:
@@ -140,6 +145,12 @@ class NanoVoice:
                 with wave.open(io.BytesIO(audio), "rb") as w:
                     if w.getnchannels() != 1 or w.getsampwidth() != 2 or w.getnframes() <= 0:
                         raise ValueError("Nano requires mono PCM16 WAV")
+                self.last_metrics = {"queue_seconds": round(started - queued, 3),
+                                     "bridge_seconds": round(time.monotonic() - started, 3),
+                                     "synthesis_seconds": result.get("seconds"),
+                                     "audio_seconds": result.get("audio_seconds"),
+                                     "threads": result.get("threads"),
+                                     "profile": profile}
                 return audio
             except (OSError, RuntimeError, ValueError, TypeError, queue.Empty,
                     EOFError, wave.Error, AttributeError) as exc:

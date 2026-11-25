@@ -15,6 +15,7 @@ from pathlib import Path
 import re
 import subprocess
 import tempfile
+import time
 import wave
 
 from .nano import NanoVoice
@@ -119,7 +120,46 @@ class LocalVoiceService:
             "nano_ready": nano_ready,
             "piper_ready": piper_ready,
             "offline": True,
+            "profiles": self.profiles(),
+            "cpu_threads": max(1, __import__("os").cpu_count() or 1),
+            "last_metrics": self.nano.last_metrics,
         }
+
+    def profiles(self):
+        # No arbitrary paths from the HTTP endpoint. Custom WAVs stay local.
+        result = [{"id": "default", "label": "Original Nano"},
+                  {"id": "joe", "label": "Joe (male, synthetic reference)"}]
+        if (self.nano.root / "eli-reference.wav").is_file():
+            result.append({"id": "custom", "label": "Custom reference"})
+        voices = self.nano.root / "voices"
+        if voices.is_dir():
+            for path in sorted(voices.glob("*.wav"))[:40]:
+                if re.fullmatch(r"[A-Za-z0-9_-]{1,48}", path.stem) and not path.is_symlink():
+                    result.append({"id": "ref:" + path.stem, "label": path.stem.replace("_", " ")})
+        return result
+
+    def _prepare_joe(self):
+        root = self.nano.root
+        path = root / "joe-reference.wav"
+        if path.is_file():
+            return
+        if not all(p.is_file() for p in (self.piper, self.tts_model, self.tts_config)):
+            raise VoiceUnavailable("The bundled Joe voice is unavailable.")
+        root.mkdir(parents=True, exist_ok=True)
+        # Reference is our own original text, rendered from the packaged CC0 Piper model.
+        with tempfile.TemporaryDirectory(prefix="tlc-joe-", dir=self._temp_root()) as folder:
+            output = Path(folder) / "joe.wav"
+            result = self.runner([str(self.piper), "--model", str(self.tts_model),
+                                  "--output_file", str(output)], cwd=str(self.piper.parent),
+                                 input="The hallway is quiet now. I can hear something moving behind the wall. I need to figure out where I am, and whether there is another way out.\n",
+                                 capture_output=True, text=True, timeout=30, encoding="utf-8",
+                                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            self._check_run(result, "Joe reference")
+            with wave.open(str(output), "rb") as w:
+                if w.getnframes() / w.getframerate() <= 5:
+                    raise VoiceError("Joe reference was too short.")
+            output.replace(path)
+
 
     def warm(self):
         self.nano.warm()
@@ -166,7 +206,7 @@ class LocalVoiceService:
             raise VoiceError("No clear words were recognized. Please try again or type.")
         return transcript
 
-    def synthesize(self, spoken: str, emotion: str = "calm") -> bytes:
+    def synthesize(self, spoken: str, emotion: str = "calm", *, profile="default", threads=0, engine="auto") -> bytes:
         if not self.status()["tts_ready"]:
             raise VoiceUnavailable("Eli's offline voice isn't installed; subtitles remain available.")
         if not isinstance(spoken, str) or not 1 <= len(spoken.strip()) <= MAX_TTS_CHARS:
@@ -175,9 +215,20 @@ class LocalVoiceService:
         clean = re.sub(r"<[^>]{1,80}>", "", spoken).strip()
         if not clean:
             raise VoiceError("Nothing to speak.")
-        if self.nano.installed() and not self.nano.failed:
+        if not isinstance(profile, str) or profile not in {p["id"] for p in self.profiles()}:
+            raise VoiceError("Unknown local voice profile.")
+        if type(threads) is not int or not 0 <= threads <= 32:
+            raise VoiceError("Voice threads must be between 0 and 32.")
+        if engine not in ("auto", "piper"):
+            raise VoiceError("Unknown local voice engine.")
+        if engine != "piper" and self.nano.installed() and not self.nano.failed:
             try:
-                return self.nano.synthesize(clean, emotion)
+                if profile == "joe":
+                    self._prepare_joe()
+                # Preserve existing API/tests for default calls.
+                if profile == "default" and threads == 0:
+                    return self.nano.synthesize(clean, emotion)
+                return self.nano.synthesize(clean, emotion, profile=profile, threads=threads)
             except (RuntimeError, ValueError):
                 # Nano failures must not stop dialogue, subtitles or Piper.
                 pass
