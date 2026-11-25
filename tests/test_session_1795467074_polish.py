@@ -84,7 +84,8 @@ class SessionPolishTests(unittest.TestCase):
             ], room, "Exit then inspect the breaker", [])
 
     def test_survey_capability_retains_action_intent(self):
-        self.assertIn("DIRECT request to physically look or scan", GOAL_INSTRUCTIONS)
+        self.assertIn("A direct request to look around", GOAL_INSTRUCTIONS)
+        self.assertIn("is survey/room", GOAL_INSTRUCTIONS)
         model = LocalModel([goal("survey", "room")],
                            "The room's cramped, and I don't like the door.")
         decision = self.agent(model).decide(
